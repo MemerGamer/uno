@@ -5,19 +5,22 @@ using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland.Rendering;
 
-// All calls, including protocol events, must run on the host's render owner thread.
+// All calls run on the render owner thread; frame callbacks arrive on the dispatch thread and are posted back to it.
 internal sealed class WaylandFrameScheduler : IDisposable
 {
 	private readonly WlSurface _surface;
 	private readonly Func<bool> _render;
+	private readonly Action<Action> _postToOwner;
 	private WlCallback? _callback;
 	private bool _dirty;
 	private bool _disposed;
-	public WaylandFrameScheduler(WlSurface surface, Func<bool> render)
+	public WaylandFrameScheduler(WlSurface surface, Func<bool> render, Action<Action> postToOwner)
 	{
 		_surface = surface;
 		_render = render;
+		_postToOwner = postToOwner;
 	}
+	public event Action<uint>? FrameDone;
 	public void Invalidate()
 	{
 		if (_disposed)
@@ -52,10 +55,19 @@ internal sealed class WaylandFrameScheduler : IDisposable
 			throw;
 		}
 	}
-	private void OnDone(object? sender, EventArgs args)
+	private void OnDone(object? sender, WlCallback.DoneEventArgs args)
 	{
-		CancelCallback();
-		TryRender();
+		var callback = (WlCallback)sender!;
+		_postToOwner(() =>
+		{
+			if (_callback != callback)
+			{
+				return;
+			}
+			CancelCallback();
+			FrameDone?.Invoke(args.CallbackData);
+			TryRender();
+		});
 	}
 	private void CancelCallback()
 	{

@@ -12,12 +12,15 @@ internal sealed class WaylandSoftwareRenderer : IDisposable
 	private readonly WlSurface _surface;
 	private readonly WlShm _shm;
 	private readonly List<Buffer> _buffers = new();
+	private readonly Action<Action> _postToOwner;
 	private bool _disposed;
 	public event EventHandler? BufferAvailable;
-	public WaylandSoftwareRenderer(WlSurface surface, WlShm shm)
+	// Release events arrive on the dispatch thread and are posted to the render owner.
+	public WaylandSoftwareRenderer(WlSurface surface, WlShm shm, Action<Action> postToOwner)
 	{
 		_surface = surface;
 		_shm = shm;
+		_postToOwner = postToOwner;
 	}
 	public bool Render(int width, int height, Action<SKSurface> draw)
 	{
@@ -49,19 +52,30 @@ internal sealed class WaylandSoftwareRenderer : IDisposable
 			{
 				return false;
 			}
-			available = new Buffer(_shm, width, height, OnRelease);
+			available = new Buffer(_shm, width, height, buffer => _postToOwner(() => OnRelease(buffer)));
 			_buffers.Add(available);
 		}
 		draw(available.Surface);
 		available.Surface.Canvas.Flush();
 		available.Busy = true;
 		_surface.Attach(available.Proxy, 0, 0);
-		_surface.Damage(0, 0, int.MaxValue, int.MaxValue);
+		if (_surface.Version >= 4)
+		{
+			_surface.DamageBuffer(0, 0, width, height);
+		}
+		else
+		{
+			_surface.Damage(0, 0, int.MaxValue, int.MaxValue);
+		}
 		_surface.Commit();
 		return true;
 	}
 	private void OnRelease(Buffer buffer)
 	{
+		if (!_buffers.Contains(buffer))
+		{
+			return;
+		}
 		buffer.Busy = false;
 		if (buffer.Retired || _disposed)
 		{

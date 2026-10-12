@@ -18,8 +18,9 @@ internal sealed class WaylandRenderer : IDisposable
 	private bool _disposed;
 	public WaylandRenderScale Scale { get; }
 	public bool IsSoftware => _software is not null;
+	public bool IsConfigured => _configured;
 	public Exception? EglInitializationError { get; }
-	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Action<SKSurface> draw, bool forceSoftware = false)
+	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Action<SKSurface> draw, Action<Action> postToOwner, bool forceSoftware = false)
 	{
 		_draw = draw;
 		Scale = new WaylandRenderScale(surface, viewport);
@@ -36,10 +37,10 @@ internal sealed class WaylandRenderer : IDisposable
 		}
 		if (_egl is null)
 		{
-			_software = new WaylandSoftwareRenderer(surface, shm);
+			_software = new WaylandSoftwareRenderer(surface, shm, postToOwner);
 			_software.BufferAvailable += OnBufferAvailable;
 		}
-		_scheduler = new WaylandFrameScheduler(surface, Render);
+		_scheduler = new WaylandFrameScheduler(surface, Render, postToOwner);
 	}
 	// Call only after acknowledging the associated xdg_surface.configure serial.
 	public void Configure(int logicalWidth, int logicalHeight)
