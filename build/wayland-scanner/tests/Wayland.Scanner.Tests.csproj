@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<TargetFramework>$(NetCurrent)</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<IsTestProject>true</IsTestProject>
+		<IsPackable>false</IsPackable>
+		<EnableMSTestRunner>true</EnableMSTestRunner>
+	</PropertyGroup>
+	<ItemGroup>
+		<PackageReference Include="MSTest.TestAdapter" Version="4.5.1" />
+		<PackageReference Include="MSTest.TestFramework" Version="4.5.1" />
+		<ProjectReference Include="../Wayland.Scanner.csproj" />
+		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Native/**/*.cs" Link="Native/%(Filename)%(Extension)" />
+		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Protocols/**/*.cs" Link="Protocols/%(Filename)%(Extension)" />
+		<None Include="../protocols/*.xml" Link="protocols/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+	</ItemGroup>
+</Project>
