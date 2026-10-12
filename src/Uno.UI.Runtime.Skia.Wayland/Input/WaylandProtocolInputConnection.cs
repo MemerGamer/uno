@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using Windows.UI.Core;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 
@@ -11,11 +12,11 @@ namespace Uno.WinUI.Runtime.Skia.Wayland.Input;
 internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 {
 	private readonly WlSeat _seat;
-	private readonly Func<nint, bool> _ownsSurface;
+	private readonly Func<WlSurface?, bool> _ownsSurface;
 	private readonly Action<Action> _post;
 	private readonly Action<uint, CoreCursor?> _cursor;
 
-	public WaylandProtocolInputConnection(WlSeat seat, Func<nint, bool> ownsSurface, Action<Action> post, Action<uint, CoreCursor?> cursor)
+	public WaylandProtocolInputConnection(WlSeat seat, Func<WlSurface?, bool> ownsSurface, Action<Action> post, Action<uint, CoreCursor?> cursor)
 	{
 		_seat = seat;
 		_ownsSurface = ownsSurface;
@@ -30,15 +31,15 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		var proxy = _seat.GetPointer();
 		var binding = new Binding(proxy);
 		bool focused = false;
-		EventHandler<InputEventArgs> enter = (_, e) => { focused = _ownsSurface(e.Surface); if (focused) { sink.Enter(e.Serial, e.X, e.Y); } };
-		EventHandler<InputEventArgs> leave = (_, e) => { if (focused) { sink.Leave(); } focused = false; };
-		EventHandler<InputEventArgs> motion = (_, e) => { if (focused) { sink.Motion(e.Time, e.X, e.Y); } };
-		EventHandler<InputEventArgs> button = (_, e) => { if (focused) { sink.Button(e.Time, e.Button, e.State); } };
-		EventHandler<InputEventArgs> axis = (_, e) => { if (focused) { sink.Axis(e.Time, e.Axis, e.AxisValue); if (proxy.Version < 5) { sink.Frame(); } } };
-		EventHandler<InputEventArgs> discrete = (_, e) => { if (focused) { sink.AxisDiscrete(e.Axis, e.Value); } };
-		EventHandler<InputEventArgs> value120 = (_, e) => { if (focused) { sink.AxisValue120(e.Axis, e.Value); } };
-		EventHandler<InputEventArgs> stop = (_, e) => { if (focused) { sink.AxisStop(e.Axis); } };
-		EventHandler<InputEventArgs> frame = (_, e) => sink.Frame();
+		EventHandler<WlPointer.EnterEventArgs> enter = (_, e) => { focused = _ownsSurface(e.Surface); if (focused) { sink.Enter(e.Serial, e.SurfaceX.ToDouble(), e.SurfaceY.ToDouble()); } };
+		EventHandler<WlPointer.LeaveEventArgs> leave = (_, e) => { if (focused) { sink.Leave(); } focused = false; };
+		EventHandler<WlPointer.MotionEventArgs> motion = (_, e) => { if (focused) { sink.Motion(e.Time, e.SurfaceX.ToDouble(), e.SurfaceY.ToDouble()); } };
+		EventHandler<WlPointer.ButtonEventArgs> button = (_, e) => { if (focused) { sink.Button(e.Time, e.Button, e.State); } };
+		EventHandler<WlPointer.AxisEventArgs> axis = (_, e) => { if (focused) { sink.Axis(e.Time, e.Axis, e.Value.ToDouble()); if (proxy.Version < 5) { sink.Frame(); } } };
+		EventHandler<WlPointer.AxisDiscreteEventArgs> discrete = (_, e) => { if (focused) { sink.AxisDiscrete(e.Axis, e.Discrete); } };
+		EventHandler<WlPointer.AxisValue120EventArgs> value120 = (_, e) => { if (focused) { sink.AxisValue120(e.Axis, e.Value120); } };
+		EventHandler<WlPointer.AxisStopEventArgs> stop = (_, e) => { if (focused) { sink.AxisStop(e.Axis); } };
+		EventHandler<WlPointer.FrameEventArgs> frame = (_, _) => sink.Frame();
 		proxy.Enter += enter;
 		proxy.Leave += leave;
 		proxy.Motion += motion;
@@ -66,12 +67,12 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 	{
 		var proxy = _seat.GetKeyboard();
 		var binding = new Binding(proxy);
-		EventHandler<InputEventArgs> keymap = (_, e) => sink.Keymap(e.Format, e.Fd, e.Size);
-		EventHandler<InputEventArgs> enter = (_, e) => { if (_ownsSurface(e.Surface)) { sink.Enter(e.Keys); } };
-		EventHandler<InputEventArgs> leave = (_, e) => { if (_ownsSurface(e.Surface)) { sink.Leave(); } };
-		EventHandler<InputEventArgs> key = (_, e) => sink.Key(e.Key, e.State);
-		EventHandler<InputEventArgs> modifiers = (_, e) => sink.UpdateModifiers(e.Depressed, e.Latched, e.Locked, e.Group);
-		EventHandler<InputEventArgs> repeat = (_, e) => sink.RepeatInfo(e.Rate, e.Delay);
+		EventHandler<WlKeyboard.KeymapEventArgs> keymap = (_, e) => sink.Keymap(e.Format, e.Fd, e.Size);
+		EventHandler<WlKeyboard.EnterEventArgs> enter = (_, e) => { if (_ownsSurface(e.Surface)) { sink.Enter(MemoryMarshal.Cast<byte, uint>(e.Keys.AsSpan())); } };
+		EventHandler<WlKeyboard.LeaveEventArgs> leave = (_, e) => { if (_ownsSurface(e.Surface)) { sink.Leave(); } };
+		EventHandler<WlKeyboard.KeyEventArgs> key = (_, e) => sink.Key(e.Key, e.State);
+		EventHandler<WlKeyboard.ModifiersEventArgs> modifiers = (_, e) => sink.UpdateModifiers(e.ModsDepressed, e.ModsLatched, e.ModsLocked, e.Group);
+		EventHandler<WlKeyboard.RepeatInfoEventArgs> repeat = (_, e) => sink.RepeatInfo(e.Rate, e.Delay);
 		proxy.Keymap += keymap;
 		proxy.Enter += enter;
 		proxy.Leave += leave;
@@ -94,11 +95,11 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		var proxy = _seat.GetTouch();
 		var binding = new Binding(proxy);
 		var ids = new HashSet<int>();
-		EventHandler<InputEventArgs> down = (_, e) => { if (_ownsSurface(e.Surface)) { ids.Add(e.Id); sink.TouchDown(e.Time, e.Id, e.X, e.Y); } };
-		EventHandler<InputEventArgs> up = (_, e) => { if (ids.Remove(e.Id)) { sink.TouchUp(e.Time, e.Id); } };
-		EventHandler<InputEventArgs> motion = (_, e) => { if (ids.Contains(e.Id)) { sink.TouchMotion(e.Time, e.Id, e.X, e.Y); } };
-		EventHandler<InputEventArgs> frame = (_, e) => sink.TouchFrame();
-		EventHandler<InputEventArgs> cancel = (_, e) => { ids.Clear(); sink.TouchCancel(); };
+		EventHandler<WlTouch.DownEventArgs> down = (_, e) => { if (_ownsSurface(e.Surface)) { ids.Add(e.Id); sink.TouchDown(e.Time, e.Id, e.X.ToDouble(), e.Y.ToDouble()); } };
+		EventHandler<WlTouch.UpEventArgs> up = (_, e) => { if (ids.Remove(e.Id)) { sink.TouchUp(e.Time, e.Id); } };
+		EventHandler<WlTouch.MotionEventArgs> motion = (_, e) => { if (ids.Contains(e.Id)) { sink.TouchMotion(e.Time, e.Id, e.X.ToDouble(), e.Y.ToDouble()); } };
+		EventHandler<WlTouch.FrameEventArgs> frame = (_, _) => sink.TouchFrame();
+		EventHandler<WlTouch.CancelEventArgs> cancel = (_, _) => { ids.Clear(); sink.TouchCancel(); };
 		proxy.Down += down;
 		proxy.Up += up;
 		proxy.Motion += motion;

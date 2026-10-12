@@ -3,10 +3,11 @@
 #nullable enable
 
 using System;
+using System.IO;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Uno.UI.Runtime.Skia;
-using Uno.WinUI.Runtime.Skia.Wayland.Native;
+using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland;
 
@@ -43,14 +44,14 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 		}
 		try
 		{
+			// Connect performs the initial registry roundtrip.
 			using var display = WaylandDisplay.Connect();
-			display.Roundtrip();
 			if (HasRequiredGlobals(display))
 			{
 				return true;
 			}
 		}
-		catch (PlatformNotSupportedException) when (selection != "wayland")
+		catch (Exception error) when (selection != "wayland" && error is IOException or DllNotFoundException or EntryPointNotFoundException)
 		{
 			return false;
 		}
@@ -62,14 +63,13 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 	}
 
 	private static bool HasRequiredGlobals(WaylandDisplay display)
-		=> display.Registry.ContainsKey("wl_compositor")
-			&& display.Registry.ContainsKey("xdg_wm_base")
-			&& display.Registry.ContainsKey("wl_shm");
+		=> display.GetGlobal(WlCompositor.ProtocolName) is not null
+			&& display.GetGlobal(XdgWmBase.ProtocolName) is not null
+			&& display.GetGlobal(WlShm.ProtocolName) is not null;
 
 	protected override void Initialize()
 	{
 		_display = WaylandDisplay.Connect();
-		_display.Roundtrip();
 		if (!HasRequiredGlobals(_display))
 		{
 			Dispose();

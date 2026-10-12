@@ -25,6 +25,8 @@ public sealed unsafe class WaylandDisplay : IDisposable
 	public WlRegistry Registry { get; private set; } = null!;
 	public int FileDescriptor { get; }
 	public bool IsDisconnected => _display == 0;
+	// Native wl_display pointer for libwayland-egl and libwayland-cursor consumers.
+	internal nint NativeHandle => _display;
 	public Exception? DispatchError { get; private set; }
 	public IReadOnlyList<WaylandGlobal> Globals
 	{

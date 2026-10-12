@@ -2,12 +2,14 @@
 #nullable enable
 
 using System;
+using Uno.WinUI.Runtime.Skia.Wayland.Native;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland.Input;
 
 internal sealed class WaylandCursorSurface : IWaylandCursorSurface
 {
+	private const uint WlSurfaceAttachOpcode = 1;
 	private readonly WlPointer _pointer;
 	private readonly WlSurface _surface;
 	private bool _disposed;
@@ -26,7 +28,7 @@ internal sealed class WaylandCursorSurface : IWaylandCursorSurface
 		}
 		_pointer.SetCursor(serial, _surface, hotspotX, hotspotY);
 		_surface.SetBufferScale(scale);
-		_surface.Attach(buffer, 0, 0);
+		AttachBorrowed(buffer);
 		_surface.Damage(0, 0, int.MaxValue, int.MaxValue);
 		_surface.Commit();
 	}
@@ -38,8 +40,19 @@ internal sealed class WaylandCursorSurface : IWaylandCursorSurface
 			return;
 		}
 		_pointer.SetCursor(serial, null, 0, 0);
-		_surface.Attach(0, 0, 0);
+		_surface.Attach(null, 0, 0);
 		_surface.Commit();
+	}
+
+	// libwayland-cursor owns the theme's wl_buffer proxies, so marshal the raw pointer without wrapping it.
+	private unsafe void AttachBorrowed(nint buffer)
+	{
+		lock (_surface.Display.SyncRoot)
+		{
+			using var args = new RequestArguments(3);
+			args.Pointer[0].Pointer = buffer;
+			_surface.MarshalRequest(WlSurfaceAttachOpcode, null, _surface.Version, 1, false, args);
+		}
 	}
 
 	public void Dispose()
@@ -49,7 +62,7 @@ internal sealed class WaylandCursorSurface : IWaylandCursorSurface
 			return;
 		}
 		_disposed = true;
-		_surface.Attach(0, 0, 0);
+		_surface.Attach(null, 0, 0);
 		_surface.Commit();
 		_surface.Dispose();
 	}

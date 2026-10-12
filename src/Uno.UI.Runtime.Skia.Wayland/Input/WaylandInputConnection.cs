@@ -35,7 +35,7 @@ internal sealed class WaylandSeat : IDisposable
 		_keyboard = keyboard;
 	}
 
-	private void OnCapabilities(object? sender, InputEventArgs args) => Capabilities(args.Capabilities);
+	private void OnCapabilities(object? sender, WlSeat.CapabilitiesEventArgs args) => Capabilities(args.Capabilities);
 
 	public void Capabilities(uint capabilities)
 	{
