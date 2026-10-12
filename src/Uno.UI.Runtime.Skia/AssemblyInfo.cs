@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("Uno.UI.Runtime.Skia.Win32")]
 [assembly: InternalsVisibleTo("Uno.UI.Runtime.Skia.X11")]
+[assembly: InternalsVisibleTo("Uno.UI.Runtime.Skia.Wayland")]
 [assembly: InternalsVisibleTo("Uno.UI.Runtime.Skia.Linux.FrameBuffer")]
 [assembly: InternalsVisibleTo("Uno.UI.Runtime.Skia.MacOS")]
 [assembly: InternalsVisibleTo("Uno.UI.Runtime.Skia.WebAssembly.Browser")]
