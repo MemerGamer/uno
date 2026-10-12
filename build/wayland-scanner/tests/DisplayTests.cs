@@ -39,6 +39,55 @@ public sealed partial class DisplayTests
 	}
 
 	[TestMethod]
+	public void PostedCommandsRunOnTheDispatchThreadUnderSyncRoot()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		using var ran = new ManualResetEventSlim();
+		var onDispatchThread = false;
+		var heldLock = false;
+		display.Post(() =>
+		{
+			onDispatchThread = display.IsDispatchThread;
+			heldLock = Monitor.IsEntered(display.SyncRoot);
+			ran.Set();
+		});
+		display.StartDispatch();
+		Assert.IsTrue(ran.Wait(TimeSpan.FromSeconds(5)), "Posted command did not run.");
+		display.StopDispatch();
+		Assert.IsTrue(onDispatchThread);
+		Assert.IsTrue(heldLock);
+		Assert.IsNull(display.DispatchError);
+	}
+
+	[TestMethod]
+	public void FailingPostedCommandStopsDispatchWithError()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		display.Post(() => throw new InvalidOperationException("test command failure"));
+		display.StartDispatch();
+		Assert.IsTrue(SpinWait.SpinUntil(() =>
+		{
+			lock (display.SyncRoot)
+			{
+				return display.DispatchError is not null;
+			}
+		}, TimeSpan.FromSeconds(5)));
+		display.StopDispatch();
+		Assert.AreEqual("test command failure", display.DispatchError?.InnerException?.Message);
+	}
+
+	[TestMethod]
+	public void BindClampsToGeneratedVersion()
+	{
+		using var peer = new ProtocolPeer(compositorVersion: WlCompositor.MaximumVersion + 1);
+		using var display = peer.Connect();
+		using var compositor = (WlCompositor)display.Bind(WlCompositor.ProtocolName, uint.MaxValue);
+		Assert.AreEqual(WlCompositor.MaximumVersion, compositor.Version);
+	}
+
+	[TestMethod]
 	public void CallbackExceptionsAreContainedAndReported()
 	{
 		using var peer = new ProtocolPeer();
@@ -85,8 +134,11 @@ public sealed partial class DisplayTests
 		private readonly Thread _thread;
 		private int _client;
 		private uint _registry;
-		internal ProtocolPeer()
+		private readonly uint _compositorVersion;
+
+		internal ProtocolPeer(uint compositorVersion = 6)
 		{
+			_compositorVersion = compositorVersion;
 			if (socketpair(1, 1 | 0x80000, 0, out var pair) != 0)
 			{
 				throw new IOException($"socketpair failed: {Marshal.GetLastPInvokeError()}");
@@ -123,7 +175,7 @@ public sealed partial class DisplayTests
 						BinaryPrimitives.WriteUInt32LittleEndian(global, 7);
 						BinaryPrimitives.WriteUInt32LittleEndian(global.AsSpan(4), (uint)name.Length);
 						name.CopyTo(global, 8);
-						BinaryPrimitives.WriteUInt32LittleEndian(global.AsSpan(global.Length - 4), 6);
+						BinaryPrimitives.WriteUInt32LittleEndian(global.AsSpan(global.Length - 4), _compositorVersion);
 						Send(_registry, 0, global);
 					}
 					else if (id == 1 && opcode == 0)

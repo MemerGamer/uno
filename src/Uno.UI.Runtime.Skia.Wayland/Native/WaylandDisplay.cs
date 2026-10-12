@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -14,6 +15,7 @@ public sealed unsafe class WaylandDisplay : IDisposable
 {
 	private readonly Dictionary<nint, WaylandProxy> _proxies = new();
 	private readonly Dictionary<uint, WaylandGlobal> _globals = new();
+	private readonly ConcurrentQueue<Action> _commands = new();
 	private nint _display;
 	private Thread? _thread;
 	private int _wakeRead = -1;
@@ -28,6 +30,7 @@ public sealed unsafe class WaylandDisplay : IDisposable
 	// Native wl_display pointer for libwayland-egl and libwayland-cursor consumers.
 	internal nint NativeHandle => _display;
 	public Exception? DispatchError { get; private set; }
+	public bool IsDispatchThread => _thread == Thread.CurrentThread;
 	public IReadOnlyList<WaylandGlobal> Globals
 	{
 		get
@@ -100,7 +103,8 @@ public sealed unsafe class WaylandDisplay : IDisposable
 		lock (SyncRoot)
 		{
 			var global = GetGlobal(interfaceName) ?? throw new NotSupportedException($"The compositor does not advertise {interfaceName}.");
-			return Registry.Bind(global.Name, interfaceName, Math.Min(maximumVersion, global.Version));
+			var supported = (uint)ProtocolMetadata.Get(interfaceName)->Version;
+			return Registry.Bind(global.Name, interfaceName, Math.Min(Math.Min(maximumVersion, supported), global.Version));
 		}
 	}
 
@@ -138,6 +142,36 @@ public sealed unsafe class WaylandDisplay : IDisposable
 			ThrowIfUnavailable();
 			FlushCore();
 			WakeDispatch();
+		}
+	}
+
+	/// <summary>
+	/// Runs <paramref name="command"/> on the dispatch thread before its next read, under <see cref="SyncRoot"/>.
+	/// A failing command stops the loop like a failing event handler.
+	/// </summary>
+	public void Post(Action command)
+	{
+		ArgumentNullException.ThrowIfNull(command);
+		_commands.Enqueue(command);
+		lock (SyncRoot)
+		{
+			WakeDispatch();
+		}
+	}
+
+	private void RunCommands()
+	{
+		while (_commands.TryDequeue(out var command))
+		{
+			try
+			{
+				command();
+			}
+			catch (Exception error)
+			{
+				CaptureCallbackError(error);
+			}
+			ThrowCallbackError();
 		}
 	}
 
@@ -208,6 +242,7 @@ public sealed unsafe class WaylandDisplay : IDisposable
 					{
 						return;
 					}
+					RunCommands();
 					while (WaylandNative.wl_display_prepare_read(_display) != 0)
 					{
 						Check(WaylandNative.wl_display_dispatch_pending(_display));
