@@ -16,7 +16,7 @@ internal sealed class WaylandRenderScale
 		_surface = surface;
 		_viewport = viewport;
 	}
-	public double EffectiveScale => _viewport is not null && _preferredScale != 0 ? _preferredScale / 120d : _integerScale;
+	public double EffectiveScale => Compute(_viewport is not null, _preferredScale, _integerScale);
 	public event EventHandler? Changed;
 	public void SetIntegerScale(int scale)
 	{
@@ -50,8 +50,18 @@ internal sealed class WaylandRenderScale
 		{
 			throw new ArgumentOutOfRangeException(nameof(width));
 		}
-		_surface.SetBufferScale(_viewport is not null ? 1 : _integerScale);
+		if (_surface.Version >= 3)
+		{
+			_surface.SetBufferScale(_viewport is not null ? 1 : _integerScale);
+		}
 		_viewport?.SetDestination(width, height);
-		return (checked((int)Math.Ceiling(width * EffectiveScale)), checked((int)Math.Ceiling(height * EffectiveScale)));
+		return (ToBufferPixels(width, EffectiveScale), ToBufferPixels(height, EffectiveScale));
 	}
+
+	// wp_fractional_scale_v1: buffer size is the logical size times scale, rounded to nearest with halves up.
+	public static int ToBufferPixels(double logical, double scale)
+		=> checked((int)Math.Floor(logical * scale + 0.5));
+
+	public static double Compute(bool hasViewport, uint preferredScale, int integerScale)
+		=> hasViewport && preferredScale != 0 ? preferredScale / 120d : Math.Max(integerScale, 1);
 }
