@@ -1,5 +1,0 @@
-<Project>
-  <ItemGroup>
-    <Compile Include="$(MSBuildThisFileDirectory)../../Uno.UI.Runtime.Skia.Linux.FrameBuffer/Devices/Input/xkbcommon_bindings.cs" Link="Input/Shared/xkbcommon_bindings.cs" />
-  </ItemGroup>
-</Project>

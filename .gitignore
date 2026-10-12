@@ -24,6 +24,8 @@ umbrella_installlog.txt
 Resource.Designer.cs
 *.g.cs
 !**/XamlCodeGeneratorTests/Out/**/*.g.cs
+# Checked-in output of build/wayland-scanner
+!src/Uno.UI.Runtime.Skia.Wayland/Protocols/*.g.cs
 
 # User-specific files
 *.suo
