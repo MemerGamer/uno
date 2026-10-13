@@ -76,14 +76,16 @@ internal sealed partial class WaylandNativeOpenGLWrapper : INativeOpenGLWrapper
 
 	private bool TryCreate(uint api, int renderableBit, int[] contextAttributes)
 	{
+		var configs = new IntPtr[1];
 		if (WaylandRenderNative.eglBindAPI(api) == 0
 			|| WaylandRenderNative.eglChooseConfig(_display,
 				[EglSurfaceType, EglPbufferBit, EglRenderableType, renderableBit, EglRedSize, 8, EglGreenSize, 8, EglBlueSize, 8, EglAlphaSize, 8, EglDepthSize, 24, EglStencilSize, 8, EglNone],
-				out var config, 1, out var count) == 0
+				configs, configs.Length, out var count) == 0
 			|| count < 1)
 		{
 			return false;
 		}
+		var config = configs[0];
 		var context = WaylandRenderNative.eglCreateContext(_display, config, IntPtr.Zero, contextAttributes);
 		if (context == IntPtr.Zero)
 		{
