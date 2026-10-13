@@ -45,20 +45,30 @@
 		<Compile Remove="Protocols/*.g.cs" />
 	</ItemGroup>
 
-	<Target Name="GenerateWaylandProtocols" DependsOnTargets="ResolveProjectReferences" Inputs="@(WaylandScanner);@(WaylandProtocol)" Outputs="$(IntermediateOutputPath)WaylandProtocols/.generated">
+	<Target Name="PrepareWaylandProtocols" DependsOnTargets="ResolveProjectReferences">
+		<WriteLinesToFile File="$(IntermediateOutputPath)WaylandProtocolInputs.txt" Lines="@(WaylandProtocol->'%(FullPath)')" Overwrite="true" WriteOnlyWhenDifferent="true" />
+		<ReadLinesFromFile File="$(IntermediateOutputPath)WaylandProtocols/.outputs" Condition="Exists('$(IntermediateOutputPath)WaylandProtocols/.outputs')">
+			<Output TaskParameter="Lines" ItemName="WaylandProtocolOutput" />
+		</ReadLinesFromFile>
+	</Target>
+
+	<Target Name="GenerateWaylandProtocols" DependsOnTargets="PrepareWaylandProtocols" Inputs="@(WaylandScanner);@(WaylandProtocol);$(IntermediateOutputPath)WaylandProtocolInputs.txt" Outputs="$(IntermediateOutputPath)WaylandProtocols/.outputs;$(IntermediateOutputPath)WaylandProtocols/ProtocolCatalog.g.cs;@(WaylandProtocolOutput)">
 		<PropertyGroup>
 			<WaylandScannerDotNetHost Condition="'$(DotNetHostPath)' != ''">$(DotNetHostPath)</WaylandScannerDotNetHost>
 			<WaylandScannerDotNetHost Condition="'$(WaylandScannerDotNetHost)' == ''">dotnet</WaylandScannerDotNetHost>
 		</PropertyGroup>
 		<RemoveDir Directories="$(IntermediateOutputPath)WaylandProtocols/" />
 		<Exec Command="&quot;$(WaylandScannerDotNetHost)&quot; &quot;@(WaylandScanner)&quot; &quot;$(MSBuildProjectDirectory)/Protocols&quot; &quot;$(IntermediateOutputPath)WaylandProtocols/&quot;" />
-		<Touch Files="$(IntermediateOutputPath)WaylandProtocols/.generated" AlwaysCreate="true" />
+		<ItemGroup>
+			<GeneratedWaylandProtocol Include="$(IntermediateOutputPath)WaylandProtocols/*.g.cs" />
+		</ItemGroup>
+		<WriteLinesToFile File="$(IntermediateOutputPath)WaylandProtocols/.outputs" Lines="@(GeneratedWaylandProtocol->'%(FullPath)')" Overwrite="true" />
 	</Target>
 
 	<Target Name="CompileWaylandProtocols" BeforeTargets="CoreCompile" DependsOnTargets="GenerateWaylandProtocols">
 		<ItemGroup>
 			<Compile Include="$(IntermediateOutputPath)WaylandProtocols/*.g.cs" />
-			<FileWrites Include="$(IntermediateOutputPath)WaylandProtocols/*" />
+			<FileWrites Include="$(IntermediateOutputPath)WaylandProtocols/*;$(IntermediateOutputPath)WaylandProtocolInputs.txt" />
 		</ItemGroup>
 	</Target>
 
