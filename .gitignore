@@ -24,7 +24,6 @@ umbrella_installlog.txt
 Resource.Designer.cs
 *.g.cs
 !**/Uno.UI.SourceGenerators.Tests/Out/**/*.g.cs
-!src/Uno.UI.Runtime.Wayland/Protocols/*.g.cs
 
 # User-specific files
 *.suo

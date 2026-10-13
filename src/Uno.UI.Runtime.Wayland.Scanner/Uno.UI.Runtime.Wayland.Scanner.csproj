@@ -9,5 +9,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<IsPackable>false</IsPackable>
+		<!-- Runs during runtime builds, which may use a newer SDK than this project targets. -->
+		<RollForward>Major</RollForward>
 	</PropertyGroup>
 </Project>

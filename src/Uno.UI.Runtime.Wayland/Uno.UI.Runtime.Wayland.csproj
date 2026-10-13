@@ -37,18 +37,22 @@
 			<PackagePath>buildTransitive</PackagePath>
 		</Content>
 	</ItemGroup>
+
+	<!-- Protocol bindings are generated at build time from the vendored protocol XMLs, see Uno.UI.Runtime.Wayland.Scanner. -->
 	<ItemGroup>
 		<ProjectReference Include="..\Uno.UI.Runtime.Wayland.Scanner\Uno.UI.Runtime.Wayland.Scanner.csproj" ReferenceOutputAssembly="false" OutputItemType="WaylandScanner" PrivateAssets="all" TreatAsPackageReference="false" />
+		<WaylandProtocol Include="Protocols/*.xml" />
 		<Compile Remove="Protocols/*.g.cs" />
 	</ItemGroup>
 
-	<Target Name="GenerateWaylandProtocols" DependsOnTargets="ResolveProjectReferences">
+	<Target Name="GenerateWaylandProtocols" DependsOnTargets="ResolveProjectReferences" Inputs="@(WaylandScanner);@(WaylandProtocol)" Outputs="$(IntermediateOutputPath)WaylandProtocols/.generated">
 		<PropertyGroup>
 			<WaylandScannerDotNetHost Condition="'$(DotNetHostPath)' != ''">$(DotNetHostPath)</WaylandScannerDotNetHost>
 			<WaylandScannerDotNetHost Condition="'$(WaylandScannerDotNetHost)' == ''">dotnet</WaylandScannerDotNetHost>
 		</PropertyGroup>
-		<RemoveDir Directories="$(IntermediateOutputPath)WaylandProtocols" />
-		<Exec Command="&quot;$(WaylandScannerDotNetHost)&quot; &quot;@(WaylandScanner)&quot; &quot;$(MSBuildProjectDirectory)/Protocols&quot; &quot;$(IntermediateOutputPath)WaylandProtocols&quot;" />
+		<RemoveDir Directories="$(IntermediateOutputPath)WaylandProtocols/" />
+		<Exec Command="&quot;$(WaylandScannerDotNetHost)&quot; &quot;@(WaylandScanner)&quot; &quot;$(MSBuildProjectDirectory)/Protocols&quot; &quot;$(IntermediateOutputPath)WaylandProtocols/&quot;" />
+		<Touch Files="$(IntermediateOutputPath)WaylandProtocols/.generated" AlwaysCreate="true" />
 	</Target>
 
 	<Target Name="CompileWaylandProtocols" BeforeTargets="CoreCompile" DependsOnTargets="GenerateWaylandProtocols">
