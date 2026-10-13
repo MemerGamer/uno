@@ -65,7 +65,7 @@ internal sealed class WaylandEglRenderer : IDisposable
 			throw;
 		}
 	}
-	public bool Render(int width, int height, Action<SKSurface> draw)
+	public bool Render(int width, int height, Func<SKSurface, bool> draw)
 	{
 		ObjectDisposedException.ThrowIf(_disposed, this);
 		if (width <= 0 || height <= 0)
@@ -86,7 +86,10 @@ internal sealed class WaylandEglRenderer : IDisposable
 			_width = width;
 			_height = height;
 		}
-		draw(_surface);
+		if (!draw(_surface))
+		{
+			return false;
+		}
 		_surface.Canvas.Flush();
 		_grContext!.Flush();
 		Require(WaylandRenderNative.eglSwapBuffers(_display, _eglSurface) != 0, "eglSwapBuffers");

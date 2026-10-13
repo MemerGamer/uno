@@ -11,7 +11,7 @@ internal sealed class WaylandRenderer : IDisposable
 	private readonly WaylandEglRenderer? _egl;
 	private readonly WaylandSoftwareRenderer? _software;
 	private readonly WaylandFrameScheduler _scheduler;
-	private readonly Action<SKSurface> _draw;
+	private readonly Func<SKSurface, bool> _draw;
 	private int _width;
 	private int _height;
 	private bool _configured;
@@ -20,7 +20,7 @@ internal sealed class WaylandRenderer : IDisposable
 	public bool IsSoftware => _software is not null;
 	public bool IsConfigured => _configured;
 	public Exception? EglInitializationError { get; }
-	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Action<SKSurface> draw, Action<Action> postToOwner, bool forceSoftware = false)
+	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Func<SKSurface, bool> draw, Action<Action> postToOwner, bool forceSoftware = false)
 	{
 		_draw = draw;
 		Scale = new WaylandRenderScale(surface, viewport);

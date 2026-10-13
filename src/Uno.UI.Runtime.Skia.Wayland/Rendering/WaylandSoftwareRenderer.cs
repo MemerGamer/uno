@@ -22,7 +22,7 @@ internal sealed class WaylandSoftwareRenderer : IDisposable
 		_shm = shm;
 		_postToOwner = postToOwner;
 	}
-	public bool Render(int width, int height, Action<SKSurface> draw)
+	public bool Render(int width, int height, Func<SKSurface, bool> draw)
 	{
 		ObjectDisposedException.ThrowIf(_disposed, this);
 		if (width <= 0 || height <= 0)
@@ -55,7 +55,10 @@ internal sealed class WaylandSoftwareRenderer : IDisposable
 			available = new Buffer(_shm, width, height, buffer => _postToOwner(() => OnRelease(buffer)));
 			_buffers.Add(available);
 		}
-		draw(available.Surface);
+		if (!draw(available.Surface))
+		{
+			return false;
+		}
 		available.Surface.Canvas.Flush();
 		available.Busy = true;
 		_surface.Attach(available.Proxy, 0, 0);
@@ -103,7 +106,7 @@ internal sealed class WaylandSoftwareRenderer : IDisposable
 			Remove(buffer);
 		}
 	}
-	private sealed class Buffer : IDisposable
+	internal sealed class Buffer : IDisposable
 	{
 		private readonly IntPtr _memory;
 		private readonly nuint _length;

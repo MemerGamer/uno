@@ -17,6 +17,9 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 
 internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 {
+	// Bounds the wait for matching content, so a size Uno never renders cannot blank the window.
+	private const int MaxStaleFrames = 8;
+
 	private readonly Window _window;
 	private readonly XamlRoot _xamlRoot;
 	private readonly WaylandConnection _connection;
@@ -30,6 +33,8 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	private WaylandRenderer? _renderer;
 	private SKSurface? _canvasSurface;
 	private int _frame;
+	private int _staleFrames;
+	private SKSizeI _canvasSize;
 
 	// Dispatch thread state.
 	private WaylandCursor? _cursor;
@@ -117,10 +122,22 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 
 	// Render thread. Uno draws into a persistent raster surface because CompositionTarget clips
 	// later frames to their damage; the result is copied into the wl_buffer being presented.
-	private void Draw(SKSurface target)
+	// Returns false to keep the previous buffer while the content still has the size of an older
+	// configure or scale, so a frame rendered for stale geometry is never attached.
+	private bool Draw(SKSurface target)
 	{
 		RenderContent();
 		var canvas = target.Canvas;
+		var bounds = canvas.DeviceClipBounds;
+		var content = _canvasSurface is null ? SKSizeI.Empty : _canvasSize;
+		// One pixel of tolerance: Uno rounds the canvas size half to even, buffers round half up.
+		if ((Math.Abs(content.Width - bounds.Width) > 1 || Math.Abs(content.Height - bounds.Height) > 1)
+			&& ++_staleFrames <= MaxStaleFrames)
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: skip stale content {content.Width}x{content.Height} for buffer {bounds.Width}x{bounds.Height}"));
+			return false;
+		}
+		_staleFrames = 0;
 		canvas.Clear(SKColors.White);
 		if (_canvasSurface is { } source)
 		{
@@ -131,11 +148,10 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		_frame++;
 		if (WaylandDiagnostics.IsEnabled)
 		{
-			var bounds = canvas.DeviceClipBounds;
-			var content = _canvasSurface?.Canvas.DeviceClipBounds ?? SKRectI.Empty;
 			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: present frame {_frame} buffer {bounds.Width}x{bounds.Height} content {content.Width}x{content.Height}"));
 			WaylandDiagnostics.DumpFrame(_id, _frame, target);
 		}
+		return true;
 	}
 
 	private void RenderContent()
@@ -145,7 +161,8 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			compositionTarget.OnNativePlatformFrameRequested(_canvasSurface?.Canvas, size =>
 			{
 				_canvasSurface?.Dispose();
-				_canvasSurface = SKSurface.Create(new SKImageInfo(Math.Max((int)size.Width, 1), Math.Max((int)size.Height, 1), SKColorType.Bgra8888, SKAlphaType.Premul))
+				_canvasSize = new SKSizeI(Math.Max((int)size.Width, 1), Math.Max((int)size.Height, 1));
+				_canvasSurface = SKSurface.Create(new SKImageInfo(_canvasSize.Width, _canvasSize.Height, SKColorType.Bgra8888, SKAlphaType.Premul))
 					?? throw new InvalidOperationException("Skia raster surface creation failed.");
 				_canvasSurface.Canvas.Clear(SKColors.White);
 				return _canvasSurface.Canvas;
