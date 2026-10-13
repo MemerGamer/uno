@@ -61,7 +61,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		CoreDragDropManager.DragStarted(info);
 		Motion(position);
 		StopAcceptancePoll();
-		_acceptancePoll = new Timer(_ => WaylandConnection.PostToUI(PollAcceptance), null, _acceptancePollInterval, _acceptancePollInterval);
+		_acceptancePoll = new Timer(_ => _device.PostToUI(PollAcceptance), null, _acceptancePollInterval, _acceptancePollInterval);
 	}
 
 	internal void Motion(Point position)

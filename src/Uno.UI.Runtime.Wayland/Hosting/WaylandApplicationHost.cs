@@ -262,7 +262,15 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 		}
 	}
 
-	private Task StopDispatcher() => _eventLoop?.Stop() ?? Task.CompletedTask;
+	private Task StopDispatcher()
+	{
+		if (_eventLoop is not null)
+		{
+			return _eventLoop.Stop();
+		}
+		_connection!.CloseUICallbacks();
+		return Task.CompletedTask;
+	}
 
 	// False when the step failed or timed out: a renderer may still use the native display, so the connection is
 	// left for process exit to reclaim.
