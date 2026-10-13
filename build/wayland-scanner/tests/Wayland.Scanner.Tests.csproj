@@ -15,6 +15,7 @@
 		<ProjectReference Include="../Wayland.Scanner.csproj" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Native/**/*.cs" Link="Native/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Protocols/**/*.cs" Link="Protocols/%(Filename)%(Extension)" />
+		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Rendering/WaylandRenderThread.cs" Link="Rendering/WaylandRenderThread.cs" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Rendering/WaylandEglConfig.cs" Link="Rendering/WaylandEglConfig.cs" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Rendering/WaylandFrameScheduler.cs" Link="Rendering/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandOutput.cs" Link="Hosting/%(Filename)%(Extension)" />

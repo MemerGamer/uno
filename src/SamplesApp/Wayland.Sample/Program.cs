@@ -30,6 +30,7 @@ public static class Program
 			.UseWayland()
 			.Build();
 		host.Run();
+		Console.WriteLine("main: host returned");
 	}
 }
 
@@ -79,6 +80,17 @@ public sealed class App : Application
 			var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
 			timer.Tick += (_, _) => Console.WriteLine($"UI frames: {frames}");
 			timer.Start();
+		}
+		if (int.TryParse(Environment.GetEnvironmentVariable("WAYLAND_SAMPLE_EXIT_AFTER_MS"), out var exitAfter))
+		{
+			var exitTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(exitAfter) };
+			exitTimer.Tick += (_, _) =>
+			{
+				exitTimer.Stop();
+				Console.WriteLine("main: Application.Exit");
+				Current.Exit();
+			};
+			exitTimer.Start();
 		}
 		if (PortalsSample.IsEnabled)
 		{

@@ -79,7 +79,10 @@ internal static class WaylandWindowIcon
 		{
 			icon.AddBuffer(buffer.Proxy, 1);
 			manager.SetIcon(toplevel, icon);
-			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{windowId}: icon {bitmap.Width}x{bitmap.Height}"));
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{windowId}: icon {bitmap.Width}x{bitmap.Height}"));
+			}
 		}
 		finally
 		{
