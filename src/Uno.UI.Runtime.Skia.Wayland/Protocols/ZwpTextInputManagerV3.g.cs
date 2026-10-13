@@ -61,8 +61,8 @@ public sealed unsafe class ZwpTextInputManagerV3 : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@seat));
 			}
 			args.Object(1, @seat);
-			var handle = base.MarshalRequest(1, "zwp_text_input_v3", Math.Min(Version, ZwpTextInputV3.MaximumVersion), 1, false, args);
-			return new ZwpTextInputV3(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "zwp_text_input_v3", Math.Min(Version, ZwpTextInputV3.MaximumVersion), 1, false, args);
+			return new ZwpTextInputV3(Display, proxyHandle);
 		}
 	}
 }

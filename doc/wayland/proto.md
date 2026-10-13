@@ -11,7 +11,7 @@ dotnet run --project build/wayland-scanner/Wayland.Scanner.csproj -- \
   build/wayland-scanner/protocols src/Uno.UI.Runtime.Skia.Wayland/Protocols
 ```
 
-The checked-in XMLs are copied verbatim from `/usr/share/wayland` and `/usr/share/wayland-protocols`. Each retains its copyright notice. `protocols/LICENSE.txt` collects those MIT notices, also shipped as a third-party notice in the runtime package. The tablet-v2 protocol is included because cursor-shape references `zwp_tablet_tool_v2`. There are ten XML files and 53 generated interfaces, including core subcompositor/subsurface support.
+The checked-in XMLs are copied verbatim from `/usr/share/wayland` and `/usr/share/wayland-protocols`. Each retains its copyright notice. `protocols/LICENSE.txt` collects those MIT notices, also shipped as a third-party notice in the runtime package. The tablet-v2 protocol is included because cursor-shape references `zwp_tablet_tool_v2`. There are twelve XML files and 59 generated interfaces, including core subcompositor/subsurface support.
 
 The generator emits request opcodes, version checks, signatures, interface cross-references, enum values, typed `EventHandler<TEventArgs>` events, and native Cdecl listener tables. Dynamic `new_id` arguments (registry bind) expand into interface name, version, and object ID. Protocol event array payloads are copied before returning from the callback. Fixed point arguments use `WaylandFixed`, preserving their exact 24.8 representation. Wire enums remain `uint` arguments, with nested `*Values` enums available for constants.
 

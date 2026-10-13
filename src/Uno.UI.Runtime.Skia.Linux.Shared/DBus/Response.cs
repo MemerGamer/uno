@@ -1,4 +1,4 @@
-namespace Uno.WinUI.Runtime.Skia.X11.DBus
+namespace Uno.WinUI.Runtime.Skia.Linux.DBus
 {
 	// From https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Request.html#signals
 	enum Response : uint

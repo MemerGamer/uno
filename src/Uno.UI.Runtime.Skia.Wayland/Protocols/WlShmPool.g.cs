@@ -56,8 +56,8 @@ public sealed unsafe class WlShmPool : WaylandProxy
 			args.Int(3, @height);
 			args.Int(4, @stride);
 			args.Uint(5, @format);
-			var handle = base.MarshalRequest(0, "wl_buffer", Math.Min(Version, WlBuffer.MaximumVersion), 1, false, args);
-			return new WlBuffer(Display, handle);
+			var proxyHandle = base.MarshalRequest(0, "wl_buffer", Math.Min(Version, WlBuffer.MaximumVersion), 1, false, args);
+			return new WlBuffer(Display, proxyHandle);
 		}
 	}
 	public void Destroy()

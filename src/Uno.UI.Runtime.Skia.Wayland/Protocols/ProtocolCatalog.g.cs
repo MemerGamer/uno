@@ -518,6 +518,35 @@ internal static unsafe class ProtocolCatalog
 		[
 			new("configure", "u", [null]),
 		]),
+		new("zxdg_exporter_v2", 1,
+		[
+			new("destroy", "", []),
+			new("export_toplevel", "no", ["zxdg_exported_v2", "wl_surface"]),
+		],
+		[
+		]),
+		new("zxdg_importer_v2", 1,
+		[
+			new("destroy", "", []),
+			new("import_toplevel", "ns", ["zxdg_imported_v2", null]),
+		],
+		[
+		]),
+		new("zxdg_exported_v2", 1,
+		[
+			new("destroy", "", []),
+		],
+		[
+			new("handle", "s", [null]),
+		]),
+		new("zxdg_imported_v2", 1,
+		[
+			new("destroy", "", []),
+			new("set_parent_of", "o", ["wl_surface"]),
+		],
+		[
+			new("destroyed", "", []),
+		]),
 		new("xdg_wm_base", 7,
 		[
 			new("destroy", "", []),
@@ -588,6 +617,24 @@ internal static unsafe class ProtocolCatalog
 			new("popup_done", "", []),
 			new("repositioned", "3u", [null]),
 		]),
+		new("xdg_toplevel_icon_manager_v1", 1,
+		[
+			new("destroy", "", []),
+			new("create_icon", "n", ["xdg_toplevel_icon_v1"]),
+			new("set_icon", "o?o", ["xdg_toplevel", "xdg_toplevel_icon_v1"]),
+		],
+		[
+			new("icon_size", "i", [null]),
+			new("done", "", []),
+		]),
+		new("xdg_toplevel_icon_v1", 1,
+		[
+			new("destroy", "", []),
+			new("set_name", "s", [null]),
+			new("add_buffer", "oi", ["wl_buffer", null]),
+		],
+		[
+		]),
 	];
 	internal static WaylandProxy Create(string name, WaylandDisplay display, nint handle) => name switch
 	{
@@ -638,11 +685,17 @@ internal static unsafe class ProtocolCatalog
 		"xdg_activation_token_v1" => new XdgActivationTokenV1(display, handle),
 		"zxdg_decoration_manager_v1" => new ZxdgDecorationManagerV1(display, handle),
 		"zxdg_toplevel_decoration_v1" => new ZxdgToplevelDecorationV1(display, handle),
+		"zxdg_exporter_v2" => new ZxdgExporterV2(display, handle),
+		"zxdg_importer_v2" => new ZxdgImporterV2(display, handle),
+		"zxdg_exported_v2" => new ZxdgExportedV2(display, handle),
+		"zxdg_imported_v2" => new ZxdgImportedV2(display, handle),
 		"xdg_wm_base" => new XdgWmBase(display, handle),
 		"xdg_positioner" => new XdgPositioner(display, handle),
 		"xdg_surface" => new XdgSurface(display, handle),
 		"xdg_toplevel" => new XdgToplevel(display, handle),
 		"xdg_popup" => new XdgPopup(display, handle),
+		"xdg_toplevel_icon_manager_v1" => new XdgToplevelIconManagerV1(display, handle),
+		"xdg_toplevel_icon_v1" => new XdgToplevelIconV1(display, handle),
 		_ => throw new ArgumentException("Unknown protocol interface.", nameof(name))
 	};
 }

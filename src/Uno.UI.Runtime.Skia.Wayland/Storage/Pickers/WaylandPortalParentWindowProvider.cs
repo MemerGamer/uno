@@ -1,0 +1,59 @@
+// Licensed under the MIT License. See LICENSE in the project root for license information.
+
+#nullable enable
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.UI.Windowing;
+using Uno.Disposables;
+using Uno.Foundation.Logging;
+using Uno.WinUI.Runtime.Skia.Linux;
+using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
+using Windows.UI.ViewManagement;
+
+namespace Uno.WinUI.Runtime.Skia.Wayland;
+
+// Portals identify a Wayland parent through an xdg-foreign handle: "wayland:<handle>".
+internal sealed class WaylandPortalParentWindowProvider(WaylandConnection connection) : IPortalParentWindowProvider
+{
+	private static readonly TimeSpan _handleTimeout = TimeSpan.FromSeconds(1);
+
+	public async Task<PortalParentWindow?> GetParentWindowAsync(CancellationToken token)
+	{
+		if (AppWindow.GetFromWindowId(ApplicationView.GetForCurrentViewSafe().WindowId) is not { } appWindow
+			|| Microsoft.UI.Xaml.Window.GetFromAppWindow(appWindow) is not { } window
+			|| connection.FindWindow(window) is not { } wrapper)
+		{
+			return null;
+		}
+
+		if (connection.Exporter is not { } exporter)
+		{
+			// The portal then shows an unparented dialog.
+			return new PortalParentWindow(string.Empty);
+		}
+
+		var handle = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+		ZxdgExportedV2 exported;
+		lock (connection.Display.SyncRoot)
+		{
+			exported = exporter.ExportToplevel(wrapper.Host.Surface);
+			exported.HandleEvent += (_, e) => handle.TrySetResult(e.Handle);
+		}
+		// Destroying the exported object revokes the handle, so it lives until the portal request completes.
+		var lifetime = Disposable.Create(() => connection.Display.Post(exported.Dispose));
+
+		if (await Task.WhenAny(handle.Task, Task.Delay(_handleTimeout, token)) != handle.Task)
+		{
+			if (this.Log().IsEnabled(LogLevel.Warning))
+			{
+				this.Log().Warn("The compositor did not provide an xdg-foreign handle in time; the portal dialog will not be parented.");
+			}
+			return new PortalParentWindow(string.Empty, lifetime);
+		}
+
+		WaylandDiagnostics.Trace($"portal: exported parent window handle {handle.Task.Result}");
+		return new PortalParentWindow("wayland:" + handle.Task.Result, lifetime);
+	}
+}
