@@ -2,16 +2,20 @@
 #nullable enable
 using System;
 using SkiaSharp;
+using Uno.Foundation.Logging;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland.Rendering;
 
 internal sealed class WaylandRenderer : IDisposable
 {
-	private readonly WaylandEglRenderer? _egl;
-	private readonly WaylandSoftwareRenderer? _software;
+	private readonly WlSurface _surface;
+	private readonly WlShm _shm;
+	private readonly Action<Action> _postToOwner;
 	private readonly WaylandFrameScheduler _scheduler;
-	private readonly Action<SKSurface> _draw;
+	private readonly Action<SKSurface, GRContext?> _draw;
+	private WaylandEglRenderer? _egl;
+	private WaylandSoftwareRenderer? _software;
 	private int _width;
 	private int _height;
 	private bool _configured;
@@ -19,10 +23,19 @@ internal sealed class WaylandRenderer : IDisposable
 	public WaylandRenderScale Scale { get; }
 	public bool IsSoftware => _software is not null;
 	public bool IsConfigured => _configured;
-	public Exception? EglInitializationError { get; }
-	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Action<SKSurface> draw, Action<Action> postToOwner, bool forceSoftware = false)
+	public Exception? EglInitializationError { get; private set; }
+	// Null for wl_shm; otherwise the context the retained layer must be created with.
+	public GRContext? GpuContext => _egl?.GpuContext;
+	// Raised on the owner thread when an unrecoverable GPU failure switched rendering to wl_shm.
+	public event EventHandler? BackendChanged;
+
+	// draw paints a complete frame into the target; stalled lets the UI produce a frame while presentation is blocked.
+	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Action<SKSurface, GRContext?> draw, Action stalled, Action<Action> postToOwner, bool forceSoftware = false)
 	{
+		_surface = surface;
+		_shm = shm;
 		_draw = draw;
+		_postToOwner = postToOwner;
 		Scale = new WaylandRenderScale(surface, viewport);
 		if (!forceSoftware && Environment.GetEnvironmentVariable("UNO_WAYLAND_FORCE_SOFTWARE") != "1")
 		{
@@ -37,11 +50,11 @@ internal sealed class WaylandRenderer : IDisposable
 		}
 		if (_egl is null)
 		{
-			_software = new WaylandSoftwareRenderer(surface, shm, postToOwner);
-			_software.BufferAvailable += OnBufferAvailable;
+			UseSoftware();
 		}
-		_scheduler = new WaylandFrameScheduler(surface, Render, postToOwner);
+		_scheduler = new WaylandFrameScheduler(surface, Render, stalled, postToOwner);
 	}
+
 	// Call only after acknowledging the associated xdg_surface.configure serial.
 	public void Configure(int logicalWidth, int logicalHeight)
 	{
@@ -55,8 +68,17 @@ internal sealed class WaylandRenderer : IDisposable
 		_configured = true;
 		_scheduler.Invalidate();
 	}
+
 	public void Invalidate() => _scheduler.Invalidate();
+
+	private void UseSoftware()
+	{
+		_software = new WaylandSoftwareRenderer(_surface, _shm, _postToOwner);
+		_software.BufferAvailable += OnBufferAvailable;
+	}
+
 	private void OnBufferAvailable(object? sender, EventArgs args) => _scheduler.BufferAvailable();
+
 	private bool Render()
 	{
 		if (!_configured)
@@ -64,8 +86,39 @@ internal sealed class WaylandRenderer : IDisposable
 			return false;
 		}
 		var size = Scale.Apply(_width, _height);
-		return _egl is not null ? _egl.Render(size.Width, size.Height, _draw) : _software!.Render(size.Width, size.Height, _draw);
+		if (_egl is { } egl)
+		{
+			try
+			{
+				if (egl.Render(size.Width, size.Height, _draw))
+				{
+					return true;
+				}
+			}
+			catch (Exception error) when (egl.IsContextLost)
+			{
+				FallBackToSoftware(error);
+			}
+			// The frame was dropped with the lost context; retry with the new context or backend.
+			_postToOwner(Invalidate);
+			return false;
+		}
+		return _software!.Render(size.Width, size.Height, surface => _draw(surface, null));
 	}
+
+	private void FallBackToSoftware(Exception error)
+	{
+		if (this.Log().IsEnabled(LogLevel.Error))
+		{
+			this.Log().Error("The EGL context could not be recreated; falling back to wl_shm rendering.", error);
+		}
+		EglInitializationError = error;
+		_egl!.Dispose();
+		_egl = null;
+		UseSoftware();
+		BackendChanged?.Invoke(this, EventArgs.Empty);
+	}
+
 	public void Dispose()
 	{
 		if (_disposed)

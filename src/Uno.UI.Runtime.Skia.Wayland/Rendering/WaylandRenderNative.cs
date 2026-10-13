@@ -42,6 +42,10 @@ internal static partial class WaylandRenderNative
 	[LibraryImport("libEGL.so.1")]
 	internal static partial int eglSwapBuffers(IntPtr display, IntPtr surface);
 	[LibraryImport("libEGL.so.1")]
+	internal static partial int eglSwapInterval(IntPtr display, int interval);
+	[LibraryImport("libEGL.so.1")]
+	internal static partial int eglGetError();
+	[LibraryImport("libEGL.so.1")]
 	internal static partial int eglDestroySurface(IntPtr display, IntPtr surface);
 	[LibraryImport("libEGL.so.1")]
 	internal static partial int eglDestroyContext(IntPtr display, IntPtr context);

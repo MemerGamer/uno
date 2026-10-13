@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using SkiaSharp;
 using Uno.Foundation.Logging;
+using Uno.UI.Helpers;
 using Uno.UI.Hosting;
 using Uno.WinUI.Runtime.Skia.Wayland.Input;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
@@ -26,8 +27,11 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	private readonly WaylandSeat? _seat;
 	private volatile bool _disposed;
 
-	// Render thread state.
+	// Render thread state. Uno draws into a persistent layer because CompositionTarget clips later frames
+	// to their damage: a GPU retained layer with EGL, a raster surface copied into the wl_buffer with wl_shm.
 	private WaylandRenderer? _renderer;
+	private readonly RetainedLayer _retainedLayer = new();
+	private GRContext? _layerContext;
 	private SKSurface? _canvasSurface;
 	private int _frame;
 
@@ -45,9 +49,9 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		_renderThread = new WaylandRenderThread($"Uno Wayland render {id}", OnRenderError);
 		_renderThread.Post(() =>
 		{
-			_renderer = new WaylandRenderer(connection.Display.NativeHandle, surface, connection.Shm, viewport, Draw, _renderThread.Post);
-			Microsoft.UI.Composition.Compositor.GetSharedCompositor().IsSoftwareRenderer = _renderer.IsSoftware;
-			WaylandDiagnostics.Trace($"window{id}: renderer {(_renderer.IsSoftware ? "wl_shm" : "EGL")}{(_renderer.EglInitializationError is { } eglError ? $" (EGL unavailable: {eglError.Message})" : "")}");
+			_renderer = new WaylandRenderer(connection.Display.NativeHandle, surface, connection.Shm, viewport, Draw, () => RenderContent(_renderer?.GpuContext), _renderThread.Post);
+			_renderer.BackendChanged += (_, _) => OnBackendSelected();
+			OnBackendSelected();
 		});
 
 		if (connection.Seat is { } wlSeat)
@@ -91,7 +95,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 				{
 					// Uno schedules its next UI frame from the native frame request, so keep consuming
 					// frames before the first configure even though nothing can be presented yet.
-					RenderContent();
+					RenderContent(_renderer?.GpuContext);
 				}
 			});
 		}
@@ -115,14 +119,24 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		});
 	}
 
-	// Render thread. Uno draws into a persistent raster surface because CompositionTarget clips
-	// later frames to their damage; the result is copied into the wl_buffer being presented.
-	private void Draw(SKSurface target)
+	// Render thread.
+	private void OnBackendSelected()
 	{
-		RenderContent();
+		var renderer = _renderer!;
+		Microsoft.UI.Composition.Compositor.GetSharedCompositor().IsSoftwareRenderer = renderer.IsSoftware;
+		WaylandDiagnostics.Trace($"window{_id}: renderer {(renderer.IsSoftware ? "wl_shm" : "EGL")}{(renderer.EglInitializationError is { } eglError ? $" (EGL unavailable: {eglError.Message})" : "")}");
+	}
+
+	private void Draw(SKSurface target, GRContext? gpuContext)
+	{
+		RenderContent(gpuContext);
 		var canvas = target.Canvas;
 		canvas.Clear(SKColors.White);
-		if (_canvasSurface is { } source)
+		if (gpuContext is not null)
+		{
+			_retainedLayer.Present(target);
+		}
+		else if (_canvasSurface is { } source)
 		{
 			source.Flush();
 			canvas.DrawSurface(source, 0, 0);
@@ -132,20 +146,34 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		if (WaylandDiagnostics.IsEnabled)
 		{
 			var bounds = canvas.DeviceClipBounds;
-			var content = _canvasSurface?.Canvas.DeviceClipBounds ?? SKRectI.Empty;
-			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: present frame {_frame} buffer {bounds.Width}x{bounds.Height} content {content.Width}x{content.Height}"));
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: present frame {_frame} buffer {bounds.Width}x{bounds.Height} {(gpuContext is null ? "wl_shm" : "EGL")}"));
 			WaylandDiagnostics.DumpFrame(_id, _frame, target);
 		}
 	}
 
-	private void RenderContent()
+	private void RenderContent(GRContext? gpuContext)
 	{
+		if (gpuContext != _layerContext)
+		{
+			// A new context (recreated after loss, or the wl_shm fallback) cannot use the old layer: redraw fully.
+			_retainedLayer.Dispose();
+			_canvasSurface?.Dispose();
+			_canvasSurface = null;
+			_layerContext = gpuContext;
+		}
 		if (RootElement?.Visual.CompositionTarget is CompositionTarget compositionTarget)
 		{
-			compositionTarget.OnNativePlatformFrameRequested(_canvasSurface?.Canvas, size =>
+			var canvas = gpuContext is null ? _canvasSurface?.Canvas : _retainedLayer.Surface?.Canvas;
+			compositionTarget.OnNativePlatformFrameRequested(canvas, size =>
 			{
+				var width = Math.Max((int)size.Width, 1);
+				var height = Math.Max((int)size.Height, 1);
+				if (gpuContext is not null)
+				{
+					return _retainedLayer.EnsureSurface(gpuContext, width, height, SKColors.White).Canvas;
+				}
 				_canvasSurface?.Dispose();
-				_canvasSurface = SKSurface.Create(new SKImageInfo(Math.Max((int)size.Width, 1), Math.Max((int)size.Height, 1), SKColorType.Bgra8888, SKAlphaType.Premul))
+				_canvasSurface = SKSurface.Create(new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul))
 					?? throw new InvalidOperationException("Skia raster surface creation failed.");
 				_canvasSurface.Canvas.Clear(SKColors.White);
 				return _canvasSurface.Canvas;
@@ -205,6 +233,8 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		});
 		_renderThread.Post(() =>
 		{
+			// The retained layer belongs to the renderer's GPU context: release it first.
+			_retainedLayer.Dispose();
 			_renderer?.Dispose();
 			_renderer = null;
 			_canvasSurface?.Dispose();

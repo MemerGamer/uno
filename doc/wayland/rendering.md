@@ -8,8 +8,9 @@ The Wayland runtime project and host are integration work owned by other compone
 ## Host integration contract
 
 Create `WaylandRenderer` with the native `wl_display*`, the window's `WlSurface`,
-`WlShm`, an optional `WpViewport`, and an `Action<SKSurface>` that paints a complete
-frame. The namespace for protocol proxies is assumed to be
+`WlShm`, an optional `WpViewport`, an `Action<SKSurface, GRContext?>` that paints a
+complete frame (the context is null on wl_shm), and an `Action` that produces a UI
+frame without presenting it (see [Frame pacing](#frame-pacing)). The namespace for protocol proxies is assumed to be
 `Uno.WinUI.Runtime.Skia.Wayland.Protocols`; proxies expose `Handle`, request
 methods, and `EventHandler` events. `WaylandRendering.Stubs.cs` records the precise
 required signatures behind `WAYLAND_RENDERING_STUBS`. That symbol is only for
@@ -32,15 +33,17 @@ Create and initially commit the empty xdg surface in the host to obtain that fir
 configure. Dispose the renderer before destroying the viewport, fractional-scale
 object, surface, or display.
 
-For Uno integration, call `CompositionTarget.OnNativePlatformFrameRequested` from
-the drawing callback, returning the supplied surface's canvas from its size callback.
-Pass a null prior canvas to request a complete redraw on every acquired buffer;
-clear the frame to the host background first. The configured logical size and
-`XamlRoot.RasterizationScale` must be updated before this call so CompositionTarget's
-pixel dimensions match the supplied surface. Route `IXamlRootHost.InvalidateRender`
-to `Invalidate()` on the owner thread. Report `IsSoftware` to the shared compositor
-and log `EglInitializationError` when falling back. Native-child airspace clipping
-and GPU retained-layer optimization are not implemented in this component.
+For Uno integration, call `CompositionTarget.OnNativePlatformFrameRequested` with a
+persistent layer canvas: a GPU `RetainedLayer` created with the supplied `GRContext`,
+or a raster surface on wl_shm. The drawing callback clears the target to the host
+background and draws the layer into it. Recreate the layer, passing a null prior
+canvas, when the `GRContext` changes (context loss or wl_shm fallback). The configured
+logical size and `XamlRoot.RasterizationScale` must be updated before this call so
+CompositionTarget's pixel dimensions match the supplied surface. Route
+`IXamlRootHost.InvalidateRender` to `Invalidate()` on the owner thread. Report
+`IsSoftware` to the shared compositor, initially and on `BackendChanged`, and log
+`EglInitializationError` when falling back. Native-child airspace clipping is not
+implemented in this component.
 
 ## Backends
 
@@ -48,12 +51,23 @@ EGL obtains the display through
 `eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR, wl_display, NULL)`, selects a
 window-capable RGBA GLES2 configuration with stencil support, creates a
 `wl_egl_window`, and wraps framebuffer zero with `GRBackendRenderTarget` and a
-bottom-left RGBA `SKSurface`. Configure changes resize the native EGL window and
-recreate Skia framebuffer wrappers before drawing. Canvas/context flush precedes
-`eglSwapBuffers`, which performs the surface commit. EGL display initialization is
-reference counted across renderer instances, preventing one closed window from
-terminating another window's display. All windows must use this lease mechanism;
-an unrelated EGL user on the same native display requires a shared lifetime policy.
+bottom-left RGBA `SKSurface`, like X11's OpenGL renderer. Uno draws into a GPU
+`RetainedLayer` (CompositionTarget clips later frames to their damage), which is
+presented into framebuffer zero: no CPU copy is involved. The swap interval is zero
+because `wl_surface.frame` already paces presentation; a non-zero interval would make
+`eglSwapBuffers` block while the surface is hidden. Configure changes resize the
+native EGL window and recreate Skia framebuffer wrappers before drawing. Context
+flush precedes `eglSwapBuffers`, which performs the surface commit. EGL display
+initialization is reference counted across renderer instances, preventing one closed
+window from terminating another window's display. All windows must use this lease
+mechanism; an unrelated EGL user on the same native display requires a shared
+lifetime policy.
+
+`EGL_CONTEXT_LOST` from `eglMakeCurrent`/`eglSwapBuffers`, or an abandoned
+`GRContext`, recreates the EGL context and surface on the same `wl_egl_window`; the
+frame is dropped and redrawn in full because the retained layer belonged to the old
+context. If recreation fails the window switches to wl_shm and reports the software
+renderer to the compositor.
 
 Like X11's default selection, initialization attempts GPU rendering and falls back
 to software on expected EGL/native-library initialization failures. Explicit
@@ -86,8 +100,15 @@ may withhold callbacks for hidden windows; rendering then naturally pauses.
 
 If both software buffers are busy, the attempted frame cancels its uncommitted
 callback and retains the dirty bit. A release event retries it. Drawing failures
-also cancel the callback and preserve dirty state, then propagate. No periodic
-timer, assumed refresh rate, or unbounded render queue is used.
+also cancel the callback and preserve dirty state, then propagate.
+
+A compositor may withhold callbacks (and buffer releases) for hidden windows. Uno
+schedules its next UI frame from the native frame request, so presentation stalls
+would also stall the UI, unlike X11 where a minimized window keeps rendering. When
+a dirty frame makes no progress for 100 ms, the scheduler lets the host produce the
+frame into its retained layer without presenting it. This repeats only on further
+invalidations, so an idle hidden window does no work and an animated one runs at
+about 10 frames per second. The next frame callback presents the latest content.
 
 ## Scale
 
@@ -98,8 +119,9 @@ The effective scale is the preferred numerator divided by 120. Buffer dimensions
 are `ceil(logicalDimension * effectiveScale)`, buffer scale is one, and viewport
 destination is the logical size. Ceiling avoids undersized buffers at odd sizes.
 
-Without both extensions, omit the viewport and forward the maximum integer scale
-of entered outputs to `Scale.SetIntegerScale(int)`. The buffer scale is that integer
+Without both extensions, omit the viewport and forward `wl_surface.preferred_buffer_scale`
+(surface v6) or, on older surfaces, the maximum integer scale of entered outputs to
+`Scale.SetIntegerScale(int)`. The buffer scale is that integer
 and dimensions are logical size times scale. Recompute the output maximum on enter,
 leave, output-scale updates, and output removal. The host subscribes to
 `Scale.Changed` to update `XamlRoot.RasterizationScale`, DPI/display-information
