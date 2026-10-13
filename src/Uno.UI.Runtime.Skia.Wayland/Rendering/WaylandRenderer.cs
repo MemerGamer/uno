@@ -13,7 +13,7 @@ internal sealed class WaylandRenderer : IDisposable
 	private readonly WlShm _shm;
 	private readonly Action<Action> _postToOwner;
 	private readonly WaylandFrameScheduler _scheduler;
-	private readonly Action<SKSurface, GRContext?> _draw;
+	private readonly Func<SKSurface, GRContext?, bool> _draw;
 	private WaylandEglRenderer? _egl;
 	private WaylandSoftwareRenderer? _software;
 	private int _width;
@@ -30,7 +30,7 @@ internal sealed class WaylandRenderer : IDisposable
 	public event EventHandler? BackendChanged;
 
 	// Both frame paths validate the GPU context before the host draws its retained layer.
-	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Action<SKSurface, GRContext?> draw, Action<GRContext?> produceUnpresentedFrame, Action releaseRetainedLayer, Action<Action> postToOwner, bool forceSoftware = false)
+	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Func<SKSurface, GRContext?, bool> draw, Action<GRContext?> produceUnpresentedFrame, Action releaseRetainedLayer, Action<Action> postToOwner, bool forceSoftware = false)
 	{
 		_surface = surface;
 		_shm = shm;
@@ -106,11 +106,17 @@ internal sealed class WaylandRenderer : IDisposable
 		var size = Scale.Apply(_width, _height);
 		if (_egl is { } egl)
 		{
+			var drawn = false;
 			try
 			{
-				if (egl.Render(size.Width, size.Height, _draw))
+				if (egl.Render(size.Width, size.Height, (surface, context) => drawn = _draw(surface, context)))
 				{
 					return true;
+				}
+				if (!drawn)
+				{
+					// The host declined a stale frame; the next invalidation retries it.
+					return false;
 				}
 			}
 			catch (Exception error) when (egl.IsContextLost)

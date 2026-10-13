@@ -18,6 +18,9 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 
 internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 {
+	// Bounds the wait for matching content, so a size Uno never renders cannot blank the window.
+	private const int MaxStaleFrames = 8;
+
 	private readonly Window _window;
 	private readonly XamlRoot _xamlRoot;
 	private readonly WaylandConnection _connection;
@@ -34,6 +37,8 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	private GRContext? _layerContext;
 	private SKSurface? _canvasSurface;
 	private int _frame;
+	private int _staleFrames;
+	private SKSizeI _canvasSize;
 
 	// Dispatch thread state.
 	private WaylandCursor? _cursor;
@@ -128,10 +133,22 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		WaylandDiagnostics.Trace($"window{_id}: renderer {(renderer.IsSoftware ? "wl_shm" : "EGL")}{(renderer.EglInitializationError is { } eglError ? $" (EGL unavailable: {eglError.Message})" : "")}");
 	}
 
-	private void Draw(SKSurface target, GRContext? gpuContext)
+	// Returns false to keep the previous buffer while the content still has the size of an older
+	// configure or scale, so a frame rendered for stale geometry is never presented.
+	private bool Draw(SKSurface target, GRContext? gpuContext)
 	{
 		RenderContent(gpuContext);
 		var canvas = target.Canvas;
+		var bounds = canvas.DeviceClipBounds;
+		var content = _canvasSize;
+		// One pixel of tolerance: Uno rounds the canvas size half to even, buffers round half up.
+		if ((Math.Abs(content.Width - bounds.Width) > 1 || Math.Abs(content.Height - bounds.Height) > 1)
+			&& ++_staleFrames <= MaxStaleFrames)
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: skip stale content {content.Width}x{content.Height} for buffer {bounds.Width}x{bounds.Height}"));
+			return false;
+		}
+		_staleFrames = 0;
 		canvas.Clear(SKColors.White);
 		if (gpuContext is not null)
 		{
@@ -146,10 +163,10 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		_frame++;
 		if (WaylandDiagnostics.IsEnabled)
 		{
-			var bounds = canvas.DeviceClipBounds;
-			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: present frame {_frame} buffer {bounds.Width}x{bounds.Height} {(gpuContext is null ? "wl_shm" : "EGL")}"));
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: present frame {_frame} buffer {bounds.Width}x{bounds.Height} content {content.Width}x{content.Height} {(gpuContext is null ? "wl_shm" : "EGL")}"));
 			WaylandDiagnostics.DumpFrame(_id, _frame, target);
 		}
+		return true;
 	}
 
 	private void RenderContent(GRContext? gpuContext)
@@ -167,6 +184,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				var width = Math.Max((int)size.Width, 1);
 				var height = Math.Max((int)size.Height, 1);
+				_canvasSize = new SKSizeI(width, height);
 				if (gpuContext is not null)
 				{
 					return _retainedLayer.EnsureSurface(gpuContext, width, height, SKColors.White).Canvas;
@@ -185,6 +203,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		_retainedLayer.Dispose();
 		_canvasSurface?.Dispose();
 		_canvasSurface = null;
+		_canvasSize = SKSizeI.Empty;
 		_layerContext = null;
 	}
 

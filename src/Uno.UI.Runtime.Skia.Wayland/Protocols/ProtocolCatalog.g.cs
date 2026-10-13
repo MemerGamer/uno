@@ -617,6 +617,24 @@ internal static unsafe class ProtocolCatalog
 			new("popup_done", "", []),
 			new("repositioned", "3u", [null]),
 		]),
+		new("xdg_toplevel_icon_manager_v1", 1,
+		[
+			new("destroy", "", []),
+			new("create_icon", "n", ["xdg_toplevel_icon_v1"]),
+			new("set_icon", "o?o", ["xdg_toplevel", "xdg_toplevel_icon_v1"]),
+		],
+		[
+			new("icon_size", "i", [null]),
+			new("done", "", []),
+		]),
+		new("xdg_toplevel_icon_v1", 1,
+		[
+			new("destroy", "", []),
+			new("set_name", "s", [null]),
+			new("add_buffer", "oi", ["wl_buffer", null]),
+		],
+		[
+		]),
 	];
 	internal static WaylandProxy Create(string name, WaylandDisplay display, nint handle) => name switch
 	{
@@ -676,6 +694,8 @@ internal static unsafe class ProtocolCatalog
 		"xdg_surface" => new XdgSurface(display, handle),
 		"xdg_toplevel" => new XdgToplevel(display, handle),
 		"xdg_popup" => new XdgPopup(display, handle),
+		"xdg_toplevel_icon_manager_v1" => new XdgToplevelIconManagerV1(display, handle),
+		"xdg_toplevel_icon_v1" => new XdgToplevelIconV1(display, handle),
 		_ => throw new ArgumentException("Unknown protocol interface.", nameof(name))
 	};
 }

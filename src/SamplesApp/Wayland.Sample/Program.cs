@@ -85,18 +85,21 @@ public sealed class App : Application
 			PortalsSample.Attach(portals);
 			Place(canvas, portals, 400, 140);
 		}
+		Place(canvas, WindowScenario.CreateControls(window), 40, 440);
 		window.Content = canvas;
 		// The canvas has a background, so it is hit-testable as a drop target.
 		DataTransferProbe.Attach(canvas);
+		window.Activated += (_, e) => Console.WriteLine($"main: activated {e.WindowActivationState}");
 		window.Activate();
 		var display = Windows.Graphics.Display.DisplayInformation.GetForCurrentView();
 		void ReportDisplay() => Console.WriteLine($"DisplayInformation: {display.ScreenWidthInRawPixels}x{display.ScreenHeightInRawPixels} scale {display.RawPixelsPerViewPixel} dpi {display.LogicalDpi} diagonal {display.DiagonalSizeInInches?.ToString() ?? "n/a"}");
 		display.DpiChanged += (_, _) => ReportDisplay();
 		ReportDisplay();
 		Console.WriteLine("OnLaunched: window activated");
+		WindowScenario.RunIfRequested(window);
 	}
 
-	private static void Place(Canvas canvas, FrameworkElement element, double left, double top)
+	private static void Place(Canvas canvas, UIElement element, double left, double top)
 	{
 		Canvas.SetLeft(element, left);
 		Canvas.SetTop(element, top);
