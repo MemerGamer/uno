@@ -1,0 +1,62 @@
+# uno-wl-inject script for src/SamplesApp/Wayland.Sample, whose window the test compositor places at 0,0
+# without decorations: copy kwinrulesrc into the compositor's XDG_CONFIG_HOME; kxkbrc there sets [Layout] LayoutList=hu.
+# Run as: uno-wl-inject < wayland-sample.cmds (one long-lived client keeps the fake pointer device alive).
+# Expected app output: two "Button: clicked", ScrollViewer offsets, TextBox text "x" + 'b' repeats + "ő".
+
+# Hover and click the button (Canvas 40,60 160x48) twice.
+move 120 84
+sleep 300
+click left
+sleep 300
+click left
+sleep 300
+# Wheel over the ScrollViewer (Canvas 40,220 300x200), down twice, then back up half a detent.
+move 100 300
+sleep 200
+wheel v 10
+sleep 300
+wheel v 10
+sleep 300
+wheel v -5
+sleep 500
+# Focus the TextBox (Canvas 40,140, width 300); the cursor turns into an I-beam.
+move 150 156
+sleep 300
+click left
+sleep 300
+# "abc", then KEY_SEMICOLON (é on the hu layout), Shift+A.
+tap 30
+tap 48
+tap 46
+tap 39
+keydown 42
+tap 30
+keyup 42
+sleep 300
+# Ctrl+A selects everything; 'x' replaces it.
+keydown 29
+tap 30
+keyup 29
+sleep 300
+tap 45
+sleep 300
+# Hold 'b' 1.5 s: client-side repeat (KWin default 600 ms delay, 25 Hz).
+keydown 48
+sleep 1500
+keyup 48
+sleep 300
+# ő through a keysym; KWin sends a temporary keymap for it.
+symtap 0x1000151
+sleep 300
+# Leave the window and come back over the button: cursor must return to Arrow without further motion.
+move 1270 790
+sleep 300
+move 120 84
+sleep 500
+# Touch tap on the button.
+touchdown 1 120 84
+touchframe
+sleep 100
+touchup 1
+touchframe
+sleep 500
