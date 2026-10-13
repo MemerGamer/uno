@@ -35,4 +35,25 @@
 			<PackagePath>buildTransitive</PackagePath>
 		</Content>
 	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\Uno.UI.Runtime.Wayland.Scanner\Uno.UI.Runtime.Wayland.Scanner.csproj" ReferenceOutputAssembly="false" OutputItemType="WaylandScanner" PrivateAssets="all" TreatAsPackageReference="false" />
+		<Compile Remove="Protocols/*.g.cs" />
+	</ItemGroup>
+
+	<Target Name="GenerateWaylandProtocols" DependsOnTargets="ResolveProjectReferences">
+		<PropertyGroup>
+			<WaylandScannerDotNetHost Condition="'$(DotNetHostPath)' != ''">$(DotNetHostPath)</WaylandScannerDotNetHost>
+			<WaylandScannerDotNetHost Condition="'$(WaylandScannerDotNetHost)' == ''">dotnet</WaylandScannerDotNetHost>
+		</PropertyGroup>
+		<RemoveDir Directories="$(IntermediateOutputPath)WaylandProtocols" />
+		<Exec Command="&quot;$(WaylandScannerDotNetHost)&quot; &quot;@(WaylandScanner)&quot; &quot;$(MSBuildProjectDirectory)/Protocols&quot; &quot;$(IntermediateOutputPath)WaylandProtocols&quot;" />
+	</Target>
+
+	<Target Name="CompileWaylandProtocols" BeforeTargets="CoreCompile" DependsOnTargets="GenerateWaylandProtocols">
+		<ItemGroup>
+			<Compile Include="$(IntermediateOutputPath)WaylandProtocols/*.g.cs" />
+			<FileWrites Include="$(IntermediateOutputPath)WaylandProtocols/*" />
+		</ItemGroup>
+	</Target>
+
 </Project>

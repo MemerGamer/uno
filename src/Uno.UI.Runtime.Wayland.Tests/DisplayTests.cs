@@ -19,7 +19,7 @@ public sealed partial class DisplayTests
 	{
 		if (!OperatingSystem.IsLinux() || !NativeLibrary.TryLoad("libwayland-client.so.0", out var library))
 		{
-			Assert.Inconclusive("libwayland-client is required to dispatch the Wayland protocol.");
+			Assert.Inconclusive("libwayland-client is required for the in-process protocol peer.");
 			return;
 		}
 		NativeLibrary.Free(library);
@@ -90,6 +90,61 @@ public sealed partial class DisplayTests
 	}
 
 	[TestMethod]
+	public void StoppedDisplayRejectsPostedOwnership()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		display.StartDispatch();
+		display.StopDispatch();
+		var rejected = 0;
+		Assert.IsFalse(display.TryPost(() => Assert.Fail("Stopped dispatch executed a command."), () => rejected++));
+		Assert.AreEqual(1, rejected);
+	}
+
+	[TestMethod]
+	public void ShutdownReleasesQueuedOwnership()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		var rejected = 0;
+		Assert.IsTrue(display.TryPost(() => Assert.Fail("Queued command should be rejected."), () => rejected++));
+		display.StopDispatch();
+		Assert.AreEqual(1, rejected);
+	}
+
+	[TestMethod]
+	public void DisposedDisplayRejectsPostedOwnership()
+	{
+		using var peer = new ProtocolPeer();
+		var display = peer.Connect();
+		display.Dispose();
+		var rejected = 0;
+		Assert.IsFalse(display.TryPost(() => Assert.Fail(), () => rejected++));
+		Assert.AreEqual(1, rejected);
+	}
+
+	[TestMethod]
+	public void DispatchFailureRejectsQueuedAndNewOwnership()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		var rejected = 0;
+		display.Post(() => throw new InvalidOperationException("dispatch failure"));
+		Assert.IsTrue(display.TryPost(() => Assert.Fail(), () => rejected++));
+		display.StartDispatch();
+		Assert.IsTrue(SpinWait.SpinUntil(() =>
+		{
+			lock (display.SyncRoot)
+			{
+				return display.DispatchError is not null;
+			}
+		}, TimeSpan.FromSeconds(5)));
+		display.StopDispatch();
+		Assert.IsFalse(display.TryPost(() => Assert.Fail(), () => rejected++));
+		Assert.AreEqual(2, rejected);
+	}
+
+	[TestMethod]
 	public void BindClampsToGeneratedVersion()
 	{
 		using var peer = new ProtocolPeer(compositorVersion: WlCompositor.MaximumVersion + 1);
@@ -146,10 +201,12 @@ public sealed partial class DisplayTests
 		private int _client;
 		private uint _registry;
 		private readonly uint _compositorVersion;
+		private readonly bool _answerSync;
 
-		internal ProtocolPeer(uint compositorVersion = 6)
+		internal ProtocolPeer(uint compositorVersion = 6, bool answerSync = true)
 		{
 			_compositorVersion = compositorVersion;
+			_answerSync = answerSync;
 			if (socketpair(1, 1 | 0x80000, 0, out var pair) != 0)
 			{
 				throw new IOException($"socketpair failed: {Marshal.GetLastPInvokeError()}");
@@ -189,7 +246,7 @@ public sealed partial class DisplayTests
 						BinaryPrimitives.WriteUInt32LittleEndian(global.AsSpan(global.Length - 4), _compositorVersion);
 						Send(_registry, 0, global);
 					}
-					else if (id == 1 && opcode == 0)
+					else if (id == 1 && opcode == 0 && _answerSync)
 					{
 						var callback = BinaryPrimitives.ReadUInt32LittleEndian(body);
 						Send(callback, 0, BitConverter.GetBytes(42u));

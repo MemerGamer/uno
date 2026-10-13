@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 	<!--
 		Generates the Wayland protocol bindings of Uno.UI.Runtime.Wayland from the vendored protocol XMLs.
-		The output is checked in; regenerate it after adding or updating a protocol XML (see Program.cs).
+		Runtime builds generate bindings into their intermediate output directory.
 	-->
 	<PropertyGroup>
 		<OutputType>Exe</OutputType>
