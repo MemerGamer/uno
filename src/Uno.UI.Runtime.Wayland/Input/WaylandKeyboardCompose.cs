@@ -1,6 +1,7 @@
 #nullable enable
 
 using System;
+using System.Text;
 
 namespace Uno.UI.Runtime.Wayland.Input;
 
@@ -26,10 +27,12 @@ internal sealed class WaylandKeyboardCompose : IDisposable
 		}
 	}
 
-	// Returns the text of the key, or null when the sequence consumed it: while it is pending, cancelled, or
-	// when its result does not fit KeyEventArgs.UnicodeKey (several characters, or outside the BMP).
-	internal uint? Feed(uint keysym, uint unicode)
+	// Pending and cancelled sequences consume the key; completed sequences also expose their full text.
+	internal uint? Feed(uint keysym, uint unicode) => Feed(keysym, unicode, out _);
+
+	internal uint? Feed(uint keysym, uint unicode, out string? composedText)
 	{
+		composedText = null;
 		if (_state == 0 || WaylandXkb.ComposeFeed(_state, keysym) == 0) // XKB_COMPOSE_FEED_IGNORED: modifiers
 		{
 			return unicode;
@@ -39,9 +42,18 @@ internal sealed class WaylandKeyboardCompose : IDisposable
 			case 1: // XKB_COMPOSE_COMPOSING
 				return null;
 			case 2: // XKB_COMPOSE_COMPOSED
-				var result = WaylandXkb.KeysymToUtf32(WaylandXkb.ComposeGetSym(_state));
+				var length = WaylandXkb.ComposeGetUtf8(_state, [], 0);
+				var buffer = new byte[checked(length + 1)];
+				WaylandXkb.ComposeGetUtf8(_state, buffer, (nuint)buffer.Length);
+				var text = Encoding.UTF8.GetString(buffer, 0, length);
 				Reset();
-				return result is 0 or > 0xffff ? null : result;
+				if (text.Length == 0)
+				{
+					return null;
+				}
+				// Text that does not fit KeyEventArgs.UnicodeKey is only returned as a string.
+				composedText = text;
+				return text.Length == 1 ? text[0] : 0u;
 			case 3: // XKB_COMPOSE_CANCELLED
 				Reset();
 				return null;

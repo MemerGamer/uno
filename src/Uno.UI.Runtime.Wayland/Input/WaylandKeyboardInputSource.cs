@@ -9,6 +9,7 @@ using Windows.UI.Core;
 using Uno.UI.Hosting;
 using Uno.UI.Runtime.Linux;
 using Microsoft.Win32.SafeHandles;
+using Microsoft.UI.Xaml.Controls;
 
 namespace Uno.UI.Runtime.Wayland.Input;
 
@@ -16,7 +17,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 {
 	public event TypedEventHandler<object, KeyEventArgs>? KeyDown;
 	public event TypedEventHandler<object, KeyEventArgs>? KeyUp;
-	// Like X11, text is carried by KeyEventArgs.UnicodeKey, avoiding duplicate insertion.
+	// BMP text uses UnicodeKey; complete strings commit through the focused text session.
 	event TypedEventHandler<object, CharacterReceivedEventArgs>? IUnoKeyboardInputSource.CharacterReceived { add { } remove { } }
 	private readonly Action<Action> _dispatch;
 	private readonly Action<bool> _activate;
@@ -176,7 +177,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 		{
 			if (_rate == 0 && _pressed.TryGetValue(key, out var repeated))
 			{
-				Emit(key, repeated.VirtualKey, true, true, repeated.ComposedText);
+				Emit(key, repeated.VirtualKey, true, true, repeated.ComposedText, repeated.ComposedString);
 			}
 			return;
 		}
@@ -195,18 +196,20 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			var wasDown = _pressed.TryGetValue(key, out var pressed);
 			var keyText = WaylandXkb.GetUtf32(_state, key + 8);
 			var composed = wasDown ? pressed.ComposedText : null;
+			var composedString = wasDown ? pressed.ComposedString : null;
 			if (!wasDown && _compose is { } compose)
 			{
 				// Like keys taken by an input method, keys consumed by a dead-key or Compose sequence raise no key events.
-				var fed = compose.Feed(sym, keyText);
+				var fed = compose.Feed(sym, keyText, out var completeText);
 				if (fed is null)
 				{
 					return;
 				}
 				composed = fed != keyText ? fed : null;
+				composedString = completeText is { Length: > 1 } ? completeText : null;
 			}
-			_pressed[key] = new(vk, composed);
-			Emit(key, vk, true, wasDown, composed ?? keyText);
+			_pressed[key] = new(vk, composed, composedString);
+			Emit(key, vk, true, wasDown, composed ?? keyText, composedString);
 			if (_rate > 0 && WaylandXkb.Repeats(_keymap, key + 8) != 0)
 			{
 				StopRepeat();
@@ -216,7 +219,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 				{
 					if (!_disposed && _focused && generation == _generation && _pressed.TryGetValue(key, out var repeated))
 					{
-						Emit(key, repeated.VirtualKey, true, true, repeated.ComposedText);
+						Emit(key, repeated.VirtualKey, true, true, repeated.ComposedText, repeated.ComposedString);
 					}
 				}), null, _delay, Math.Max(1, 1000 / _rate));
 			}
@@ -230,13 +233,18 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			Emit(key, released.VirtualKey, false, true);
 		}
 	}
-	private void Emit(uint key, VirtualKey vk, bool down, bool previous, uint? text = null)
+	private void Emit(uint key, VirtualKey vk, bool down, bool previous, uint? text = null, string? composedString = null)
 	{
 		var unicode = text ?? (down && _state != 0 ? WaylandXkb.GetUtf32(_state, key + 8) : 0);
 		char? character = unicode is >= 32 and <= 0xffff && unicode is not (>= 0xd800 and <= 0xdfff) || unicode == 13 ? (char)unicode : null;
 		if (!_levelThree && (Modifiers & (VirtualKeyModifiers.Control | VirtualKeyModifiers.Menu | VirtualKeyModifiers.Windows)) != 0)
 		{
 			character = null;
+		}
+		var completeText = composedString ?? (unicode is > 0xffff and <= 0x10ffff ? char.ConvertFromUtf32((int)unicode) : null);
+		if (!_levelThree && (Modifiers & (VirtualKeyModifiers.Control | VirtualKeyModifiers.Menu | VirtualKeyModifiers.Windows)) != 0)
+		{
+			completeText = null;
 		}
 		var args = new KeyEventArgs("keyboard", vk, Modifiers, new CorePhysicalKeyStatus
 		{
@@ -246,8 +254,39 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			IsKeyReleased = !down,
 			IsMenuKeyDown = (Modifiers & VirtualKeyModifiers.Menu) != 0
 		}, character);
-		_dispatch(() => { if (down) { KeyDown?.Invoke(this, args); } else { KeyUp?.Invoke(this, args); } });
+		_dispatch(() =>
+		{
+			if (down)
+			{
+				if (completeText is not null && ImeSessionCoordinator.ActiveHost is { CanAcceptTextInput: true } host
+					&& host.XamlRoot is { } root && XamlRootMap.GetHostForRoot(root) is WaylandXamlRootHost rootHost
+					&& rootHost.KeyboardSource == this)
+				{
+					// Without an input method, the composition callbacks insert the string once, replacing the selection.
+					if (ImeSessionCoordinator.GetExtension(host) is not WaylandImeTextBoxExtension ime || !ime.TryCommitKeyboardText(host, completeText))
+					{
+						CommitText(host, completeText);
+					}
+					return;
+				}
+				KeyDown?.Invoke(this, args);
+			}
+			else
+			{
+				KeyUp?.Invoke(this, args);
+			}
+		});
 	}
+	private static void CommitText(IImeSessionHost host, string text)
+	{
+		if (!host.IsComposing)
+		{
+			host.OnImeCompositionStarted();
+		}
+		host.OnImeCompositionCompleted(text, textAlreadyApplied: false);
+		host.OnImeCompositionEnded();
+	}
+
 	private void StopRepeat()
 	{
 		_generation++;
@@ -295,5 +334,5 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 	}
 
 	// Composed text is kept so repeats of a Compose sequence's final key repeat its result.
-	private readonly record struct PressedKey(VirtualKey VirtualKey, uint? ComposedText);
+	private readonly record struct PressedKey(VirtualKey VirtualKey, uint? ComposedText, string? ComposedString = null);
 }

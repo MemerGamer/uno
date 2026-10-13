@@ -25,6 +25,10 @@ internal sealed class WaylandTextInputStateHistory<THost>(int capacity) where TH
 		}
 	}
 
+	// Missing snapshots prevent deletion, not delivery of the session's commit and preedit.
+	internal State GetStateOrCurrent(uint serial, long session, THost host)
+		=> _states.TryGetValue(serial, out var state) ? state : new(session, host, null, string.Empty, -1);
+
 	internal bool TryGetValue(uint serial, out State state) => _states.TryGetValue(serial, out state);
 
 	internal void Clear()
