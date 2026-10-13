@@ -1,0 +1,12 @@
+[General]
+count=1
+rules=1
+
+[1]
+Description=uno input tests
+wmclass=uno.app
+wmclassmatch=1
+position=0,0
+positionrule=2
+noborder=true
+noborderrule=2

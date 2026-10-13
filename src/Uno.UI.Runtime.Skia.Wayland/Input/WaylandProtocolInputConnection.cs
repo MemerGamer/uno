@@ -38,13 +38,18 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		Pointer = proxy;
 		WaylandDiagnostics.Trace($"input: wl_pointer v{proxy.Version} bound");
 		bool focused = false;
-		EventHandler<WlPointer.EnterEventArgs> enter = (_, e) => { focused = _ownsSurface(e.Surface); if (focused) { sink.Enter(e.Serial, e.SurfaceX.ToDouble(), e.SurfaceY.ToDouble()); } };
-		EventHandler<WlPointer.LeaveEventArgs> leave = (_, e) => { if (focused) { sink.Leave(); } focused = false; };
-		EventHandler<WlPointer.MotionEventArgs> motion = (_, e) => { if (focused) { sink.Motion(e.Time, e.SurfaceX.ToDouble(), e.SurfaceY.ToDouble()); } };
-		EventHandler<WlPointer.ButtonEventArgs> button = (_, e) => { if (focused) { sink.Button(e.Time, e.Button, e.State); } };
-		EventHandler<WlPointer.AxisEventArgs> axis = (_, e) => { if (focused) { sink.Axis(e.Time, e.Axis, e.Value.ToDouble()); if (proxy.Version < 5) { sink.Frame(); } } };
+		EventHandler<WlPointer.EnterEventArgs> enter = (_, e) =>
+		{
+			focused = _ownsSurface(e.Surface);
+			Trace($"input: pointer enter serial={e.Serial} at {e.SurfaceX.ToDouble():0.##},{e.SurfaceY.ToDouble():0.##} owned={focused}");
+			if (focused) { sink.Enter(e.Serial, e.SurfaceX.ToDouble(), e.SurfaceY.ToDouble()); }
+		};
+		EventHandler<WlPointer.LeaveEventArgs> leave = (_, e) => { if (focused) { Trace($"input: pointer leave"); sink.Leave(); } focused = false; };
+		EventHandler<WlPointer.MotionEventArgs> motion = (_, e) => { if (focused) { Trace($"input: pointer motion {e.SurfaceX.ToDouble():0.##},{e.SurfaceY.ToDouble():0.##}"); sink.Motion(e.Time, e.SurfaceX.ToDouble(), e.SurfaceY.ToDouble()); } };
+		EventHandler<WlPointer.ButtonEventArgs> button = (_, e) => { if (focused) { Trace($"input: pointer button 0x{e.Button:x} state={e.State}"); sink.Button(e.Time, e.Button, e.State); } };
+		EventHandler<WlPointer.AxisEventArgs> axis = (_, e) => { if (focused) { Trace($"input: pointer axis {e.Axis} value={e.Value.ToDouble():0.##}"); sink.Axis(e.Time, e.Axis, e.Value.ToDouble()); if (proxy.Version < 5) { sink.Frame(); } } };
 		EventHandler<WlPointer.AxisDiscreteEventArgs> discrete = (_, e) => { if (focused) { sink.AxisDiscrete(e.Axis, e.Discrete); } };
-		EventHandler<WlPointer.AxisValue120EventArgs> value120 = (_, e) => { if (focused) { sink.AxisValue120(e.Axis, e.Value120); } };
+		EventHandler<WlPointer.AxisValue120EventArgs> value120 = (_, e) => { if (focused) { Trace($"input: pointer axis {e.Axis} value120={e.Value120}"); sink.AxisValue120(e.Axis, e.Value120); } };
 		EventHandler<WlPointer.AxisStopEventArgs> stop = (_, e) => { if (focused) { sink.AxisStop(e.Axis); } };
 		EventHandler<WlPointer.FrameEventArgs> frame = (_, _) => sink.Frame();
 		proxy.Enter += enter;
@@ -82,11 +87,11 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 			WaylandDiagnostics.Trace($"input: keymap format={e.Format} size={e.Size}");
 			sink.Keymap(e.Format, e.Fd, e.Size);
 		};
-		EventHandler<WlKeyboard.EnterEventArgs> enter = (_, e) => { if (_ownsSurface(e.Surface)) { sink.Enter(MemoryMarshal.Cast<byte, uint>(e.Keys.AsSpan())); } };
-		EventHandler<WlKeyboard.LeaveEventArgs> leave = (_, e) => { if (_ownsSurface(e.Surface)) { sink.Leave(); } };
-		EventHandler<WlKeyboard.KeyEventArgs> key = (_, e) => sink.Key(e.Key, e.State);
-		EventHandler<WlKeyboard.ModifiersEventArgs> modifiers = (_, e) => sink.UpdateModifiers(e.ModsDepressed, e.ModsLatched, e.ModsLocked, e.Group);
-		EventHandler<WlKeyboard.RepeatInfoEventArgs> repeat = (_, e) => sink.RepeatInfo(e.Rate, e.Delay);
+		EventHandler<WlKeyboard.EnterEventArgs> enter = (_, e) => { if (_ownsSurface(e.Surface)) { Trace($"input: keyboard enter"); sink.Enter(MemoryMarshal.Cast<byte, uint>(e.Keys.AsSpan())); } };
+		EventHandler<WlKeyboard.LeaveEventArgs> leave = (_, e) => { if (_ownsSurface(e.Surface)) { Trace($"input: keyboard leave"); sink.Leave(); } };
+		EventHandler<WlKeyboard.KeyEventArgs> key = (_, e) => { Trace($"input: key {e.Key} state={e.State}"); sink.Key(e.Key, e.State); };
+		EventHandler<WlKeyboard.ModifiersEventArgs> modifiers = (_, e) => { Trace($"input: modifiers depressed=0x{e.ModsDepressed:x} locked=0x{e.ModsLocked:x} group={e.Group}"); sink.UpdateModifiers(e.ModsDepressed, e.ModsLatched, e.ModsLocked, e.Group); };
+		EventHandler<WlKeyboard.RepeatInfoEventArgs> repeat = (_, e) => { Trace($"input: repeat rate={e.Rate} delay={e.Delay}"); sink.RepeatInfo(e.Rate, e.Delay); };
 		proxy.Keymap += keymap;
 		proxy.Enter += enter;
 		proxy.Leave += leave;
@@ -121,6 +126,13 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		proxy.Cancel += cancel;
 		binding.Remove.Add(() => { proxy.Down -= down; proxy.Up -= up; proxy.Motion -= motion; proxy.Frame -= frame; proxy.Cancel -= cancel; });
 		return binding;
+	}
+	private static void Trace(FormattableString message)
+	{
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant(message));
+		}
 	}
 	private sealed class Binding : IDisposable
 	{

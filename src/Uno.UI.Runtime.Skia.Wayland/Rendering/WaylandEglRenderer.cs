@@ -118,7 +118,7 @@ internal sealed class WaylandEglRenderer : IDisposable
 		Require(_eglSurface != IntPtr.Zero, "eglCreateWindowSurface");
 		Require(WaylandRenderNative.eglMakeCurrent(_display, _eglSurface, _eglSurface, _context) != 0, "eglMakeCurrent");
 		// Frame callbacks pace presentation; a swap interval would make eglSwapBuffers block while the surface is hidden.
-		WaylandRenderNative.eglSwapInterval(_display, 0);
+		_ = WaylandRenderNative.eglSwapInterval(_display, 0);
 		_glInterface = GRGlInterface.CreateGles(WaylandRenderNative.eglGetProcAddress)
 			?? throw new NotSupportedException("Skia GLES interface creation failed.");
 		_grContext = GRContext.CreateGl(_glInterface)
@@ -154,14 +154,14 @@ internal sealed class WaylandEglRenderer : IDisposable
 		_glInterface = null;
 		if (_display != IntPtr.Zero)
 		{
-			WaylandRenderNative.eglMakeCurrent(_display, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+			_ = WaylandRenderNative.eglMakeCurrent(_display, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
 			if (_eglSurface != IntPtr.Zero)
 			{
-				WaylandRenderNative.eglDestroySurface(_display, _eglSurface);
+				_ = WaylandRenderNative.eglDestroySurface(_display, _eglSurface);
 			}
 			if (_context != IntPtr.Zero)
 			{
-				WaylandRenderNative.eglDestroyContext(_display, _context);
+				_ = WaylandRenderNative.eglDestroyContext(_display, _context);
 			}
 		}
 		_eglSurface = IntPtr.Zero;
@@ -185,7 +185,7 @@ internal sealed class WaylandEglRenderer : IDisposable
 		_disposed = true;
 		if (_context != IntPtr.Zero && _eglSurface != IntPtr.Zero)
 		{
-			WaylandRenderNative.eglMakeCurrent(_display, _eglSurface, _eglSurface, _context);
+			_ = WaylandRenderNative.eglMakeCurrent(_display, _eglSurface, _eglSurface, _context);
 		}
 		DestroyContext(abandon: _grContext?.IsAbandoned == true);
 		if (_window != IntPtr.Zero)

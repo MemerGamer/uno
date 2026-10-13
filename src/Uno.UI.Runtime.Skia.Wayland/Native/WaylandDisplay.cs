@@ -267,8 +267,8 @@ public sealed unsafe class WaylandDisplay : IDisposable
 			}
 			if (_wakeRead >= 0)
 			{
-				Posix.close(_wakeRead);
-				Posix.close(_wakeWrite);
+				_ = Posix.close(_wakeRead);
+				_ = Posix.close(_wakeWrite);
 				_wakeRead = _wakeWrite = -1;
 			}
 			_thread = null;

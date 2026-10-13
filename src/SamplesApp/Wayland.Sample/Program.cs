@@ -6,6 +6,7 @@ using System;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Uno.UI.Hosting;
 
@@ -33,30 +34,52 @@ public static class Program
 
 public sealed class App : Application
 {
+	// Fixed layout so injected input can target logical coordinates: the test compositor places the window at 0,0 without decorations.
 	protected override void OnLaunched(LaunchActivatedEventArgs args)
 	{
 		var window = new Window { Title = "Uno Wayland sample" };
-		var counter = new TextBlock { Text = "Clicks: 0", FontSize = 24, Foreground = new SolidColorBrush(Colors.White), HorizontalAlignment = HorizontalAlignment.Center };
+		var white = new SolidColorBrush(Colors.White);
+		var counter = new TextBlock { Text = "Clicks: 0", FontSize = 24, Foreground = white };
 		var clicks = 0;
-		var button = new Button { Content = "Click me", HorizontalAlignment = HorizontalAlignment.Center };
-		button.Click += (_, _) => counter.Text = $"Clicks: {++clicks}";
-		var panel = new StackPanel { Spacing = 16, VerticalAlignment = VerticalAlignment.Center };
-		panel.Children.Add(new TextBlock { Text = "Hello from native Wayland", FontSize = 36, Foreground = new SolidColorBrush(Colors.White), HorizontalAlignment = HorizontalAlignment.Center });
-		panel.Children.Add(new Border { Width = 240, Height = 80, Background = new SolidColorBrush(Colors.Orange), CornerRadius = new CornerRadius(12), HorizontalAlignment = HorizontalAlignment.Center });
-		panel.Children.Add(counter);
-		panel.Children.Add(button);
-		window.Content = new Grid { Background = new SolidColorBrush(Colors.SteelBlue), Children = { panel } };
+		var button = new Button { Content = "Click me", Width = 160, Height = 48 };
+		button.Click += (_, _) =>
+		{
+			counter.Text = $"Clicks: {++clicks}";
+			Console.WriteLine($"Button: clicked ({clicks})");
+		};
+		button.PointerEntered += (_, e) => Console.WriteLine($"Button: pointer entered at {e.GetCurrentPoint(null).Position}");
+		button.PointerExited += (_, e) => Console.WriteLine($"Button: pointer exited at {e.GetCurrentPoint(null).Position}");
+		var textBox = new TextBox { Width = 300, PlaceholderText = "Type here" };
+		textBox.TextChanged += (_, _) => Console.WriteLine($"TextBox: text=[{textBox.Text}] selection={textBox.SelectionStart}+{textBox.SelectionLength}");
+		textBox.SelectionChanged += (_, _) => Console.WriteLine($"TextBox: selection={textBox.SelectionStart}+{textBox.SelectionLength}");
+		var items = new StackPanel();
+		for (var i = 0; i < 40; i++)
+		{
+			items.Children.Add(new TextBlock { Text = $"Row {i}", FontSize = 18, Foreground = white });
+		}
+		var scroller = new ScrollViewer { Width = 300, Height = 200, Content = items, Background = new SolidColorBrush(Colors.DarkSlateBlue) };
+		scroller.ViewChanged += (_, e) => { if (!e.IsIntermediate) { Console.WriteLine($"ScrollViewer: offset={scroller.VerticalOffset}"); } };
+		var canvas = new Canvas { Background = new SolidColorBrush(Colors.SteelBlue) };
+		Place(canvas, new TextBlock { Text = "Hello from native Wayland", FontSize = 28, Foreground = white }, 40, 0);
+		Place(canvas, button, 40, 60);
+		Place(canvas, counter, 220, 68);
+		Place(canvas, textBox, 40, 140);
+		Place(canvas, scroller, 40, 220);
+		canvas.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler((_, e) => Console.WriteLine($"Key: down {e.Key} repeat={e.KeyStatus.WasKeyDown}")), true);
+		canvas.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler((_, e) => Console.WriteLine($"Pointer: moved {e.GetCurrentPoint(null).Position}")), true);
+		canvas.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler((_, e) => Console.WriteLine($"Pointer: wheel {e.GetCurrentPoint(null).Properties.MouseWheelDelta}")), true);
 		if (Environment.GetEnvironmentVariable("WAYLAND_SAMPLE_ANIMATE") == "1")
 		{
 			// Continuous animation: one UI frame per Rendering tick, reported once per second.
 			var frames = 0;
-			var frameText = new TextBlock { FontSize = 18, Foreground = new SolidColorBrush(Colors.White), HorizontalAlignment = HorizontalAlignment.Center };
-			panel.Children.Add(frameText);
+			var frameText = new TextBlock { FontSize = 18, Foreground = white };
+			Place(canvas, frameText, 400, 68);
 			CompositionTarget.Rendering += (_, _) => frameText.Text = $"UI frames: {++frames}";
 			var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
 			timer.Tick += (_, _) => Console.WriteLine($"UI frames: {frames}");
 			timer.Start();
 		}
+		window.Content = canvas;
 		window.Activate();
 		var display = Windows.Graphics.Display.DisplayInformation.GetForCurrentView();
 		void ReportDisplay() => Console.WriteLine($"DisplayInformation: {display.ScreenWidthInRawPixels}x{display.ScreenHeightInRawPixels} scale {display.RawPixelsPerViewPixel} dpi {display.LogicalDpi} diagonal {display.DiagonalSizeInInches?.ToString() ?? "n/a"}");
@@ -65,8 +88,16 @@ public sealed class App : Application
 		Console.WriteLine("OnLaunched: window activated");
 	}
 
+	private static void Place(Canvas canvas, FrameworkElement element, double left, double top)
+	{
+		Canvas.SetLeft(element, left);
+		Canvas.SetTop(element, top);
+		canvas.Children.Add(element);
+	}
+
 	public App()
 	{
+		Resources.MergedDictionaries.Add(new XamlControlsResources());
 		UnhandledException += (_, e) => Console.Error.WriteLine($"Unhandled: {e.Exception}");
 	}
 }

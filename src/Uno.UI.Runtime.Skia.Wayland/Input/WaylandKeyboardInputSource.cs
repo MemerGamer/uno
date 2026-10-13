@@ -97,7 +97,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			return;
 		}
 		// The compositor owns state: do not additionally call xkb_state_update_key.
-		WaylandXkb.UpdateMask(_state, depressed, latched, locked, 0, 0, group);
+		_ = WaylandXkb.UpdateMask(_state, depressed, latched, locked, 0, 0, group);
 		Modifiers = VirtualKeyModifiers.None;
 		_levelThree = WaylandXkb.ModActive(_state, "Mod5", 8) > 0;
 		if (WaylandXkb.ModActive(_state, "Shift", 8) > 0)

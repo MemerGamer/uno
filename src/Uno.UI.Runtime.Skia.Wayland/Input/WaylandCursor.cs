@@ -39,6 +39,7 @@ internal sealed unsafe partial class WaylandCursor : IDisposable
 		}
 		if (cursor is null)
 		{
+			Trace($"cursor: hidden serial={serial}");
 			_surface.Hide(serial);
 			return;
 		}
@@ -60,6 +61,7 @@ internal sealed unsafe partial class WaylandCursor : IDisposable
 		};
 		if (_shapeDevice is { } device)
 		{
+			Trace($"cursor: {cursor.Type} -> cursor-shape-v1 shape {shape} serial={serial}");
 			device.SetShape(serial, shape);
 			return;
 		}
@@ -98,6 +100,7 @@ internal sealed unsafe partial class WaylandCursor : IDisposable
 		var buffer = ImageGetBuffer((nint)image);
 		if (buffer != 0)
 		{
+			Trace($"cursor: {cursor.Type} -> theme cursor {name} {image->Width}x{image->Height} scale={_scale} serial={serial}");
 			_surface.Show(serial, buffer, checked((int)image->Width), checked((int)image->Height), (int)image->HotspotX / _scale, (int)image->HotspotY / _scale, _scale);
 		}
 	}
@@ -114,6 +117,13 @@ internal sealed unsafe partial class WaylandCursor : IDisposable
 		{
 			ThemeDestroy(_theme);
 			_theme = 0;
+		}
+	}
+	private static void Trace(FormattableString message)
+	{
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant(message));
 		}
 	}
 	[StructLayout(LayoutKind.Sequential)]

@@ -151,13 +151,13 @@ internal sealed class WaylandSoftwareRenderer : IDisposable
 				proxy?.Dispose();
 				if (_memory != IntPtr.Zero && _memory != new IntPtr(-1))
 				{
-					WaylandRenderNative.munmap(_memory, _length);
+					_ = WaylandRenderNative.munmap(_memory, _length);
 				}
 				throw;
 			}
 			finally
 			{
-				WaylandRenderNative.close(fd);
+				_ = WaylandRenderNative.close(fd);
 			}
 		}
 		private void OnRelease(object? sender, EventArgs args) => _released(this);
@@ -166,7 +166,7 @@ internal sealed class WaylandSoftwareRenderer : IDisposable
 			Proxy.Release -= OnRelease;
 			Surface.Dispose();
 			Proxy.Dispose();
-			WaylandRenderNative.munmap(_memory, _length);
+			_ = WaylandRenderNative.munmap(_memory, _length);
 		}
 	}
 }
