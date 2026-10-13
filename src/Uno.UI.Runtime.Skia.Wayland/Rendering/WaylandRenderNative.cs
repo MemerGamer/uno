@@ -2,6 +2,7 @@
 #nullable enable
 using System;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland.Rendering;
 
@@ -30,7 +31,7 @@ internal static partial class WaylandRenderNative
 	[LibraryImport("libEGL.so.1")]
 	internal static partial int eglBindAPI(uint api);
 	[LibraryImport("libEGL.so.1")]
-	internal static partial int eglChooseConfig(IntPtr display, int[] attributes, out IntPtr config, int count, out int matches);
+	internal static partial int eglChooseConfig(IntPtr display, int[] attributes, [Out, MarshalUsing(CountElementName = nameof(count))] IntPtr[]? configs, int count, out int matches);
 	[LibraryImport("libEGL.so.1")]
 	internal static partial int eglGetConfigAttrib(IntPtr display, IntPtr config, int attribute, out int value);
 	[LibraryImport("libEGL.so.1")]

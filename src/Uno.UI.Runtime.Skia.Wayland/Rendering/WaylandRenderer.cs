@@ -29,8 +29,8 @@ internal sealed class WaylandRenderer : IDisposable
 	// Raised on the owner thread when an unrecoverable GPU failure switched rendering to wl_shm.
 	public event EventHandler? BackendChanged;
 
-	// draw paints a complete frame into the target; stalled lets the UI produce a frame while presentation is blocked.
-	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Action<SKSurface, GRContext?> draw, Action stalled, Action<Action> postToOwner, bool forceSoftware = false)
+	// Both frame paths validate the GPU context before the host draws its retained layer.
+	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Action<SKSurface, GRContext?> draw, Action<GRContext?> produceUnpresentedFrame, Action releaseRetainedLayer, Action<Action> postToOwner, bool forceSoftware = false)
 	{
 		_surface = surface;
 		_shm = shm;
@@ -41,7 +41,7 @@ internal sealed class WaylandRenderer : IDisposable
 		{
 			try
 			{
-				_egl = new WaylandEglRenderer(display, surface);
+				_egl = new WaylandEglRenderer(display, surface, releaseRetainedLayer);
 			}
 			catch (Exception error) when (error is InvalidOperationException or NotSupportedException or DllNotFoundException or EntryPointNotFoundException)
 			{
@@ -52,7 +52,7 @@ internal sealed class WaylandRenderer : IDisposable
 		{
 			UseSoftware();
 		}
-		_scheduler = new WaylandFrameScheduler(surface, Render, stalled, postToOwner);
+		_scheduler = new WaylandFrameScheduler(surface, Render, () => ProduceUnpresentedFrame(produceUnpresentedFrame), postToOwner);
 	}
 
 	// Call only after acknowledging the associated xdg_surface.configure serial.
@@ -70,6 +70,24 @@ internal sealed class WaylandRenderer : IDisposable
 	}
 
 	public void Invalidate() => _scheduler.Invalidate();
+
+	public void ProduceUnpresentedFrame(Action<GRContext?> produce)
+	{
+		ObjectDisposedException.ThrowIf(_disposed, this);
+		if (_egl is { } egl)
+		{
+			try
+			{
+				var size = Scale.Apply(Math.Max(_width, 1), Math.Max(_height, 1));
+				egl.EnsureContext(size.Width, size.Height);
+			}
+			catch (Exception error) when (egl.IsContextLost)
+			{
+				FallBackToSoftware(error);
+			}
+		}
+		produce(GpuContext);
+	}
 
 	private void UseSoftware()
 	{

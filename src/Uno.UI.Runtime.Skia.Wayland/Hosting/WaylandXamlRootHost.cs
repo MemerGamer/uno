@@ -49,7 +49,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		_renderThread = new WaylandRenderThread($"Uno Wayland render {id}", OnRenderError);
 		_renderThread.Post(() =>
 		{
-			_renderer = new WaylandRenderer(connection.Display.NativeHandle, surface, connection.Shm, viewport, Draw, () => RenderContent(_renderer?.GpuContext), _renderThread.Post);
+			_renderer = new WaylandRenderer(connection.Display.NativeHandle, surface, connection.Shm, viewport, Draw, RenderContent, ReleaseRetainedLayer, _renderThread.Post);
 			_renderer.BackendChanged += (_, _) => OnBackendSelected();
 			OnBackendSelected();
 		});
@@ -95,7 +95,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 				{
 					// Uno schedules its next UI frame from the native frame request, so keep consuming
 					// frames before the first configure even though nothing can be presented yet.
-					RenderContent(_renderer?.GpuContext);
+					_renderer?.ProduceUnpresentedFrame(RenderContent);
 				}
 			});
 		}
@@ -156,9 +156,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		if (gpuContext != _layerContext)
 		{
 			// A new context (recreated after loss, or the wl_shm fallback) cannot use the old layer: redraw fully.
-			_retainedLayer.Dispose();
-			_canvasSurface?.Dispose();
-			_canvasSurface = null;
+			ReleaseRetainedLayer();
 			_layerContext = gpuContext;
 		}
 		if (RootElement?.Visual.CompositionTarget is CompositionTarget compositionTarget)
@@ -179,6 +177,14 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 				return _canvasSurface.Canvas;
 			});
 		}
+	}
+
+	private void ReleaseRetainedLayer()
+	{
+		_retainedLayer.Dispose();
+		_canvasSurface?.Dispose();
+		_canvasSurface = null;
+		_layerContext = null;
 	}
 
 	private void OnRenderError(Exception error)
@@ -233,12 +239,10 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		});
 		_renderThread.Post(() =>
 		{
-			// The retained layer belongs to the renderer's GPU context: release it first.
-			_retainedLayer.Dispose();
 			_renderer?.Dispose();
 			_renderer = null;
-			_canvasSurface?.Dispose();
-			_canvasSurface = null;
+			// Releases the wl_shm canvas; the GPU layer was released with the renderer's context.
+			ReleaseRetainedLayer();
 			display.Post(destroyProtocolObjects);
 		});
 		_renderThread.Dispose();

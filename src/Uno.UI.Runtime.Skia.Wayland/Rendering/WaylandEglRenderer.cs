@@ -22,12 +22,14 @@ internal sealed class WaylandEglRenderer : IDisposable
 	private const int EglAlphaSize = 0x3021;
 	private const int EglStencilSize = 0x3026;
 	private const int EglSamples = 0x3031;
+	private const int EglMinSwapInterval = 0x303B;
 	private const int EglContextClientVersion = 0x3098;
 	private const int EglContextLost = 0x300E;
 	private const uint EglGlesApi = 0x30A0;
 	private const uint GlRgba8 = 0x8058;
 
 	private readonly IntPtr _window;
+	private readonly Action _releaseRetainedLayer;
 	private IntPtr _display;
 	private IntPtr _config;
 	private IntPtr _context;
@@ -42,15 +44,19 @@ internal sealed class WaylandEglRenderer : IDisposable
 	private int _stencil;
 	private bool _disposed;
 
-	public WaylandEglRenderer(IntPtr display, WlSurface surface)
+	public WaylandEglRenderer(IntPtr display, WlSurface surface, Action releaseRetainedLayer)
 	{
+		_releaseRetainedLayer = releaseRetainedLayer;
 		try
 		{
 			_display = WaylandEglDisplay.Acquire(display);
 			Require(WaylandRenderNative.eglBindAPI(EglGlesApi) != 0, "eglBindAPI");
-			Require(WaylandRenderNative.eglChooseConfig(_display,
-				[EglSurfaceType, EglWindowBit, EglRenderableType, EglGles2Bit, EglRedSize, 8, EglGreenSize, 8, EglBlueSize, 8, EglAlphaSize, 8, EglStencilSize, 8, EglNone],
-				out _config, 1, out var count) != 0 && count > 0, "eglChooseConfig");
+			int[] attributes = [EglSurfaceType, EglWindowBit, EglRenderableType, EglGles2Bit, EglRedSize, 8, EglGreenSize, 8, EglBlueSize, 8, EglAlphaSize, 8, EglStencilSize, 8, EglNone];
+			Require(WaylandRenderNative.eglChooseConfig(_display, attributes, null, 0, out var count) != 0 && count > 0, "eglChooseConfig");
+			var configs = new IntPtr[count];
+			Require(WaylandRenderNative.eglChooseConfig(_display, attributes, configs, configs.Length, out count) != 0, "eglChooseConfig");
+			_config = WaylandEglConfig.Select(configs.AsSpan(0, count), config =>
+				WaylandRenderNative.eglGetConfigAttrib(_display, config, EglMinSwapInterval, out var interval) != 0 ? interval : null);
 			Require(WaylandRenderNative.eglGetConfigAttrib(_display, _config, EglSamples, out _samples) != 0, "EGL_SAMPLES");
 			Require(WaylandRenderNative.eglGetConfigAttrib(_display, _config, EglStencilSize, out _stencil) != 0, "EGL_STENCIL_SIZE");
 			_window = WaylandRenderNative.wl_egl_window_create(surface.Handle, 1, 1);
@@ -67,7 +73,7 @@ internal sealed class WaylandEglRenderer : IDisposable
 	// Set while a lost context is being replaced; a failure then means the GPU path is unusable.
 	public bool IsContextLost { get; private set; }
 
-	// Current on the render thread between frames, so the retained layer can be drawn outside Render.
+	// Call EnsureContext before using this context for an unpresented frame.
 	public GRContext? GpuContext => _grContext;
 
 	public bool Render(int width, int height, Action<SKSurface, GRContext> draw)
@@ -77,10 +83,35 @@ internal sealed class WaylandEglRenderer : IDisposable
 		{
 			return false;
 		}
+		EnsureContext(width, height);
+		draw(_surface!, _grContext!);
+		_grContext!.Flush();
+		// eglSwapBuffers commits the wl_surface, including the frame callback requested by the scheduler.
+		if (WaylandRenderNative.eglSwapBuffers(_display, _eglSurface) == 0)
+		{
+			var error = WaylandRenderNative.eglGetError();
+			if (error != EglContextLost)
+			{
+				throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture, $"eglSwapBuffers failed: 0x{error:X}."));
+			}
+			RecreateContext(width, height);
+			return false;
+		}
+		return true;
+	}
+
+	public void EnsureContext(int width, int height)
+	{
+		ObjectDisposedException.ThrowIf(_disposed, this);
 		if (_grContext!.IsAbandoned || WaylandRenderNative.eglMakeCurrent(_display, _eglSurface, _eglSurface, _context) == 0)
 		{
-			RecreateContext();
+			RecreateContext(width, height);
 		}
+		UpdateSurface(width, height);
+	}
+
+	private void UpdateSurface(int width, int height)
+	{
 		if (_surface is null || _width != width || _height != height)
 		{
 			_surface?.Dispose();
@@ -94,20 +125,6 @@ internal sealed class WaylandEglRenderer : IDisposable
 			_width = width;
 			_height = height;
 		}
-		draw(_surface, _grContext!);
-		_grContext!.Flush();
-		// eglSwapBuffers commits the wl_surface, including the frame callback requested by the scheduler.
-		if (WaylandRenderNative.eglSwapBuffers(_display, _eglSurface) == 0)
-		{
-			var error = WaylandRenderNative.eglGetError();
-			if (error != EglContextLost)
-			{
-				throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture, $"eglSwapBuffers failed: 0x{error:X}."));
-			}
-			RecreateContext();
-			return false;
-		}
-		return true;
 	}
 
 	private void CreateContext()
@@ -118,14 +135,14 @@ internal sealed class WaylandEglRenderer : IDisposable
 		Require(_eglSurface != IntPtr.Zero, "eglCreateWindowSurface");
 		Require(WaylandRenderNative.eglMakeCurrent(_display, _eglSurface, _eglSurface, _context) != 0, "eglMakeCurrent");
 		// Frame callbacks pace presentation; a swap interval would make eglSwapBuffers block while the surface is hidden.
-		_ = WaylandRenderNative.eglSwapInterval(_display, 0);
+		Require(WaylandRenderNative.eglSwapInterval(_display, 0) != 0, "eglSwapInterval");
 		_glInterface = GRGlInterface.CreateGles(WaylandRenderNative.eglGetProcAddress)
 			?? throw new NotSupportedException("Skia GLES interface creation failed.");
 		_grContext = GRContext.CreateGl(_glInterface)
 			?? throw new NotSupportedException("Skia GLES context creation failed.");
 	}
 
-	private void RecreateContext()
+	private void RecreateContext(int width, int height)
 	{
 		if (this.Log().IsEnabled(LogLevel.Warning))
 		{
@@ -134,20 +151,22 @@ internal sealed class WaylandEglRenderer : IDisposable
 		IsContextLost = true;
 		DestroyContext(abandon: true);
 		CreateContext();
+		UpdateSurface(width, height);
 		IsContextLost = false;
 	}
 
 	private void DestroyContext(bool abandon)
 	{
+		if (abandon)
+		{
+			_grContext?.AbandonContext(releaseResources: false);
+		}
+		_releaseRetainedLayer();
 		_surface?.Dispose();
 		_surface = null;
 		_target?.Dispose();
 		_target = null;
 		_width = _height = 0;
-		if (abandon)
-		{
-			_grContext?.AbandonContext(releaseResources: false);
-		}
 		_grContext?.Dispose();
 		_grContext = null;
 		_glInterface?.Dispose();
@@ -183,11 +202,12 @@ internal sealed class WaylandEglRenderer : IDisposable
 			return;
 		}
 		_disposed = true;
+		var abandon = IsContextLost || _grContext?.IsAbandoned == true;
 		if (_context != IntPtr.Zero && _eglSurface != IntPtr.Zero)
 		{
-			_ = WaylandRenderNative.eglMakeCurrent(_display, _eglSurface, _eglSurface, _context);
+			abandon |= WaylandRenderNative.eglMakeCurrent(_display, _eglSurface, _eglSurface, _context) == 0;
 		}
-		DestroyContext(abandon: _grContext?.IsAbandoned == true);
+		DestroyContext(abandon);
 		if (_window != IntPtr.Zero)
 		{
 			WaylandRenderNative.wl_egl_window_destroy(_window);
