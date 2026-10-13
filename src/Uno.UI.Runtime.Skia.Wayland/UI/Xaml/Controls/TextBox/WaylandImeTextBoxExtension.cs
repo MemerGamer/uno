@@ -18,6 +18,7 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 /// </summary>
 internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 {
+	private const int MaximumCommittedStates = 64;
 	private const uint ChangeCauseInputMethod = 0;
 	private const uint ChangeCauseOther = 1;
 
@@ -33,7 +34,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 	// Under _stateLock (the display's SyncRoot): the state of each commit, keyed by its serial, so a done
 	// applies to the session and surrounding text it was computed for.
 	private readonly object _stateLock;
-	private readonly Dictionary<uint, (long Session, TextBox TextBox, WaylandTextInputText.SurroundingText? Surrounding)> _committedStates = new();
+	private readonly Dictionary<uint, (long Session, TextBox TextBox, WaylandTextInputText.SurroundingText? Surrounding, string Text, long Revision)> _committedStates = new();
 	private uint _commitSerial;
 	private long _session;
 
@@ -43,6 +44,9 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 	private WlSurface? _textBoxSurface;
 	private long _readOnlyToken;
 	private long _enabledToken;
+	private long _textToken;
+	private long _textRevision;
+	private string _revisionText = string.Empty;
 	private bool _enabled;
 	private bool _supportsSurrounding;
 	private bool _isComposing;
@@ -99,6 +103,8 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			EndImeSession();
 		}
 		_textBox = textBox;
+		_revisionText = textBox.Text ?? string.Empty;
+		_textToken = textBox.RegisterPropertyChangedCallback(TextBox.TextProperty, (_, _) => UpdateTextRevision(textBox));
 		_readOnlyToken = textBox.RegisterPropertyChangedCallback(TextBox.IsReadOnlyProperty, (_, _) => UpdateState(textBox));
 		_enabledToken = textBox.RegisterPropertyChangedCallback(TextBox.IsEnabledProperty, (_, _) => UpdateState(textBox));
 		_textBoxSurface = textBox.XamlRoot is { } xamlRoot && XamlRootMap.GetHostForRoot(xamlRoot) is WaylandXamlRootHost host ? host.Surface : null;
@@ -120,6 +126,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		Disable();
 		if (_textBox is { } textBox)
 		{
+			textBox.UnregisterPropertyChangedCallback(TextBox.TextProperty, _textToken);
 			textBox.UnregisterPropertyChangedCallback(TextBox.IsReadOnlyProperty, _readOnlyToken);
 			textBox.UnregisterPropertyChangedCallback(TextBox.IsEnabledProperty, _enabledToken);
 		}
@@ -135,6 +142,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		{
 			return;
 		}
+		UpdateTextRevision(textBox);
 		if (textBox.IsReadOnly || !textBox.IsEnabled)
 		{
 			Disable();
@@ -158,7 +166,9 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			_commitSerial = unchecked(_commitSerial + 1);
 			if (_enabled && _textBox is { } textBox)
 			{
-				_committedStates[_commitSerial] = (_session, textBox, _supportsSurrounding ? _surroundingText : null);
+				_committedStates[_commitSerial] = (_session, textBox, _supportsSurrounding ? _surroundingText : null, GetTextWithoutPreedit(textBox), _textRevision);
+				// An input method need not answer every commit, so only a window of recent states is kept.
+				_committedStates.Remove(unchecked(_commitSerial - MaximumCommittedStates));
 			}
 		}
 	}
@@ -274,7 +284,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		{
 			if (_committedStates.TryGetValue(args.Serial, out var state))
 			{
-				WaylandConnection.PostToUI(() => Apply(args.Serial, state.Session, state.TextBox, state.Surrounding, preedit, preeditCursor, commit, deleteBefore, deleteAfter));
+				WaylandConnection.PostToUI(() => Apply(args.Serial, state.Session, state.TextBox, state.Surrounding, state.Text, state.Revision, preedit, preeditCursor, commit, deleteBefore, deleteAfter));
 			}
 		}
 	}
@@ -290,7 +300,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 
 	// Applies a done event in the order the protocol specifies: delete surrounding text (dropping the preedit
 	// first), insert the commit string, then show the new preedit. A preedit update alone keeps the composition.
-	private void Apply(uint serial, long session, TextBox textBox, WaylandTextInputText.SurroundingText? surrounding, string? preedit, int preeditCursor, string? commit, uint deleteBefore, uint deleteAfter)
+	private void Apply(uint serial, long session, TextBox textBox, WaylandTextInputText.SurroundingText? surrounding, string text, long revision, string? preedit, int preeditCursor, string? commit, uint deleteBefore, uint deleteAfter)
 	{
 		if (!_enabled || session != _session || textBox != _textBox || textBox.IsReadOnly || !textBox.IsEnabled)
 		{
@@ -301,10 +311,20 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			if (_committedStates.TryGetValue(serial, out var state))
 			{
 				surrounding = state.Surrounding;
+				text = state.Text;
+				revision = state.Revision;
 			}
 		}
-		_deferState = serial != _commitSerial;
 		var deleting = deleteBefore != 0 || deleteAfter != 0;
+		if (deleting && (revision != _textRevision || text != GetTextWithoutPreedit(textBox)))
+		{
+			// The deletion offsets refer to text that changed since; resynchronize instead of deleting other text.
+			WaylandDiagnostics.Trace("text-input: stale deletion, resetting");
+			Disable();
+			Enable();
+			return;
+		}
+		_deferState = serial != _commitSerial;
 		var wasComposing = _isComposing;
 		_applyingInputMethodChange = true;
 		try
@@ -327,6 +347,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		}
 		finally
 		{
+			_revisionText = textBox.Text ?? string.Empty;
 			_applyingInputMethodChange = false;
 		}
 		lock (_stateLock)
@@ -343,7 +364,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			}
 			if (_committedStates.ContainsKey(serial))
 			{
-				_committedStates[serial] = (session, textBox, _supportsSurrounding ? _surroundingText : null);
+				_committedStates[serial] = (session, textBox, _supportsSurrounding ? _surroundingText : null, GetTextWithoutPreedit(textBox), _textRevision);
 			}
 		}
 		// A preedit-only update leaves the surrounding text unchanged; its start and end move the caret.
@@ -351,6 +372,22 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		{
 			SendState(textBox, ChangeCauseInputMethod);
 		}
+	}
+
+	private void UpdateTextRevision(TextBox textBox)
+	{
+		var text = textBox.Text ?? string.Empty;
+		if (!_applyingInputMethodChange && text != _revisionText)
+		{
+			_revisionText = text;
+			_textRevision++;
+		}
+	}
+
+	private string GetTextWithoutPreedit(TextBox textBox)
+	{
+		var text = textBox.Text ?? string.Empty;
+		return _isComposing ? text.Remove(textBox.CompositionStartIndex, textBox.CompositionLength) : text;
 	}
 
 	private WaylandTextInputText.SurroundingText CalculateSurrounding(TextBox textBox)

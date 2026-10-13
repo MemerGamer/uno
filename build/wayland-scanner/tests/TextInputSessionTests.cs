@@ -287,6 +287,90 @@ public sealed class TextInputSessionTests
 	}
 
 	[TestMethod]
+	public void SameLengthEditRejectsQueuedDeletionAndCommit()
+	{
+		var host = new Host("abc", 1);
+		host.Input.Delete(1, 0);
+		host.Input.Text("X");
+		host.Input.Finish();
+		host.Box.Text = "xyz";
+		WaylandConnection.Drain();
+		Assert.AreEqual("xyz", host.Box.Text);
+		Assert.AreEqual("xyz", host.Input.Surrounding!.Value.Text);
+	}
+
+	[TestMethod]
+	public void EditAndRevertStillInvalidatesOldRevision()
+	{
+		var host = new Host();
+		host.Input.Delete(1, 0);
+		host.Input.Finish();
+		host.Box.Text = "xyz";
+		host.Box.Text = "abc";
+		WaylandConnection.Drain();
+		Assert.AreEqual("abc", host.Box.Text);
+	}
+
+	[TestMethod]
+	public void QueuedBatchCannotDeleteTextChangedByAnotherSerial()
+	{
+		var host = new Host();
+		host.Input.Delete(1, 0);
+		host.Input.Text("X");
+		host.Input.Finish();
+		host.Box.Select(2, 0);
+		host.Extension.UpdateState(host.Box);
+		host.Input.Delete(1, 0);
+		host.Input.Text("Y");
+		host.Input.Finish();
+		WaylandConnection.Drain();
+		Assert.AreEqual("Xbc", host.Box.Text);
+		Assert.AreEqual("Xbc", host.Input.Surrounding!.Value.Text);
+	}
+
+	[TestMethod]
+	public void StaleCommitWithoutDeletionAppliesAfterApplicationEdit()
+	{
+		var host = new Host("abc", 3);
+		var serial = host.Input.Serial;
+		// A key the input method forwarded edits the text before the input method saw the new state.
+		host.Box.Text = "ab";
+		host.Box.Select(2, 0);
+		host.Extension.UpdateState(host.Box);
+		host.Input.Text("x");
+		host.Input.Finish(serial);
+		WaylandConnection.Drain();
+		Assert.AreEqual("abx", host.Box.Text);
+		Assert.IsTrue(host.Input.Enabled);
+	}
+
+	[TestMethod]
+	public void UnacknowledgedStateHistoryIsBoundedWithoutReset()
+	{
+		var host = new Host();
+		var serial = host.Input.Serial;
+		for (var i = 0; i < 1000; i++)
+		{
+			host.Box.Select(i % 3, 0);
+			host.Extension.UpdateState(host.Box);
+		}
+		// One commit per update: no disable/enable resets.
+		Assert.AreEqual(serial + 1000, host.Input.Serial);
+		var states = (System.Collections.ICollection)typeof(WaylandImeTextBoxExtension)
+			.GetField("_committedStates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+			.GetValue(host.Extension)!;
+		Assert.IsTrue(states.Count <= 64);
+		// A done for a retired state is ignored.
+		host.Input.Delete(1, 0);
+		host.Input.Text("X");
+		host.Finish(serial);
+		Assert.AreEqual("abc", host.Box.Text);
+		host.Input.Text("Y");
+		host.Finish();
+		Assert.AreEqual("Yabc", host.Box.Text);
+	}
+
+	[TestMethod]
 	public void PendingEventsOnlyApplyOnDoneAndResetAfterIt()
 	{
 		var host = new Host();

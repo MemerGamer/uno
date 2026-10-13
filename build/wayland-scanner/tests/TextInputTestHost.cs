@@ -8,6 +8,7 @@ namespace Microsoft.UI.Xaml.Controls
 	internal sealed class TextBox
 	{
 		public static object IsReadOnlyProperty { get; } = new();
+		public static object TextProperty { get; } = new();
 		public static object IsEnabledProperty { get; } = new();
 		private readonly Dictionary<long, (object Property, Action<object, object> Callback)> _callbacks = new();
 		private long _nextToken;
@@ -28,7 +29,26 @@ namespace Microsoft.UI.Xaml.Controls
 			}
 		}
 		public bool IsEnabled { get; set; } = true;
-		public string Text { get; set; } = string.Empty;
+		private string _text = string.Empty;
+		public string Text
+		{
+			get => _text;
+			set
+			{
+				if (_text == value)
+				{
+					return;
+				}
+				_text = value;
+				foreach (var entry in _callbacks.Values.ToArray())
+				{
+					if (entry.Property == TextProperty)
+					{
+						entry.Callback(this, TextProperty);
+					}
+				}
+			}
+		}
 		public int SelectionStart { get; private set; }
 		public int SelectionLength { get; private set; }
 		public bool IsBackwardSelection { get; set; }

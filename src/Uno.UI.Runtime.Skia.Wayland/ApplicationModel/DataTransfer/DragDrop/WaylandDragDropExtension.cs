@@ -105,11 +105,12 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 
 	internal void Leave()
 	{
-		if (_session is not null)
+		if (_session is { } session)
 		{
 			_session = null;
 			StopAcceptancePoll();
 			CoreDragDropManager.ProcessAborted(_fakePointerId);
+			Complete(session, DataPackageOperation.None);
 		}
 	}
 
@@ -140,6 +141,11 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 	// the data they requested has been received.
 	private void Complete(Session session, DataPackageOperation result)
 	{
+		if (session.Completed)
+		{
+			return;
+		}
+		session.Completed = true;
 		// wl_data_offer.finish is only valid once an action was negotiated, and lets the source delete moved data,
 		// so it is sent only when the drop handlers performed the selected action.
 		var succeeded = session.Dropped && session.DropAction != 0 && (WaylandDataFormats.ToDndActions(result) & session.DropAction) != 0;
@@ -177,6 +183,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		public Point Position { get; set; }
 		// Null until the first motion was answered, so the first answer is always sent.
 		public DataPackageOperation? Accepted { get; set; }
+		public bool Completed { get; set; }
 		public bool Dropped { get; set; }
 		public uint DropAction { get; set; }
 	}
