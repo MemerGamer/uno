@@ -70,7 +70,7 @@ internal sealed class WaylandDataDevice
 	internal WaylandDisplay Display => _connection.Display;
 
 	/// <summary>Raised on the dispatch thread when the selection changes while one of our surfaces has keyboard focus.</summary>
-	internal event Action? SelectionChanged;
+	internal event EventHandler? SelectionChanged;
 
 	internal WaylandDataOffer? Selection
 	{
@@ -99,7 +99,7 @@ internal sealed class WaylandDataDevice
 	{
 		_selection?.Destroy();
 		_selection = e.Id is { } id ? Claim(id) : null;
-		SelectionChanged?.Invoke();
+		SelectionChanged?.Invoke(this, EventArgs.Empty);
 	}
 
 	private void OnEnter(object? sender, WlDataDevice.EnterEventArgs e)

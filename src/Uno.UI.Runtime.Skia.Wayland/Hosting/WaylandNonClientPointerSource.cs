@@ -93,11 +93,11 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 		return Enum.IsDefined(kind);
 	}
 
-	private void OnPointerButton(uint serial, uint button, uint state)
+	private void OnPointerButton(object? sender, WlPointer.ButtonEventArgs args)
 	{
-		if (state == 1)
+		if (args.State == 1)
 		{
-			_press = new Press(serial, button);
+			_press = new Press(args.Serial, args.Button);
 		}
 	}
 

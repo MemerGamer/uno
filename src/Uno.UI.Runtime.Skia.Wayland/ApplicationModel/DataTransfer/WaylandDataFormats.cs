@@ -69,24 +69,26 @@ internal static class WaylandDataFormats
 			return await view.GetDataAsync(mimeType) switch
 			{
 				byte[] bytes => bytes,
-				string text => Encoding.UTF8.GetBytes(text),
+				string text => await EncodeAsync(text, Encoding.UTF8),
 				_ => null,
 			};
 		}
 		if (mimeType is WaylandFileUris.UriListMimeType or WaylandFileUris.GnomeCopiedFilesMimeType && formats.Contains(StandardDataFormats.StorageItems))
 		{
 			var paths = (await view.GetStorageItemsAsync()).Select(item => item.Path).Where(path => !string.IsNullOrEmpty(path));
-			return Encoding.UTF8.GetBytes(mimeType == WaylandFileUris.UriListMimeType
-				? WaylandFileUris.FormatUriList(paths)
-				: WaylandFileUris.FormatGnomeCopiedFiles(paths));
+			var localPaths = paths.ToArray();
+			return await Task.Run(() => Encoding.UTF8.GetBytes(mimeType == WaylandFileUris.UriListMimeType
+				? WaylandFileUris.FormatUriList(localPaths)
+				: WaylandFileUris.FormatGnomeCopiedFiles(localPaths)));
 		}
 		if (mimeType == ImageMimeTypes[0] && formats.Contains(StandardDataFormats.Bitmap))
 		{
-			return await GetPngAsync(await view.GetBitmapAsync());
+			var reference = await view.GetBitmapAsync();
+			return await Task.Run(() => GetPngAsync(reference));
 		}
 		if (mimeType == HtmlMimeType && formats.Contains(StandardDataFormats.Html))
 		{
-			return Encoding.UTF8.GetBytes(await view.GetHtmlFormatAsync());
+			return await EncodeAsync(await view.GetHtmlFormatAsync(), Encoding.UTF8);
 		}
 		if (TextMimeTypes.Contains(mimeType))
 		{
@@ -94,10 +96,13 @@ internal static class WaylandDataFormats
 				: formats.Contains(StandardDataFormats.Uri) ? (await view.GetUriAsync()).ToString()
 				: formats.Contains(StandardDataFormats.WebLink) ? (await view.GetWebLinkAsync()).ToString()
 				: null;
-			return text is null ? null : (mimeType == "STRING" ? Encoding.Latin1 : Encoding.UTF8).GetBytes(text);
+			return text is null ? null : await EncodeAsync(text, mimeType == "STRING" ? Encoding.Latin1 : Encoding.UTF8);
 		}
 		return null;
 	}
+
+	private static Task<byte[]> EncodeAsync(string text, Encoding encoding)
+		=> Task.Run(() => encoding.GetBytes(text));
 
 	private static async Task<byte[]?> GetPngAsync(RandomAccessStreamReference reference)
 	{
@@ -113,7 +118,8 @@ internal static class WaylandDataFormats
 			return bytes;
 		}
 		using var bitmap = SKBitmap.Decode(bytes);
-		return bitmap?.Encode(SKEncodedImageFormat.Png, 100)?.ToArray();
+		using var encoded = bitmap?.Encode(SKEncodedImageFormat.Png, 100);
+		return encoded?.ToArray();
 	}
 
 	/// <summary>Adds the offered content to <paramref name="package"/>; data is received only when requested.</summary>

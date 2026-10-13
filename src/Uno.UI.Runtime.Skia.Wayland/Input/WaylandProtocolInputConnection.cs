@@ -29,12 +29,12 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 	// The live wl_pointer, for cursor surfaces and cursor-shape devices. Dispatch thread only.
 	public WlPointer? Pointer { get; private set; }
 	// Raised on the dispatch thread before the wl_pointer is released, so cursor objects can go first.
-	public event Action? PointerReleasing;
+	public event EventHandler? PointerReleasing;
 	// Raised on the dispatch thread with the serial of each keyboard enter, key and pointer button event.
-	public event Action<uint>? InputSerial;
-	// Raised on the dispatch thread with (serial, button, state) for buttons on this window's surface, before the
-	// pointer source posts them to the UI thread.
-	public event Action<uint, uint, uint>? PointerButton;
+	public event EventHandler<uint>? InputSerial;
+	// Raised on the dispatch thread for buttons on this window's surface, before the pointer source posts them
+	// to the UI thread.
+	public event EventHandler<WlPointer.ButtonEventArgs>? PointerButton;
 
 	public IDisposable GetPointer(WaylandPointerInputSource sink)
 	{
@@ -51,7 +51,7 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		};
 		EventHandler<WlPointer.LeaveEventArgs> leave = (_, e) => { if (focused) { Trace($"input: pointer leave"); sink.Leave(); } focused = false; };
 		EventHandler<WlPointer.MotionEventArgs> motion = (_, e) => { if (focused) { Trace($"input: pointer motion {e.SurfaceX.ToDouble():0.##},{e.SurfaceY.ToDouble():0.##}"); sink.Motion(e.Time, e.SurfaceX.ToDouble(), e.SurfaceY.ToDouble()); } };
-		EventHandler<WlPointer.ButtonEventArgs> button = (_, e) => { if (focused) { Trace($"input: pointer button 0x{e.Button:x} state={e.State}"); PointerButton?.Invoke(e.Serial, e.Button, e.State); sink.Button(e.Time, e.Button, e.State); } };
+		EventHandler<WlPointer.ButtonEventArgs> button = (_, e) => { if (focused) { Trace($"input: pointer button 0x{e.Button:x} state={e.State}"); PointerButton?.Invoke(this, e); sink.Button(e.Time, e.Button, e.State); } };
 		EventHandler<WlPointer.AxisEventArgs> axis = (_, e) => { if (focused) { Trace($"input: pointer axis {e.Axis} value={e.Value.ToDouble():0.##}"); sink.Axis(e.Time, e.Axis, e.Value.ToDouble()); if (proxy.Version < 5) { sink.Frame(); } } };
 		EventHandler<WlPointer.AxisDiscreteEventArgs> discrete = (_, e) => { if (focused) { sink.AxisDiscrete(e.Axis, e.Discrete); } };
 		EventHandler<WlPointer.AxisValue120EventArgs> value120 = (_, e) => { if (focused) { Trace($"input: pointer axis {e.Axis} value120={e.Value120}"); sink.AxisValue120(e.Axis, e.Value120); } };
@@ -66,12 +66,12 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		proxy.AxisValue120 += value120;
 		proxy.AxisStop += stop;
 		proxy.Frame += frame;
-		EventHandler<WlPointer.ButtonEventArgs> buttonSerial = (_, e) => InputSerial?.Invoke(e.Serial);
+		EventHandler<WlPointer.ButtonEventArgs> buttonSerial = (_, e) => InputSerial?.Invoke(this, e.Serial);
 		proxy.Button += buttonSerial;
 		binding.Remove.Add(() => proxy.Button -= buttonSerial);
 		binding.Remove.Add(() =>
 		{
-			PointerReleasing?.Invoke();
+			PointerReleasing?.Invoke(this, EventArgs.Empty);
 			Pointer = null;
 			proxy.Enter -= enter;
 			proxy.Leave -= leave;
@@ -106,8 +106,8 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		proxy.Key += key;
 		proxy.Modifiers += modifiers;
 		proxy.RepeatInfo += repeat;
-		EventHandler<WlKeyboard.EnterEventArgs> enterSerial = (_, e) => InputSerial?.Invoke(e.Serial);
-		EventHandler<WlKeyboard.KeyEventArgs> keySerial = (_, e) => InputSerial?.Invoke(e.Serial);
+		EventHandler<WlKeyboard.EnterEventArgs> enterSerial = (_, e) => InputSerial?.Invoke(this, e.Serial);
+		EventHandler<WlKeyboard.KeyEventArgs> keySerial = (_, e) => InputSerial?.Invoke(this, e.Serial);
 		proxy.Enter += enterSerial;
 		proxy.Key += keySerial;
 		binding.Remove.Add(() =>
