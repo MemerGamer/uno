@@ -5,12 +5,19 @@
 using System;
 using Microsoft.UI.Xaml;
 using Uno.ApplicationModel.Core;
+using Uno.Extensions.Storage.Pickers;
 using Uno.Extensions.System;
 using Uno.Foundation.Extensibility;
+using Uno.Graphics;
+using Uno.Helpers.Theming;
 using Uno.UI.Hosting;
 using Uno.UI.Runtime.Skia.Extensions.System;
 using Uno.UI.Xaml.Controls;
+using Uno.UI.Xaml.Controls.Extensions;
+using Uno.WinUI.Runtime.Skia.Linux;
+using Windows.Storage.Pickers;
 using Windows.UI.Core;
+using Windows.UI.ViewManagement;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland;
 
@@ -32,7 +39,20 @@ internal static class WaylandRegistrations
 		ApiExtensibility.Register<IXamlRootHost>(typeof(IUnoCorePointerInputSource), host => ((WaylandXamlRootHost)host).PointerSource);
 		ApiExtensibility.Register<IXamlRootHost>(typeof(IUnoKeyboardInputSource), host => ((WaylandXamlRootHost)host).KeyboardSource);
 		ApiExtensibility.Register(typeof(ILauncherExtension), owner => new LinuxLauncherExtension(owner));
-		// TODO: application view, portal pickers/theme/text scale, clipboard, DnD, text input and OpenGL wrapper.
+		ApiExtensibility.Register(typeof(IApplicationViewExtension), owner => new WaylandApplicationViewExtension(owner, connection));
+		if (WaylandImeTextBoxExtension.TryCreate(connection) is { } ime)
+		{
+			ApiExtensibility.Register(typeof(IImeTextBoxExtension), _ => ime);
+			ApiExtensibility.Register(typeof(ITextBoxNotificationsProviderSingleton), _ => new WaylandTextBoxNotificationsProviderSingleton(ime));
+		}
+		var portalParentWindow = new WaylandPortalParentWindowProvider(connection);
+		ApiExtensibility.Register<FileOpenPicker>(typeof(IFileOpenPickerExtension), picker => new LinuxFilePickerExtension(picker, portalParentWindow));
+		ApiExtensibility.Register<FolderPicker>(typeof(IFolderPickerExtension), picker => new LinuxFilePickerExtension(picker, portalParentWindow));
+		ApiExtensibility.Register<FileSavePicker>(typeof(IFileSavePickerExtension), picker => new LinuxFileSaverExtension(picker, portalParentWindow));
+		ApiExtensibility.Register<XamlRoot>(typeof(INativeOpenGLWrapper), xamlRoot => new WaylandNativeOpenGLWrapper(xamlRoot, connection));
+		ApiExtensibility.Register(typeof(ISystemThemeHelperExtension), _ => LinuxSystemThemeHelper.Instance);
+		ApiExtensibility.Register(typeof(ITextScaleFactorExtension), _ => LinuxTextScaleFactorExtension.Instance);
+		// TODO: clipboard and drag and drop.
 	}
 }
 

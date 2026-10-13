@@ -34,6 +34,8 @@ internal sealed class WaylandConnection : IDisposable
 			FractionalScale = Viewporter is null ? null : TryBind<WpFractionalScaleManagerV1>(WpFractionalScaleManagerV1.ProtocolName, 1);
 			Decorations = TryBind<ZxdgDecorationManagerV1>(ZxdgDecorationManagerV1.ProtocolName, 1);
 			CursorShape = TryBind<WpCursorShapeManagerV1>(WpCursorShapeManagerV1.ProtocolName, 1);
+			Exporter = TryBind<ZxdgExporterV2>(ZxdgExporterV2.ProtocolName, 1);
+			TextInputManager = TryBind<ZwpTextInputManagerV3>(ZwpTextInputManagerV3.ProtocolName, 1);
 			// TODO: multiple seats and outputs; the first advertised one is used for now.
 			Seat = TryBind<WlSeat>(WlSeat.ProtocolName, 9);
 			if (Seat is not null)
@@ -67,6 +69,8 @@ internal sealed class WaylandConnection : IDisposable
 	internal WpFractionalScaleManagerV1? FractionalScale { get; }
 	internal ZxdgDecorationManagerV1? Decorations { get; }
 	internal WpCursorShapeManagerV1? CursorShape { get; }
+	internal ZxdgExporterV2? Exporter { get; }
+	internal ZwpTextInputManagerV3? TextInputManager { get; }
 	internal WlSeat? Seat { get; }
 	internal WlOutput? Output { get; }
 

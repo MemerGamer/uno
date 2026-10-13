@@ -5,6 +5,7 @@
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 	</PropertyGroup>
 	<Import Project="../targetframework-override-noplatform.props" />
+	<Import Project="../Uno.UI.Runtime.Skia.Linux.Shared/Uno.UI.Runtime.Skia.Linux.Shared.props" />
 	<PropertyGroup>
 		<GeneratePackageOnBuild Condition="'$(Configuration)'=='Release'">true</GeneratePackageOnBuild>
 		<Description>This package provides the platform support for Skia / Wayland in Uno Platform projects.</Description>
