@@ -171,7 +171,13 @@ public sealed class GeneratorTests
 			var count = 0;
 			foreach (var spec in ProtocolCatalog.Interfaces.Where(spec => spec.Name.StartsWith("wl_", StringComparison.Ordinal)))
 			{
-				var native = (WlInterface*)NativeLibrary.GetExport(library, spec.Name + "_interface");
+				// Interfaces newer than the installed libwayland are not exported; the host never needs its tables.
+				if (!NativeLibrary.TryGetExport(library, spec.Name + "_interface", out var export))
+				{
+					continue;
+				}
+
+				var native = (WlInterface*)export;
 				var managed = ProtocolMetadata.Get(spec.Name);
 				Assert.AreEqual(Text(native->Name), Text(managed->Name));
 				// The host passes its own interface tables to libwayland, so exported interface versions need not match.
