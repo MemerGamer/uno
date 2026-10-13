@@ -26,10 +26,17 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 	public void Post(Action action) => _post(action);
 	public void SetCursor(uint serial, CoreCursor? cursor) => _cursor(serial, cursor);
 
+	// The live wl_pointer, for cursor surfaces and cursor-shape devices. Dispatch thread only.
+	public WlPointer? Pointer { get; private set; }
+	// Raised on the dispatch thread before the wl_pointer is released, so cursor objects can go first.
+	public event Action? PointerReleasing;
+
 	public IDisposable GetPointer(WaylandPointerInputSource sink)
 	{
 		var proxy = _seat.GetPointer();
 		var binding = new Binding(proxy);
+		Pointer = proxy;
+		WaylandDiagnostics.Trace($"input: wl_pointer v{proxy.Version} bound");
 		bool focused = false;
 		EventHandler<WlPointer.EnterEventArgs> enter = (_, e) => { focused = _ownsSurface(e.Surface); if (focused) { sink.Enter(e.Serial, e.SurfaceX.ToDouble(), e.SurfaceY.ToDouble()); } };
 		EventHandler<WlPointer.LeaveEventArgs> leave = (_, e) => { if (focused) { sink.Leave(); } focused = false; };
@@ -51,6 +58,8 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		proxy.Frame += frame;
 		binding.Remove.Add(() =>
 		{
+			PointerReleasing?.Invoke();
+			Pointer = null;
 			proxy.Enter -= enter;
 			proxy.Leave -= leave;
 			proxy.Motion -= motion;
@@ -67,7 +76,12 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 	{
 		var proxy = _seat.GetKeyboard();
 		var binding = new Binding(proxy);
-		EventHandler<WlKeyboard.KeymapEventArgs> keymap = (_, e) => sink.Keymap(e.Format, e.Fd, e.Size);
+		WaylandDiagnostics.Trace($"input: wl_keyboard v{proxy.Version} bound");
+		EventHandler<WlKeyboard.KeymapEventArgs> keymap = (_, e) =>
+		{
+			WaylandDiagnostics.Trace($"input: keymap format={e.Format} size={e.Size}");
+			sink.Keymap(e.Format, e.Fd, e.Size);
+		};
 		EventHandler<WlKeyboard.EnterEventArgs> enter = (_, e) => { if (_ownsSurface(e.Surface)) { sink.Enter(MemoryMarshal.Cast<byte, uint>(e.Keys.AsSpan())); } };
 		EventHandler<WlKeyboard.LeaveEventArgs> leave = (_, e) => { if (_ownsSurface(e.Surface)) { sink.Leave(); } };
 		EventHandler<WlKeyboard.KeyEventArgs> key = (_, e) => sink.Key(e.Key, e.State);

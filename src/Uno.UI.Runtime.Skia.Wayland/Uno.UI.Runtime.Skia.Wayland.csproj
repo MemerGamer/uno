@@ -19,6 +19,12 @@
 		<InternalsVisibleTo Include="Uno.UI.Runtime.Skia.Wayland.Tests" />
 	</ItemGroup>
 	<ItemGroup>
+		<PackageReference Include="SkiaSharp.NativeAssets.Linux" />
+		<PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" />
+		<PackageReference Include="HarfbuzzSharp" />
+		<PackageReference Include="SkiaSharp" />
+	</ItemGroup>
+	<ItemGroup>
 		<ProjectReference Include="..\Uno.UI.Runtime.Skia\Uno.UI.Runtime.Skia.csproj" />
 		<ProjectReference Include="..\Uno.Foundation\Uno.Foundation.Skia.csproj" TreatAsPackageReference="false" PrivateAssets="all" />
 		<ProjectReference Include="..\Uno.UI\Uno.UI.Skia.csproj" />
