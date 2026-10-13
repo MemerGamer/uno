@@ -7,6 +7,7 @@ using Windows.Foundation;
 using Windows.System;
 using Windows.UI.Core;
 using Uno.UI.Hosting;
+using Uno.UI.Runtime.Linux;
 using Microsoft.Win32.SafeHandles;
 
 namespace Uno.UI.Runtime.Wayland.Input;
@@ -137,7 +138,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 		_pressed.Clear();
 		foreach (var key in heldKeys)
 		{
-			_pressed[key] = _state == 0 || key > uint.MaxValue - 8 ? VirtualKey.None : WaylandKeyMap.FromKeysym(WaylandXkb.GetSym(_state, key + 8));
+			_pressed[key] = _state == 0 || key > uint.MaxValue - 8 ? VirtualKey.None : LinuxKeyMap.FromKeysym(WaylandXkb.GetSym(_state, key + 8));
 		}
 		_dispatch(() => _activate(true));
 	}
@@ -190,7 +191,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 				return;
 			}
 			var sym = WaylandXkb.GetSym(_state, key + 8);
-			var vk = WaylandKeyMap.FromKeysym(sym);
+			var vk = LinuxKeyMap.FromKeysym(sym);
 			var wasDown = _pressed.ContainsKey(key);
 			uint? text = WaylandXkb.GetUtf32(_state, key + 8);
 			if (!wasDown && _compose is { } compose)
