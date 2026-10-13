@@ -47,6 +47,7 @@ internal static class WindowScenario
 			Step("maximize", () => Overlapped(window)!.Maximize()),
 			Step("restore", () => Overlapped(window)!.Restore()),
 			Step("resize 900x600", () => window.AppWindow.Resize(new SizeInt32 { Width = 900, Height = 600 })),
+			Step("TryResizeView 800x560", () => Console.WriteLine($"scenario: TryResizeView returned {Windows.UI.ViewManagement.ApplicationView.GetForCurrentView().TryResizeView(new Windows.Foundation.Size(800, 560))}")),
 			Step("min size 700x500", () => { Overlapped(window)!.PreferredMinimumWidth = 700; Overlapped(window)!.PreferredMinimumHeight = 500; }),
 			Step("full screen", () => window.AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen)),
 			Step("overlapped", () => window.AppWindow.SetPresenter(AppWindowPresenterKind.Overlapped)),
