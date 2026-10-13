@@ -38,13 +38,13 @@ public sealed class TextInputStateHistoryTests
 		Assert.AreEqual(1L, state.Session);
 		Assert.IsNull(state.Surrounding);
 		Assert.AreEqual(-1L, state.Revision);
-		Assert.IsTrue(WaylandImeTextBoxExtension.IsSerialInSession(10, 10, 100));
-		Assert.IsFalse(WaylandImeTextBoxExtension.IsSerialInSession(9, 10, 100));
-		Assert.IsFalse(WaylandImeTextBoxExtension.IsSerialInSession(101, 10, 100));
-		Assert.IsFalse(WaylandImeTextBoxExtension.IsSerialInSession(9, 10, 9));
-		Assert.IsTrue(WaylandImeTextBoxExtension.IsSerialInSession(uint.MaxValue, uint.MaxValue - 1, 2));
-		Assert.IsTrue(WaylandImeTextBoxExtension.IsSerialInSession(0, uint.MaxValue - 1, 2));
-		Assert.IsFalse(WaylandImeTextBoxExtension.IsSerialInSession(uint.MaxValue - 2, uint.MaxValue - 1, 2));
+		Assert.IsTrue(WaylandTextInputBatch.IsSerialInSession(10, 10, 100));
+		Assert.IsFalse(WaylandTextInputBatch.IsSerialInSession(9, 10, 100));
+		Assert.IsFalse(WaylandTextInputBatch.IsSerialInSession(101, 10, 100));
+		Assert.IsFalse(WaylandTextInputBatch.IsSerialInSession(9, 10, 9));
+		Assert.IsTrue(WaylandTextInputBatch.IsSerialInSession(uint.MaxValue, uint.MaxValue - 1, 2));
+		Assert.IsTrue(WaylandTextInputBatch.IsSerialInSession(0, uint.MaxValue - 1, 2));
+		Assert.IsFalse(WaylandTextInputBatch.IsSerialInSession(uint.MaxValue - 2, uint.MaxValue - 1, 2));
 	}
 
 	[TestMethod]
