@@ -22,6 +22,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 	private readonly Action<bool> _activate;
 	private readonly IWaylandInputConnection _connection;
 	private readonly Dictionary<uint, VirtualKey> _pressed = new();
+	private WaylandKeyboardCompose? _compose;
 	private nint _context, _keymap, _state;
 	private Timer? _repeat;
 	private uint _repeatKey;
@@ -71,6 +72,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			_context = context;
 			_keymap = keymap;
 			_state = state;
+			_compose = new WaylandKeyboardCompose(context, GetComposeLocale());
 		}
 		catch
 		{
@@ -88,6 +90,18 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			}
 			throw;
 		}
+	}
+
+	private static string GetComposeLocale()
+	{
+		foreach (var variable in new[] { "LC_ALL", "LC_CTYPE", "LANG" })
+		{
+			if (Environment.GetEnvironmentVariable(variable) is { Length: > 0 } locale)
+			{
+				return locale;
+			}
+		}
+		return "C";
 	}
 
 	public void UpdateModifiers(uint depressed, uint latched, uint locked, uint group)
@@ -131,6 +145,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 	public void Leave()
 	{
 		StopRepeat();
+		_compose?.Reset();
 		foreach (var key in _pressed)
 		{
 			Emit(key.Key, key.Value, false, false);
@@ -175,10 +190,21 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			{
 				return;
 			}
-			var vk = WaylandKeyMap.FromKeysym(WaylandXkb.GetSym(_state, key + 8));
+			var sym = WaylandXkb.GetSym(_state, key + 8);
+			var vk = WaylandKeyMap.FromKeysym(sym);
 			var wasDown = _pressed.ContainsKey(key);
+			uint? text = WaylandXkb.GetUtf32(_state, key + 8);
+			if (!wasDown && _compose is { } compose)
+			{
+				// Like keys taken by an input method, keys consumed by a dead-key or Compose sequence raise no key events.
+				text = compose.Feed(sym, text.Value);
+				if (text is null)
+				{
+					return;
+				}
+			}
 			_pressed[key] = vk;
-			Emit(key, vk, true, wasDown);
+			Emit(key, vk, true, wasDown, text);
 			if (_rate > 0 && WaylandXkb.Repeats(_keymap, key + 8) != 0)
 			{
 				StopRepeat();
@@ -202,9 +228,9 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			Emit(key, vk, false, true);
 		}
 	}
-	private void Emit(uint key, VirtualKey vk, bool down, bool previous)
+	private void Emit(uint key, VirtualKey vk, bool down, bool previous, uint? text = null)
 	{
-		var unicode = down && _state != 0 ? WaylandXkb.GetUtf32(_state, key + 8) : 0;
+		var unicode = text ?? (down && _state != 0 ? WaylandXkb.GetUtf32(_state, key + 8) : 0);
 		char? character = unicode is >= 32 and <= 0xffff && unicode is not (>= 0xd800 and <= 0xdfff) || unicode == 13 ? (char)unicode : null;
 		if (!_levelThree && (Modifiers & (VirtualKeyModifiers.Control | VirtualKeyModifiers.Menu | VirtualKeyModifiers.Windows)) != 0)
 		{
@@ -228,6 +254,8 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 	}
 	private void ClearKeymap()
 	{
+		_compose?.Dispose();
+		_compose = null;
 		if (_state != 0)
 		{
 			WaylandXkb.StateUnref(_state);

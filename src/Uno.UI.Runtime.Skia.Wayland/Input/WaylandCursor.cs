@@ -10,6 +10,7 @@ namespace Uno.WinUI.Runtime.Skia.Wayland.Input;
 
 internal interface IWaylandCursorSurface : IDisposable
 {
+	int GetScale(double scale);
 	// wl_pointer.set_cursor(serial, surface, hotspot), attach, damage, commit.
 	void Show(uint serial, nint buffer, int width, int height, int hotspotX, int hotspotY, int scale);
 	void Hide(uint serial);
@@ -65,7 +66,7 @@ internal sealed unsafe partial class WaylandCursor : IDisposable
 			device.SetShape(serial, shape);
 			return;
 		}
-		var integerScale = Math.Clamp((int)Math.Ceiling(scale), 1, 8);
+		var integerScale = _surface.GetScale(scale);
 		if (_theme == 0 || integerScale != _scale)
 		{
 			var theme = ThemeLoad(Environment.GetEnvironmentVariable("XCURSOR_THEME"), 24 * integerScale, _shm);

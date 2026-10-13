@@ -24,6 +24,16 @@ internal static partial class WaylandXkb
 	[LibraryImport(Library, EntryPoint = "xkb_state_key_get_utf32")] internal static partial uint GetUtf32(nint state, uint key);
 	[LibraryImport(Library, EntryPoint = "xkb_keymap_key_repeats")] internal static partial int Repeats(nint keymap, uint key);
 
+	[LibraryImport(Library, EntryPoint = "xkb_compose_table_new_from_locale", StringMarshalling = StringMarshalling.Utf8)] internal static partial nint ComposeTableNew(nint context, string locale, uint flags);
+	[LibraryImport(Library, EntryPoint = "xkb_compose_table_unref")] internal static partial void ComposeTableUnref(nint table);
+	[LibraryImport(Library, EntryPoint = "xkb_compose_state_new")] internal static partial nint ComposeStateNew(nint table, uint flags);
+	[LibraryImport(Library, EntryPoint = "xkb_compose_state_unref")] internal static partial void ComposeStateUnref(nint state);
+	[LibraryImport(Library, EntryPoint = "xkb_compose_state_feed")] internal static partial int ComposeFeed(nint state, uint keysym);
+	[LibraryImport(Library, EntryPoint = "xkb_compose_state_get_status")] internal static partial int ComposeStatus(nint state);
+	[LibraryImport(Library, EntryPoint = "xkb_compose_state_get_one_sym")] internal static partial uint ComposeGetSym(nint state);
+	[LibraryImport(Library, EntryPoint = "xkb_compose_state_reset")] internal static partial void ComposeReset(nint state);
+	[LibraryImport(Library, EntryPoint = "xkb_keysym_to_utf32")] internal static partial uint KeysymToUtf32(uint keysym);
+
 	internal static string ReadKeymap(int fd, uint size)
 	{
 		using var handle = new SafeFileHandle(fd, ownsHandle: true);

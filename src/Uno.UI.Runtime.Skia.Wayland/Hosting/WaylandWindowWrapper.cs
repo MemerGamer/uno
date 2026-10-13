@@ -752,6 +752,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			window.AppWindow.TitleBar.ExtendsContentIntoTitleBarChanged -= ExtendContentIntoTitleBar;
 		}
 		CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBarChanged -= OnCoreTitleBarChanged;
+		NonClientPointerSource.Dispose();
 		_connection.RemoveWindow(this);
 		_host.Dispose(() =>
 		{
