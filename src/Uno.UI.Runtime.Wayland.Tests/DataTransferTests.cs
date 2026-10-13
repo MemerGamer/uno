@@ -1,8 +1,11 @@
 #nullable enable
+
 using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Uno.UI.Runtime.Wayland;
 using Uno.UI.Runtime.Wayland.Native;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage.Streams;
 
 namespace Uno.UI.Runtime.Wayland.Tests;
 
@@ -11,6 +14,28 @@ public sealed partial class DataTransferTests
 {
 	private static readonly string[] ParsedUriList = ["/a", "/b", "/c", "/f"];
 	private static readonly string[] ParsedCut = ["/x"];
+
+	[TestMethod]
+	public async Task BitmapSerializationPreservesCallerOwnedStream()
+	{
+		var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC1sAAAAASUVORK5CYII=");
+		using var original = new MemoryStream(png);
+		using var stream = original.AsRandomAccessStream();
+		var package = new DataPackage();
+		package.SetBitmap(RandomAccessStreamReference.CreateFromStream(stream));
+		var view = package.GetView();
+		stream.Seek(7);
+
+		var first = await WaylandDataFormats.GetBytesAsync(view, "image/png");
+		var second = await WaylandDataFormats.GetBytesAsync(view, "image/png");
+
+		CollectionAssert.AreEqual(png, first);
+		CollectionAssert.AreEqual(first, second);
+		Assert.IsTrue(original.CanRead);
+		Assert.IsTrue(original.CanSeek);
+		stream.Seek(0);
+		Assert.AreEqual(0x89, original.ReadByte());
+	}
 
 	[TestMethod]
 	public void UriListRoundTripsLocalPaths()

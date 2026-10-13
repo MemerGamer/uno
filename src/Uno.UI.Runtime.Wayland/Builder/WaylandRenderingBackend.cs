@@ -1,3 +1,5 @@
+#nullable enable
+
 namespace Uno.UI.Hosting;
 
 /// <summary>

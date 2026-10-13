@@ -1,4 +1,5 @@
 #nullable enable
+
 // The MIT License (MIT)
 //
 // Copyright (c) .NET Foundation and Contributors

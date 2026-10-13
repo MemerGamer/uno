@@ -4,7 +4,7 @@ uid: Uno.Skia.Linux.Wayland
 
 # Using the Wayland host
 
-Uno Platform can run Skia Desktop apps as native [Wayland](https://wayland.freedesktop.org/) clients, without going through XWayland. A native Wayland window gets the scale the compositor picks for it, including fractional scales such as 125% or 150%, so text and images stay sharp on HiDPI displays where an XWayland window would be rendered at 100% and upscaled.
+Uno Platform can run Skia Desktop apps as native [Wayland](https://wayland.freedesktop.org/) clients, without going through XWayland. A native Wayland window gets the scale the compositor picks for it, including fractional scales such as 125% or 150%, so text and images stay sharp on HiDPI displays where an XWayland window would be rendered at 100% and scaled up.
 
 The Wayland host is opt-in. An app that doesn't register it keeps running through X11, including under XWayland.
 
@@ -88,9 +88,9 @@ Keyboard input supports XKB layouts, dead keys and compose sequences. Compositor
 
 ### Desktop portals and settings
 
-Open, save and folder pickers use the XDG Desktop Portal over the session D-Bus. Install `xdg-desktop-portal` and a backend appropriate to your desktop, and run the app in a session with a working D-Bus connection. When the compositor supports `xdg-foreign-v2`, the picker is parented to the exported Wayland window for the duration of the request. Without it, the portal can show an unparented dialog.
+Open, save and folder pickers use the XDG Desktop Portal over the session D-Bus. Install `xdg-desktop-portal` and a backend appropriate to your desktop, and run the app in a session with a working D-Bus connection. When the compositor supports `xdg-foreign-v2`, the picker is parented to the exported Wayland window for the duration of the request. Without it, the portal can show a dialog without a parent window.
 
-System theme and text scale use the desktop settings portal. Window activation and icons use the compositor's optional activation and toplevel-icon protocols.
+System theme and text scale use the desktop settings portal. Window activation and icons use the compositor's optional activation and top-level icon protocols.
 
 ### Diagnostics and environment variables
 
@@ -109,13 +109,14 @@ The runtime also reads the following session settings:
 |----------|----------|
 | `WAYLAND_DISPLAY` | Host selection and the Wayland display connection. |
 | `XCURSOR_THEME` | Cursor theme when the cursor-shape protocol is unavailable or disabled. |
-| `LC_ALL`, `LC_CTYPE`, `LANG` | Compose locale, using the first nonempty value in this order, or `C` when none is set. |
+| `LC_ALL`, `LC_CTYPE`, `LANG` | Compose locale, using the first non-empty value in this order, or `C` when none is set. |
 | `XDG_ACTIVATION_TOKEN` | Startup activation; the token is consumed and cleared after reading. |
 
 Enable Debug logging for the `Uno.UI.Runtime.Wayland.WaylandDiagnostics` category to trace window lifecycle and protocol activity.
 
 ### Limitations
 
+- Outgoing drag and drop to other applications is not implemented.
 - `WebView2` and `MediaPlayerElement` embed X11 windows, so they are not supported by the Wayland host.
 - Input uses the first seat advertised by the compositor. Output tracking follows the outputs entered by the window; the compositor determines its scale.
 - Wayland does not expose global window coordinates. Window placement and focus remain under compositor control.
