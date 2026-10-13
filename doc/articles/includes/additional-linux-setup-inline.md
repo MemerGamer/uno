@@ -29,7 +29,6 @@ If you are using Windows Subsystem for Linux (WSL), you can find specific instru
 
 > [!Video https://www.youtube-nocookie.com/embed/GGszH8PDf-w]
 
-
 For native Wayland, install the Wayland client, cursor and EGL libraries and `libxkbcommon`. Accelerated rendering also requires an EGL implementation, such as Mesa. Software rendering does not require EGL.
 
 File and folder pickers require a session D-Bus, `xdg-desktop-portal`, and a desktop-specific portal backend (for example `xdg-desktop-portal-gnome`, `xdg-desktop-portal-kde`, or `xdg-desktop-portal-gtk`). Install the backend that matches your session. IME composition requires a Wayland-capable input-method service and compositor support for `text-input-v3`.
