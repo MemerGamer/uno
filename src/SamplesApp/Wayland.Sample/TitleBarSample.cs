@@ -61,8 +61,14 @@ internal static class TitleBarSample
 				source.SetRegionRects(NonClientRegionKind.Caption, [Scaled(0, 0, titleBar.ActualWidth, titleBar.ActualHeight)]);
 				source.SetRegionRects(NonClientRegionKind.Passthrough, [Scaled(200, 4, 120, 32)]);
 			}
+			void OnXamlRootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => UpdateRegions();
 			titleBar.SizeChanged += (_, _) => UpdateRegions();
-			titleBar.Loaded += (_, _) => titleBar.XamlRoot!.Changed += (_, _) => UpdateRegions();
+			// Loaded can fire again after re-parenting, so subscribe once.
+			titleBar.Loaded += (_, _) =>
+			{
+				titleBar.XamlRoot!.Changed -= OnXamlRootChanged;
+				titleBar.XamlRoot.Changed += OnXamlRootChanged;
+			};
 		}
 		Console.WriteLine($"TitleBar: mode {mode}");
 		return root;
