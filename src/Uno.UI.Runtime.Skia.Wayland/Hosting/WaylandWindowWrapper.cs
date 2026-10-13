@@ -128,6 +128,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 		// Activation follows the configure activated state rather than keyboard focus.
 		_host = new WaylandXamlRootHost(connection, _id, window, root, _surface, _viewport, static _ => { });
+		NonClientPointerSource = new WaylandNonClientPointerSource(connection, _toplevel, window, _id, _host, () => Scale, Post);
 		connection.AddWindow(this);
 		RasterizationScale = 1;
 		titleBar.ExtendsContentIntoTitleBarChanged += ExtendContentIntoTitleBar;
@@ -147,6 +148,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	internal Window OwnerWindow { get; }
 	internal WaylandXamlRootHost Host => _host;
+	internal WaylandNonClientPointerSource NonClientPointerSource { get; }
 
 	public override object NativeWindow => _surface;
 
@@ -272,6 +274,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	public override void ExtendContentIntoTitleBar(bool extend)
 	{
 		base.ExtendContentIntoTitleBar(extend);
+		NonClientPointerSource.ExtendsContent = extend;
 		Post(() =>
 		{
 			_extendsContent = extend;

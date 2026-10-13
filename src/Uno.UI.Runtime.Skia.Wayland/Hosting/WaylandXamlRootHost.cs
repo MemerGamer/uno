@@ -82,6 +82,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 
 	internal WlSurface Surface { get; }
 	internal WaylandPointerInputSource PointerSource { get; }
+	internal WaylandProtocolInputConnection? Input => _input;
 	internal WaylandKeyboardInputSource KeyboardSource { get; }
 	// Written on the UI thread, read by the dispatch thread for cursor scaling.
 	internal double Scale { get; set; } = 1;

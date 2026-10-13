@@ -32,6 +32,9 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 	public event Action? PointerReleasing;
 	// Raised on the dispatch thread with the serial of each keyboard enter, key and pointer button event.
 	public event Action<uint>? InputSerial;
+	// Raised on the dispatch thread with (serial, button, state) for buttons on this window's surface, before the
+	// pointer source posts them to the UI thread.
+	public event Action<uint, uint, uint>? PointerButton;
 
 	public IDisposable GetPointer(WaylandPointerInputSource sink)
 	{
@@ -48,7 +51,7 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		};
 		EventHandler<WlPointer.LeaveEventArgs> leave = (_, e) => { if (focused) { Trace($"input: pointer leave"); sink.Leave(); } focused = false; };
 		EventHandler<WlPointer.MotionEventArgs> motion = (_, e) => { if (focused) { Trace($"input: pointer motion {e.SurfaceX.ToDouble():0.##},{e.SurfaceY.ToDouble():0.##}"); sink.Motion(e.Time, e.SurfaceX.ToDouble(), e.SurfaceY.ToDouble()); } };
-		EventHandler<WlPointer.ButtonEventArgs> button = (_, e) => { if (focused) { Trace($"input: pointer button 0x{e.Button:x} state={e.State}"); sink.Button(e.Time, e.Button, e.State); } };
+		EventHandler<WlPointer.ButtonEventArgs> button = (_, e) => { if (focused) { Trace($"input: pointer button 0x{e.Button:x} state={e.State}"); PointerButton?.Invoke(e.Serial, e.Button, e.State); sink.Button(e.Time, e.Button, e.State); } };
 		EventHandler<WlPointer.AxisEventArgs> axis = (_, e) => { if (focused) { Trace($"input: pointer axis {e.Axis} value={e.Value.ToDouble():0.##}"); sink.Axis(e.Time, e.Axis, e.Value.ToDouble()); if (proxy.Version < 5) { sink.Frame(); } } };
 		EventHandler<WlPointer.AxisDiscreteEventArgs> discrete = (_, e) => { if (focused) { sink.AxisDiscrete(e.Axis, e.Discrete); } };
 		EventHandler<WlPointer.AxisValue120EventArgs> value120 = (_, e) => { if (focused) { Trace($"input: pointer axis {e.Axis} value120={e.Value120}"); sink.AxisValue120(e.Axis, e.Value120); } };
