@@ -135,10 +135,12 @@ public sealed partial class DisplayTests
 		private int _client;
 		private uint _registry;
 		private readonly uint _compositorVersion;
+		private readonly bool _answerSync;
 
-		internal ProtocolPeer(uint compositorVersion = 6)
+		internal ProtocolPeer(uint compositorVersion = 6, bool answerSync = true)
 		{
 			_compositorVersion = compositorVersion;
+			_answerSync = answerSync;
 			if (socketpair(1, 1 | 0x80000, 0, out var pair) != 0)
 			{
 				throw new IOException($"socketpair failed: {Marshal.GetLastPInvokeError()}");
@@ -178,7 +180,7 @@ public sealed partial class DisplayTests
 						BinaryPrimitives.WriteUInt32LittleEndian(global.AsSpan(global.Length - 4), _compositorVersion);
 						Send(_registry, 0, global);
 					}
-					else if (id == 1 && opcode == 0)
+					else if (id == 1 && opcode == 0 && _answerSync)
 					{
 						var callback = BinaryPrimitives.ReadUInt32LittleEndian(body);
 						Send(callback, 0, BitConverter.GetBytes(42u));

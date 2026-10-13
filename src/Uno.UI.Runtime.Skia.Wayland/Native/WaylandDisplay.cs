@@ -13,6 +13,9 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 
 public sealed unsafe class WaylandDisplay : IDisposable
 {
+	// Bounds the startup roundtrip so a frozen compositor cannot hang host selection.
+	private const int StartupTimeoutMilliseconds = 5000;
+
 	private readonly Dictionary<nint, WaylandProxy> _proxies = new();
 	private readonly Dictionary<uint, WaylandGlobal> _globals = new();
 	private readonly ConcurrentQueue<Action> _commands = new();
@@ -80,7 +83,7 @@ public sealed unsafe class WaylandDisplay : IDisposable
 			display.Registry = new WlRegistry(display, registry);
 			display.Registry.Global += (_, evt) => display._globals[evt.Name] = new(evt.Name, evt.Interface, evt.Version);
 			display.Registry.GlobalRemove += (_, evt) => display._globals.Remove(evt.Name);
-			display.Roundtrip();
+			display.Roundtrip(StartupTimeoutMilliseconds);
 			return display;
 		}
 		catch
@@ -132,6 +135,51 @@ public sealed unsafe class WaylandDisplay : IDisposable
 			}
 			Check(WaylandNative.wl_display_roundtrip(_display));
 			ThrowCallbackError();
+		}
+	}
+
+	// Startup-only roundtrip that gives up after the timeout instead of blocking like wl_display_roundtrip.
+	private void Roundtrip(int timeoutMilliseconds)
+	{
+		lock (SyncRoot)
+		{
+			var done = false;
+			using var callback = Sync();
+			callback.Done += (_, _) => done = true;
+			var deadline = Environment.TickCount64 + timeoutMilliseconds;
+			while (!done)
+			{
+				while (WaylandNative.wl_display_prepare_read(_display) != 0)
+				{
+					Check(WaylandNative.wl_display_dispatch_pending(_display));
+				}
+				var remaining = deadline - Environment.TickCount64;
+				if (done || remaining <= 0)
+				{
+					WaylandNative.wl_display_cancel_read(_display);
+					if (done)
+					{
+						break;
+					}
+					throw new IOException($"The Wayland compositor did not answer within {timeoutMilliseconds} ms.");
+				}
+				var fd = new Posix.PollFd { Fd = FileDescriptor, Events = (short)(1 | (FlushCore() ? 4 : 0)) };
+				var result = Posix.poll(&fd, 1, (int)remaining);
+				if (result > 0 && (fd.Revents & 1) != 0)
+				{
+					Check(WaylandNative.wl_display_read_events(_display));
+				}
+				else
+				{
+					WaylandNative.wl_display_cancel_read(_display);
+					if ((fd.Revents & (8 | 16 | 32)) != 0)
+					{
+						throw new IOException("The Wayland connection closed during startup.");
+					}
+				}
+				Check(WaylandNative.wl_display_dispatch_pending(_display));
+				ThrowCallbackError();
+			}
 		}
 	}
 
@@ -344,8 +392,23 @@ public sealed unsafe class WaylandDisplay : IDisposable
 	{
 		if (result < 0)
 		{
-			throw new IOException($"Wayland connection error: {WaylandNative.wl_display_get_error(_display)}");
+			throw CreateConnectionError();
 		}
+	}
+
+	// A fatal display error: EPROTO carries the compositor's protocol error, anything else is an errno such as EPIPE.
+	private IOException CreateConnectionError()
+	{
+		var error = WaylandNative.wl_display_get_error(_display);
+		if (error == 71)
+		{
+			WlInterface* @interface = null;
+			uint id = 0;
+			var code = WaylandNative.wl_display_get_protocol_error(_display, &@interface, &id);
+			var name = @interface is null ? "unknown" : Marshal.PtrToStringUTF8((nint)@interface->Name);
+			return new IOException($"Wayland protocol error {code} on {name}@{id}.");
+		}
+		return new IOException($"Wayland connection error {error}: {Marshal.GetPInvokeErrorMessage(error)}.");
 	}
 	internal void ThrowIfUnavailable()
 	{

@@ -79,6 +79,7 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 		{
 			return true;
 		}
+		Interlocked.Exchange(ref _probedDisplay, null)?.Dispose();
 		try
 		{
 			// Connect performs the initial registry roundtrip.
