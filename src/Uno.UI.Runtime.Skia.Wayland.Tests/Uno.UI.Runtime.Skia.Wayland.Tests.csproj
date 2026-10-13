@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<TargetFrameworks>$(NetUnitTests)</TargetFrameworks>
+		<OutputType>Exe</OutputType>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<DisablePrivateProjectReference>true</DisablePrivateProjectReference>
+		<IsPackable>false</IsPackable>
+	</PropertyGroup>
+	<Import Project="../targetframework-override.props" />
+	<ItemGroup>
+		<PackageReference Include="MSTest" />
+		<ProjectReference Include="..\Uno.UI.Runtime.Skia.Wayland\Uno.UI.Runtime.Skia.Wayland.csproj" />
+		<ProjectReference Include="..\Uno.UWP\Uno.Skia.csproj" />
+		<ProjectReference Include="..\Uno.Foundation\Uno.Foundation.Skia.csproj" />
+	</ItemGroup>
+</Project>

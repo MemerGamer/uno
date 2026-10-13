@@ -29,7 +29,7 @@ internal static partial class WaylandHarfBuzz
 			foreach (var path in search.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
 			{
 				var libPath = Path.Combine(path, "libHarfBuzzSharp.so");
-				if (File.Exists(libPath) && dlopen(libPath, RTLD_NOW | RTLD_DEEPBIND) != IntPtr.Zero)
+				if (File.Exists(libPath) && DeepBind(libPath) != IntPtr.Zero)
 				{
 					return;
 				}
@@ -49,7 +49,21 @@ internal static partial class WaylandHarfBuzz
 		}
 	}
 
-	// libdl.so.2 rather than libc.so.6 so that glibc versions older than 2.34 are covered too.
-	[LibraryImport("libdl.so.2", StringMarshalling = StringMarshalling.Utf8)]
-	private static partial IntPtr dlopen(string path, int mode);
+	private static IntPtr DeepBind(string path)
+	{
+		try
+		{
+			return dlopen2(path, RTLD_NOW | RTLD_DEEPBIND);
+		}
+		catch (DllNotFoundException)
+		{
+			return dlopen1(path, RTLD_NOW | RTLD_DEEPBIND);
+		}
+	}
+
+	[LibraryImport("libdl.so", EntryPoint = "dlopen", StringMarshalling = StringMarshalling.Utf8)]
+	private static partial IntPtr dlopen1(string path, int mode);
+
+	[LibraryImport("libdl.so.2", EntryPoint = "dlopen", StringMarshalling = StringMarshalling.Utf8)]
+	private static partial IntPtr dlopen2(string path, int mode);
 }

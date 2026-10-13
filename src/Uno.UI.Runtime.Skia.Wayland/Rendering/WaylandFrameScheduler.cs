@@ -6,6 +6,14 @@ using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland.Rendering;
 
+internal enum WaylandRenderResult
+{
+	BufferUnavailable,
+	ContentRejected,
+	Presented,
+	ContextRecovered,
+}
+
 // All calls run on the render owner thread; frame callbacks arrive on the dispatch thread and are posted back to it.
 internal sealed class WaylandFrameScheduler : IDisposable
 {
@@ -14,18 +22,21 @@ internal sealed class WaylandFrameScheduler : IDisposable
 	internal static readonly TimeSpan StallInterval = TimeSpan.FromMilliseconds(100);
 
 	private readonly WlSurface _surface;
-	private readonly Func<bool> _render;
+	private readonly Func<WaylandRenderResult> _render;
 	private readonly Action _stalled;
 	private readonly Action<Action> _postToOwner;
 	private readonly Timer _stallTimer;
 	private WlCallback? _callback;
 	private bool _dirty;
+	// Rejection has no committed frame callback; invalidations must not bypass the wait or retry pace.
+	private bool _waitingForAvailability;
+	private bool _waitingForContentRetry;
 	private bool _stallArmed;
 	private int _presented;
 	private int _presentedWhenArmed;
 	private bool _disposed;
 
-	public WaylandFrameScheduler(WlSurface surface, Func<bool> render, Action stalled, Action<Action> postToOwner)
+	public WaylandFrameScheduler(WlSurface surface, Func<WaylandRenderResult> render, Action stalled, Action<Action> postToOwner)
 	{
 		_surface = surface;
 		_render = render;
@@ -48,11 +59,23 @@ internal sealed class WaylandFrameScheduler : IDisposable
 		}
 	}
 
-	public void BufferAvailable() => TryRender();
+	public void BufferAvailable()
+	{
+		_waitingForAvailability = false;
+		_waitingForContentRetry = false;
+		TryRender();
+	}
+
+	public void PresentationReady()
+	{
+		_waitingForAvailability = false;
+		_waitingForContentRetry = false;
+		Invalidate();
+	}
 
 	private void TryRender()
 	{
-		if (_disposed || !_dirty || _callback is not null)
+		if (_disposed || !_dirty || _callback is not null || _waitingForAvailability || _waitingForContentRetry)
 		{
 			return;
 		}
@@ -61,7 +84,8 @@ internal sealed class WaylandFrameScheduler : IDisposable
 		_callback.Done += OnDone;
 		try
 		{
-			if (_render())
+			var result = _render();
+			if (result == WaylandRenderResult.Presented)
 			{
 				_presented++;
 			}
@@ -69,6 +93,18 @@ internal sealed class WaylandFrameScheduler : IDisposable
 			{
 				CancelCallback();
 				_dirty = true;
+				_waitingForAvailability = result == WaylandRenderResult.BufferUnavailable;
+				_waitingForContentRetry = result == WaylandRenderResult.ContentRejected;
+				if (_waitingForContentRetry)
+				{
+					// No buffer was committed to drive the frame clock; bound retries with its stall timer.
+					ArmStallTimer();
+				}
+				if (result == WaylandRenderResult.ContextRecovered)
+				{
+					// A replaced context needs a fresh frame immediately.
+					_postToOwner(Invalidate);
+				}
 			}
 		}
 		catch
@@ -94,6 +130,16 @@ internal sealed class WaylandFrameScheduler : IDisposable
 		_stallArmed = false;
 		if (_disposed || !_dirty)
 		{
+			return;
+		}
+		if (_waitingForContentRetry)
+		{
+			_waitingForContentRetry = false;
+			TryRender();
+			if (_dirty)
+			{
+				ArmStallTimer();
+			}
 			return;
 		}
 		if (_presented != _presentedWhenArmed)

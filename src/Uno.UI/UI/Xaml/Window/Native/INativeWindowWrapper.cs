@@ -22,6 +22,9 @@ internal interface INativeWindowWrapper : INativeAppWindow
 
 	CoreWindowActivationState ActivationState { get; }
 
+	/// <summary>Gets whether native state and bounds are ready for managed activation.</summary>
+	bool IsReadyForActivation { get; }
+
 	bool WasShown { get; set; }
 
 	event EventHandler<Size>? SizeChanged;

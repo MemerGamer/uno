@@ -23,9 +23,10 @@ internal sealed class WaylandConnection : IDisposable
 	// Dispatch thread or SyncRoot.
 	private readonly Dictionary<uint, WaylandOutput> _outputs = new();
 	private volatile WaylandOutput? _defaultOutput;
-	// UI thread: render-thread teardown of closed windows that has not finished yet.
+	// UI thread: keep unfinished and failed teardowns so shutdown observes both.
 	private readonly List<Task> _retiringWindows = new();
 	private volatile bool _allWindowsClosed;
+	private volatile bool _uiCallbacksClosed;
 	// The launcher's startup token, consumed by the first activation (xdg-activation-v1 startup notification).
 	private string? _startupActivationToken = TakeStartupActivationToken();
 
@@ -171,8 +172,17 @@ internal sealed class WaylandConnection : IDisposable
 	internal void NotifyTextInputReceived() => TextInputReceived?.Invoke(this, EventArgs.Empty);
 
 
-	internal static void PostToUI(Action action)
-		=> NativeDispatcher.Main.Enqueue(action, NativeDispatcherPriority.High);
+	internal void PostToUI(Action action)
+		=> NativeDispatcher.Main.Enqueue(() =>
+		{
+			if (!_uiCallbacksClosed)
+			{
+				action();
+			}
+		}, NativeDispatcherPriority.High);
+
+	// UI thread: fence queued work before disconnecting a borrowed dispatcher.
+	internal void CloseUICallbacks() => _uiCallbacksClosed = true;
 
 	private static string? TakeStartupActivationToken()
 	{
@@ -232,9 +242,14 @@ internal sealed class WaylandConnection : IDisposable
 	internal void RemoveWindow(WaylandWindowWrapper window, Task completion)
 	{
 		_windows.Remove(window);
-		_retiringWindows.RemoveAll(task => task.IsCompleted);
-		_retiringWindows.Add(completion);
+		TrackWindowTeardown(completion);
 		_allWindowsClosed = _windows.Count == 0;
+	}
+
+	internal void TrackWindowTeardown(Task completion)
+	{
+		_retiringWindows.RemoveAll(task => task.IsCompletedSuccessfully);
+		_retiringWindows.Add(completion);
 	}
 
 	internal bool AllWindowsClosed => _allWindowsClosed;

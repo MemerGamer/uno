@@ -52,16 +52,19 @@ if ! $dry_run; then
 	mkdir -p -- "$feed"
 	[[ ! -e "$feed/Uno.WinUI.$version.nupkg" ]] || { echo 'Use a fresh version/feed; NuGet caches versions immutably' >&2; exit 1; }
 fi
+# Preserve the assembly version used by released Uno libraries.
 props=(-p:UnoTargetFrameworkOverride="$tfm" -p:Configuration=Release
-	-p:PackageVersion="$version" -p:Version="$version" -p:GeneratePackageOnBuild=false
+	-p:PackageVersion="$version" -p:InformationalVersion="$version" -p:GeneratePackageOnBuild=false
 	-p:UnoNugetOverrideVersion= -p:RepositoryUrl=https://github.com/MemerGamer/uno)
 if $strict; then
 	props+=(-p:ContinuousIntegrationBuild=true)
 else
 	props+=(-p:UnoFastDevBuild=true)
 fi
+# Extra MSBuild switches for constrained machines, e.g. WAYLAND_BUILD_ARGS="-m:2 -nodeReuse:false".
+read -ra extra_build_args <<< "${WAYLAND_BUILD_ARGS:-}"
 for project in "${projects[@]}"; do
-	run dotnet build "$root/src/$project" "${props[@]}" --verbosity minimal
+	run dotnet build "$root/src/$project" "${props[@]}" "${extra_build_args[@]}" --verbosity minimal
 done
 # These projects have normal SDK pack targets, unlike Uno.WinUI/Foundation/WinRT.
 for project in Uno.Foundation.Logging/Uno.Foundation.Logging.csproj \

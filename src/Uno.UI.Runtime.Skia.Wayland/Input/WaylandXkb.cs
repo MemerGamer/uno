@@ -1,4 +1,5 @@
-// Licensed under the MIT License. See LICENSE in the project root.
+// Licensed under the MIT License. See LICENSE in the project root for license information.
+
 #nullable enable
 
 using System;
@@ -8,7 +9,7 @@ using System.IO;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland.Input;
 
-// Minimal libxkbcommon binding for the Wayland keyboard; see input.md for shared-source extraction.
+// Minimal libxkbcommon binding for the Wayland keyboard.
 internal static partial class WaylandXkb
 {
 	private const string Library = "libxkbcommon.so.0";
@@ -30,9 +31,8 @@ internal static partial class WaylandXkb
 	[LibraryImport(Library, EntryPoint = "xkb_compose_state_unref")] internal static partial void ComposeStateUnref(nint state);
 	[LibraryImport(Library, EntryPoint = "xkb_compose_state_feed")] internal static partial int ComposeFeed(nint state, uint keysym);
 	[LibraryImport(Library, EntryPoint = "xkb_compose_state_get_status")] internal static partial int ComposeStatus(nint state);
-	[LibraryImport(Library, EntryPoint = "xkb_compose_state_get_one_sym")] internal static partial uint ComposeGetSym(nint state);
+	[LibraryImport(Library, EntryPoint = "xkb_compose_state_get_utf8")] internal static partial int ComposeGetUtf8(nint state, [Out] byte[] buffer, nuint size);
 	[LibraryImport(Library, EntryPoint = "xkb_compose_state_reset")] internal static partial void ComposeReset(nint state);
-	[LibraryImport(Library, EntryPoint = "xkb_keysym_to_utf32")] internal static partial uint KeysymToUtf32(uint keysym);
 
 	internal static string ReadKeymap(int fd, uint size)
 	{

@@ -8,7 +8,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Uno.Foundation.Logging;
-using Uno.Helpers;
 using Uno.UI.Dispatching;
 using Uno.UI.Runtime.Skia;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
@@ -26,13 +25,13 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 	private static readonly WaylandCoreApplicationExtension _coreApplication = new(() => _connection);
 	private static volatile WaylandConnection? _connection;
 	private static bool _connectionClosed;
+	// Keep the successful probe for initialization so selection cannot race a reconnect.
+	private static WaylandDisplay? _probedDisplay;
 
 	[ThreadStatic] private static bool _isDispatcherThread;
 
 	private readonly Func<Application> _appBuilder;
-	private readonly EventLoop? _eventLoop;
-	private readonly object _dispatcherGate = new();
-	private bool _dispatcherStopped;
+	private readonly WaylandDispatcher? _eventLoop;
 	private bool _ownsConnection;
 	private Task? _shutdown;
 
@@ -44,23 +43,13 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 
 		if (CoreDispatcher.DispatchOverride is null)
 		{
-			_eventLoop = new EventLoop();
+			_eventLoop = new WaylandDispatcher();
 			_eventLoop.Schedule(() =>
 			{
 				Thread.CurrentThread.Name = "Uno Event Loop";
 				_isDispatcherThread = true;
 			});
-			// Once the connection is closed the UI thread stops, so nothing can reach the disconnected display.
-			CoreDispatcher.DispatchOverride = (action, _) =>
-			{
-				lock (_dispatcherGate)
-				{
-					if (!_dispatcherStopped)
-					{
-						_eventLoop.Schedule(action);
-					}
-				}
-			};
+			CoreDispatcher.DispatchOverride = (action, _) => _eventLoop.Schedule(action);
 			CoreDispatcher.HasThreadAccessOverride = () => _isDispatcherThread;
 		}
 		else
@@ -93,14 +82,28 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 			}
 			return false;
 		}
-		try
+		lock (_connectionGate)
 		{
-			// Connect performs the initial registry roundtrip.
-			using var display = WaylandDisplay.Connect();
-			if (HasRequiredGlobals(display))
+			if (_connection is not null || _probedDisplay is { IsDisconnected: false, DispatchError: null })
 			{
 				return true;
 			}
+		}
+		try
+		{
+			// Connect performs the initial registry roundtrip.
+			var display = WaylandDisplay.Connect();
+			if (HasRequiredGlobals(display))
+			{
+				lock (_connectionGate)
+				{
+					var previous = _probedDisplay;
+					_probedDisplay = display;
+					previous?.Dispose();
+				}
+				return true;
+			}
+			display.Dispose();
 		}
 		catch (Exception error) when (selection != "wayland" && error is IOException or DllNotFoundException or EntryPointNotFoundException)
 		{
@@ -131,7 +134,8 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 				// Registered services still reference the closed connection.
 				throw new InvalidOperationException("The Wayland host cannot run again after its connection was closed.");
 			}
-			var display = WaylandDisplay.Connect();
+			var display = _probedDisplay ?? WaylandDisplay.Connect();
+			_probedDisplay = null;
 			try
 			{
 				if (!HasRequiredGlobals(display))
@@ -178,14 +182,18 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 
 			if (_connection?.Display.DispatchError is { } error)
 			{
-				WaylandDiagnostics.Trace($"host: dispatch failed: {error}");
+				// The compositor went away or ended the connection: nothing can be shown anymore, so the app ends
+				// with a failure exit code instead of an unhandled exception.
 				if (this.Log().IsEnabled(LogLevel.Error))
 				{
-					this.Log().Error("The Wayland connection failed.", error);
+					this.Log().Error("The Wayland connection failed; exiting.", error);
 				}
-				throw new IOException("The Wayland connection failed.", error);
+				Environment.ExitCode = 1;
 			}
-			WaylandDiagnostics.Trace("host: exiting");
+			else
+			{
+				WaylandDiagnostics.Trace("host: exiting");
+			}
 			return Task.CompletedTask;
 		}
 		finally
@@ -261,7 +269,7 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 		}
 		catch (Exception error)
 		{
-			if (this.Log().IsEnabled(LogLevel.Error))
+			if (_connection?.Display.DispatchError is null && this.Log().IsEnabled(LogLevel.Error))
 			{
 				this.Log().Error("The Wayland host failed to shut down.", error);
 			}
@@ -274,11 +282,11 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 
 	private Task StopDispatcher()
 	{
-		lock (_dispatcherGate)
+		if (_eventLoop is not null)
 		{
-			_dispatcherStopped = true;
-			_eventLoop?.Dispose();
+			return _eventLoop.Stop();
 		}
+		_connection!.CloseUICallbacks();
 		return Task.CompletedTask;
 	}
 
@@ -315,9 +323,13 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 			}
 			return false;
 		}
-		if (task.Exception is { } error)
+		try
 		{
-			if (this.Log().IsEnabled(LogLevel.Error))
+			await task.ConfigureAwait(false);
+		}
+		catch (Exception error)
+		{
+			if (_connection?.Display.DispatchError is null && this.Log().IsEnabled(LogLevel.Error))
 			{
 				this.Log().Error($"Wayland shutdown failed while {name}; the connection is left open.", error);
 			}

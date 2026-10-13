@@ -38,7 +38,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	private int _frame;
 	private SKSizeI _canvasSize;
 	private readonly WaylandFrameReadiness _readiness = new();
-	private readonly Func<long, bool> _preparePresentation;
+	private readonly Func<long, Func<bool>, bool> _preparePresentation;
 
 	// UI thread state.
 	private CompositionTarget? _frameTarget;
@@ -47,7 +47,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	private WaylandCursor? _cursor;
 	private WlPointer? _cursorPointer;
 
-	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, bool> preparePresentation)
+	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, Func<bool>, bool> preparePresentation, Action rollbackProtocolObjects)
 	{
 		_preparePresentation = preparePresentation;
 		_connection = connection;
@@ -55,37 +55,73 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		_window = window;
 		_xamlRoot = xamlRoot;
 		Surface = surface;
-		_renderThread = new WaylandRenderThread($"Uno Wayland render {id}", OnRenderError);
-		_renderThread.Post(() =>
+		try
 		{
-			_renderer = new WaylandRenderer(connection.Display.NativeHandle, surface, connection.Shm, viewport, Draw, RenderContent, ReleaseRetainedLayer, _renderThread.Post);
-			_renderer.BackendChanged += (_, _) => OnBackendSelected();
-			OnBackendSelected();
-		});
+			_renderThread = new WaylandRenderThread($"Uno Wayland render {id}", OnRenderError);
+			var initialized = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+			_renderThread.Post(() =>
+			{
+				try
+				{
+					_renderer = new WaylandRenderer(connection.Display.NativeHandle, surface, connection.Shm, viewport, Draw, RenderContent, ReleaseRetainedLayer, _renderThread.Post, PrepareCommit);
+					_renderer.BackendChanged += (_, _) => OnBackendSelected();
+					OnBackendSelected();
+					initialized.TrySetResult();
+				}
+				catch (Exception error)
+				{
+					initialized.TrySetException(error);
+				}
+			});
+			initialized.Task.GetAwaiter().GetResult();
 
-		if (connection.Seat is { } wlSeat)
-		{
-			_input = new WaylandProtocolInputConnection(wlSeat, s => s == surface, connection.Display.Post, SetCursor);
-			_input.PointerReleasing += (_, _) => DisposeCursor();
-			_input.InputSerial += (_, serial) => connection.InputSerial = serial;
-		}
-		var input = (IWaylandInputConnection?)_input ?? NoInputConnection.Instance;
-		KeyboardSource = new WaylandKeyboardInputSource(input, WaylandConnection.PostToUI, keyboardFocusChanged);
-		lock (connection.Display.SyncRoot)
-		{
-			connection.TextInputReceived += KeyboardSource.OnTextInputReceived;
-		}
-		PointerSource = new WaylandPointerInputSource(input, WaylandConnection.PostToUI, () => KeyboardSource.Modifiers);
-		if (_input is not null)
-		{
-			var seat = new WaylandSeat(connection.Seat!, _input, PointerSource, KeyboardSource);
-			_seat = seat;
-			// Capabilities were announced at bind time; replay them for this window's devices.
-			connection.Display.Post(() => seat.Capabilities(connection.SeatCapabilities));
-		}
+			if (connection.Seat is { } wlSeat)
+			{
+				_input = new WaylandProtocolInputConnection(wlSeat, s => s == surface, connection.Display.Post, SetCursor);
+				_input.PointerReleasing += (_, _) => DisposeCursor();
+				_input.InputSerial += (_, serial) => connection.InputSerial = serial;
+			}
+			var input = (IWaylandInputConnection?)_input ?? NoInputConnection.Instance;
+			KeyboardSource = new WaylandKeyboardInputSource(input, _connection.PostToUI, keyboardFocusChanged);
+			lock (connection.Display.SyncRoot)
+			{
+				connection.TextInputReceived += OnTextInputReceived;
+			}
+			PointerSource = new WaylandPointerInputSource(input, _connection.PostToUI, () => KeyboardSource.Modifiers);
+			if (_input is not null)
+			{
+				var seat = new WaylandSeat(connection.Seat!, _input, PointerSource, KeyboardSource);
+				_seat = seat;
+				// Capabilities were announced at bind time; replay them for this window's devices.
+				connection.Display.Post(() => seat.Capabilities(connection.SeatCapabilities));
+			}
 
-		// Input sources must exist before registration: Uno resolves them per IXamlRootHost.
-		XamlRootMap.Register(xamlRoot, this);
+			// Input sources must exist before registration: Uno resolves them per IXamlRootHost.
+			XamlRootMap.Register(xamlRoot, this);
+		}
+		catch
+		{
+			if (_renderThread is null)
+			{
+				try
+				{
+					lock (connection.Display.SyncRoot)
+					{
+						rollbackProtocolObjects();
+					}
+				}
+				catch (Exception cleanupError)
+				{
+					connection.TrackWindowTeardown(Task.FromException(cleanupError));
+				}
+			}
+			else
+			{
+				connection.TrackWindowTeardown(Completion);
+				Dispose(rollbackProtocolObjects);
+			}
+			throw;
+		}
 	}
 
 	internal WlSurface Surface { get; }
@@ -96,7 +132,11 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	internal double Scale { get; set; } = 1;
 	public UIElement? RootElement => _window.RootElement;
 
-	public void InvalidateRender()
+	public void InvalidateRender() => InvalidateRender(presentationReady: false);
+
+	internal void PresentationReady() => InvalidateRender(presentationReady: true);
+
+	private void InvalidateRender(bool presentationReady)
 	{
 		if (!_disposed)
 		{
@@ -104,7 +144,14 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				if (_renderer is { IsConfigured: true } renderer)
 				{
-					renderer.Invalidate();
+					if (presentationReady)
+					{
+						renderer.PresentationReady();
+					}
+					else
+					{
+						renderer.Invalidate();
+					}
 				}
 				else
 				{
@@ -157,7 +204,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: layout recorded at {bounds.Width}x{bounds.Height}{(arranged ? "" : " (gave up waiting)")}"));
 			}
-			InvalidateRender();
+			PresentationReady();
 		}
 	}
 
@@ -207,10 +254,6 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			}
 			return false;
 		}
-		if (!_preparePresentation(_readiness.RenderGeneration))
-		{
-			return false;
-		}
 		canvas.Clear(SKColors.White);
 		if (gpuContext is not null)
 		{
@@ -225,11 +268,18 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		_frame++;
 		if (WaylandDiagnostics.IsEnabled)
 		{
-			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: present frame {_frame} buffer {bounds.Width}x{bounds.Height} content {content.Width}x{content.Height} {(gpuContext is null ? "wl_shm" : "EGL")}"));
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: draw frame {_frame} buffer {bounds.Width}x{bounds.Height} content {content.Width}x{content.Height} {(gpuContext is null ? "wl_shm" : "EGL")}"));
 			WaylandDiagnostics.DumpFrame(_id, _frame, target);
 		}
 		return true;
 	}
+
+	private bool PrepareCommit(Func<bool> submit)
+		=> _connection.Display.SubmitPresentation(() => _preparePresentation(_readiness.RenderGeneration, () =>
+		{
+			_renderer!.ApplyScale();
+			return submit();
+		}));
 
 	private void RenderContent(GRContext? gpuContext)
 	{
@@ -271,11 +321,11 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 
 	private void OnRenderError(Exception error)
 	{
-		if (this.Log().IsEnabled(LogLevel.Error))
+		if (_connection.Display.DispatchError is null && this.Log().IsEnabled(LogLevel.Error))
 		{
 			this.Log().Error($"Wayland rendering failed for window {_id}.", error);
 		}
-		if (WaylandDiagnostics.IsEnabled)
+		if (_connection.Display.DispatchError is null && WaylandDiagnostics.IsEnabled)
 		{
 			WaylandDiagnostics.Trace($"window{_id}: render error {error}");
 		}
@@ -318,45 +368,84 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			return;
 		}
 		_disposed = true;
-		if (_frameTarget is not null)
-		{
-			_frameTarget.FrameRendered -= OnFrameRendered;
-			_frameTarget = null;
-		}
-		XamlRootMap.Unregister(_xamlRoot);
 		var display = _connection.Display;
-		lock (display.SyncRoot)
+		Exception? inputError = null;
+		try
 		{
-			_connection.TextInputReceived -= KeyboardSource.OnTextInputReceived;
-			_seat?.Dispose();
-			DisposeCursor();
+			WaylandCleanup.Run(
+				() =>
+				{
+					if (_frameTarget is not null)
+					{
+						_frameTarget.FrameRendered -= OnFrameRendered;
+						_frameTarget = null;
+					}
+				},
+				() => XamlRootMap.Unregister(_xamlRoot),
+				() =>
+				{
+					lock (display.SyncRoot)
+					{
+						_connection.TextInputReceived -= OnTextInputReceived;
+						WaylandCleanup.Run(
+							() => _seat?.Dispose(),
+							() =>
+							{
+								if (_seat is null)
+								{
+									KeyboardSource?.Dispose();
+								}
+							},
+							DisposeCursor);
+					}
+				});
 		}
-		_renderThread.Post(() =>
+		catch (Exception error)
+		{
+			inputError = error;
+		}
+		_renderThread.Complete(() =>
 		{
 			try
 			{
-				_renderer?.Dispose();
+				WaylandCleanup.Run(
+					() => _renderer?.Dispose(),
+					ReleaseRetainedLayer);
 				_renderer = null;
 			}
 			finally
 			{
-				try
+				var destroyed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+				display.TryPost(() =>
 				{
-					ReleaseRetainedLayer();
-				}
-				finally
-				{
-					lock (display.SyncRoot)
+					try
 					{
 						destroyProtocolObjects();
+						destroyed.TrySetResult();
 					}
-				}
+					catch (Exception error)
+					{
+						destroyed.TrySetException(error);
+					}
+				}, () => destroyed.TrySetException(new InvalidOperationException("Wayland dispatch stopped before window destruction.")));
+				WaylandCleanup.Run(
+					() => destroyed.Task.GetAwaiter().GetResult(),
+					() =>
+					{
+						if (inputError is not null)
+						{
+							throw inputError;
+						}
+					});
 			}
 		});
 		_renderThread.Dispose();
 	}
 
 	void IDisposable.Dispose() => Dispose(() => { });
+
+	// Dispatch thread: input method text ends a pending keyboard Compose sequence.
+	private void OnTextInputReceived(object? sender, EventArgs e) => KeyboardSource.ResetCompose();
 
 	// Used when the compositor advertises no wl_seat: sources exist but never receive devices.
 	private sealed class NoInputConnection : IWaylandInputConnection
