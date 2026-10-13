@@ -46,6 +46,7 @@ public sealed class App : Application
 		panel.Children.Add(counter);
 		panel.Children.Add(button);
 		window.Content = new Grid { Background = new SolidColorBrush(Colors.SteelBlue), Children = { panel } };
+		DataTransferProbe.Attach((UIElement)window.Content);
 		window.Activate();
 		Console.WriteLine("OnLaunched: window activated");
 	}
