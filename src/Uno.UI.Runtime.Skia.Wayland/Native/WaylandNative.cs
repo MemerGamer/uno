@@ -80,6 +80,7 @@ internal static unsafe partial class Posix
 		internal short Revents;
 	}
 	[LibraryImport("libc", SetLastError = true)] internal static partial int poll(PollFd* fds, nuint count, int timeout);
+	[LibraryImport("libc", SetLastError = true)] internal static partial int fcntl(int fd, int command, int argument);
 	[LibraryImport("libc", SetLastError = true)] internal static partial int pipe2(int* fds, int flags);
 	[LibraryImport("libc", SetLastError = true)] internal static partial nint write(int fd, byte* buffer, nuint count);
 	[LibraryImport("libc", SetLastError = true)] internal static partial nint read(int fd, byte* buffer, nuint count);

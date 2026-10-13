@@ -19,6 +19,7 @@
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Rendering/WaylandFrameScheduler.cs" Link="Rendering/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandOutput.cs" Link="Hosting/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/ApplicationModel/DataTransfer/WaylandFileUris.cs" Link="DataTransfer/%(Filename)%(Extension)" />
+		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/ApplicationModel/DataTransfer/WaylandDropNegotiation.cs" Link="DataTransfer/%(Filename)%(Extension)" />
 		<None Include="../protocols/*.xml" Link="protocols/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
 	</ItemGroup>
 </Project>
