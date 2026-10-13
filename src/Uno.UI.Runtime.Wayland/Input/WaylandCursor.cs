@@ -9,6 +9,7 @@ namespace Uno.UI.Runtime.Wayland.Input;
 
 internal interface IWaylandCursorSurface : IDisposable
 {
+	int GetScale(double scale);
 	// wl_pointer.set_cursor(serial, surface, hotspot), attach, damage, commit.
 	void Show(uint serial, nint buffer, int width, int height, int hotspotX, int hotspotY, int scale);
 	void Hide(uint serial);
@@ -38,6 +39,7 @@ internal sealed unsafe partial class WaylandCursor : IDisposable
 		}
 		if (cursor is null)
 		{
+			Trace($"cursor: hidden serial={serial}");
 			_surface.Hide(serial);
 			return;
 		}
@@ -59,10 +61,11 @@ internal sealed unsafe partial class WaylandCursor : IDisposable
 		};
 		if (_shapeDevice is { } device)
 		{
+			Trace($"cursor: {cursor.Type} -> cursor-shape-v1 shape {shape} serial={serial}");
 			device.SetShape(serial, shape);
 			return;
 		}
-		var integerScale = Math.Clamp((int)Math.Ceiling(scale), 1, 8);
+		var integerScale = _surface.GetScale(scale);
 		if (_theme == 0 || integerScale != _scale)
 		{
 			var theme = ThemeLoad(Environment.GetEnvironmentVariable("XCURSOR_THEME"), 24 * integerScale, _shm);
@@ -97,6 +100,7 @@ internal sealed unsafe partial class WaylandCursor : IDisposable
 		var buffer = ImageGetBuffer((nint)image);
 		if (buffer != 0)
 		{
+			Trace($"cursor: {cursor.Type} -> theme cursor {name} {image->Width}x{image->Height} scale={_scale} serial={serial}");
 			_surface.Show(serial, buffer, checked((int)image->Width), checked((int)image->Height), (int)image->HotspotX / _scale, (int)image->HotspotY / _scale, _scale);
 		}
 	}
@@ -113,6 +117,13 @@ internal sealed unsafe partial class WaylandCursor : IDisposable
 		{
 			ThemeDestroy(_theme);
 			_theme = 0;
+		}
+	}
+	private static void Trace(FormattableString message)
+	{
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant(message));
 		}
 	}
 	[StructLayout(LayoutKind.Sequential)]

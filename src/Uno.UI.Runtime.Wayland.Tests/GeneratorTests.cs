@@ -71,8 +71,7 @@ public sealed class GeneratorTests
 			ScannerProgram.Generate(Path.Combine(AppContext.BaseDirectory, "protocols"), output);
 			foreach (var file in Directory.GetFiles(output, "*.g.cs"))
 			{
-				var text = File.ReadAllText(file);
-				StringAssert.DoesNotMatch(text, new System.Text.RegularExpressions.Regex(@"^public ", System.Text.RegularExpressions.RegexOptions.Multiline), file);
+				Assert.IsFalse(File.ReadLines(file).Any(line => line.StartsWith("public ", StringComparison.Ordinal)), file);
 			}
 		}
 		finally
@@ -88,8 +87,16 @@ public sealed class GeneratorTests
 		try
 		{
 			ScannerProgram.Generate(Path.Combine(AppContext.BaseDirectory, "protocols"), output);
-			Assert.IsFalse(File.Exists(Path.Combine(output, "WlShell.g.cs")));
-			Assert.IsFalse(File.Exists(Path.Combine(output, "WlShellSurface.g.cs")));
+			foreach (var omitted in new[] { "WlShell", "WlShellSurface", "WlFixes", "XdgPopup", "XdgPositioner", "ZxdgImporterV2", "ZxdgImportedV2" })
+			{
+				Assert.IsFalse(File.Exists(Path.Combine(output, omitted + ".g.cs")), omitted);
+			}
+			// Requests creating omitted objects are not generated; the opcodes of the others are unchanged.
+			var wmBase = File.ReadAllText(Path.Combine(output, "XdgWmBase.g.cs"));
+			Assert.IsFalse(wmBase.Contains("CreatePositioner", StringComparison.Ordinal));
+			StringAssert.Contains(wmBase, "base.MarshalRequest(2, \"xdg_surface\"");
+			var xdgSurface = File.ReadAllText(Path.Combine(output, "XdgSurface.g.cs"));
+			Assert.IsFalse(xdgSurface.Contains("GetPopup", StringComparison.Ordinal));
 			var cursorShape = File.ReadAllText(Path.Combine(output, "WpCursorShapeManagerV1.g.cs"));
 			StringAssert.Contains(cursorShape, "GetTabletToolV2(WaylandProxy @tablet_tool)");
 			var catalog = File.ReadAllText(Path.Combine(output, "ProtocolCatalog.g.cs"));
@@ -103,14 +110,14 @@ public sealed class GeneratorTests
 	}
 
 	[TestMethod]
-	public void OmittedInterfaceCannotBeCreated()
+	public void OmittedInterfaceCannotBeCreatedByAnEvent()
 	{
 		var directory = TemporaryDirectory();
 		try
 		{
 			File.WriteAllText(Path.Combine(directory, "bad.xml"), """
 				<protocol name="bad"><interface name="bad" version="1">
-				<request name="create"><arg name="id" type="new_id" interface="wl_shell" /></request>
+				<event name="created"><arg name="id" type="new_id" interface="wl_shell" /></event>
 				</interface></protocol>
 				""");
 			Assert.ThrowsExactly<InvalidDataException>(() => ScannerProgram.Generate(directory, Path.Combine(directory, "output")));

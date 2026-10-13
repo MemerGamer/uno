@@ -10,16 +10,22 @@ namespace Uno.UI.Runtime.Wayland.Scanner;
 
 public static class Program
 {
-	// Not generated: wl_shell is superseded by xdg-shell, and the tablet protocol is not vendored. References to
-	// them are typed as WaylandProxy and left untyped in the metadata.
 	// A new_id without an interface is marshalled as (interface name, version, id).
 	private static readonly string[] DynamicNewIdTypes = ["null", "null", "null"];
 
+	// Not generated because the host does not use them: wl_shell is superseded by xdg-shell, the tablet protocol is
+	// not vendored, popups are drawn by Uno itself and foreign toplevels are only exported. Object arguments of these
+	// types are typed as WaylandProxy and left untyped in the metadata; requests creating them are not generated.
 	public static readonly IReadOnlySet<string> OmittedInterfaces = new HashSet<string>(StringComparer.Ordinal)
 	{
+		"wl_fixes",
 		"wl_shell",
 		"wl_shell_surface",
+		"xdg_popup",
+		"xdg_positioner",
 		"zwp_tablet_tool_v2",
+		"zxdg_imported_v2",
+		"zxdg_importer_v2",
 	};
 
 	public static int Main(string[] args)
@@ -32,6 +38,8 @@ public static class Program
 		Generate(args[0], args[1]);
 		return 0;
 	}
+
+	private static readonly HashSet<string> _proxyMembers = new(StringComparer.Ordinal) { "Display", "Handle", "Version", "InterfaceName", "Dispose" };
 
 	public static string Name(string value) => string.Concat(value.Split('_', '-').Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
 	private static string Attr(XElement node, string name, string fallback = "") => (string?)node.Attribute(name) ?? fallback;
@@ -60,8 +68,14 @@ public static class Program
 			signature += Attr(arg, "allow-null") == "true" ? "?" : "";
 			signature += Attr(arg, "type") switch
 			{
-				"int" => "i", "uint" => "u", "fixed" => "f", "string" => "s", "object" => "o",
-				"new_id" => Attr(arg, "interface") == "" ? "sun" : "n", "array" => "a", "fd" => "h",
+				"int" => "i",
+				"uint" => "u",
+				"fixed" => "f",
+				"string" => "s",
+				"object" => "o",
+				"new_id" => Attr(arg, "interface") == "" ? "sun" : "n",
+				"array" => "a",
+				"fd" => "h",
 				var type => throw new InvalidDataException($"Unsupported argument type {type}")
 			};
 		}
@@ -83,7 +97,8 @@ public static class Program
 		{
 			if (Attr(arg, "interface") is { Length: > 0 } reference && !names.Contains(reference))
 			{
-				if (!OmittedInterfaces.Contains(reference) || Attr(arg, "type") == "new_id")
+				// An event creating an omitted object would need its interface to build the proxy.
+				if (!OmittedInterfaces.Contains(reference) || (Attr(arg, "type") == "new_id" && arg.Parent!.Name != "request"))
 				{
 					throw new InvalidDataException($"Unresolved interface {reference}");
 				}
@@ -170,6 +185,10 @@ public static class Program
 			var request = requests[opcode];
 			var args = request.Elements("arg").ToArray();
 			var newId = args.SingleOrDefault(arg => Attr(arg, "type") == "new_id");
+			if (newId is not null && OmittedInterfaces.Contains(Attr(newId, "interface")))
+			{
+				continue;
+			}
 			var dynamic = newId is not null && Attr(newId, "interface") == "";
 			var parameters = args.Where(arg => arg != newId).Select(arg => Type(arg) + " @" + Attr(arg, "name")).ToList();
 			if (dynamic)
@@ -212,10 +231,10 @@ public static class Program
 			}
 			var resultInterface = newId is null ? "null" : dynamic ? "@interface" : Quote(Attr(newId, "interface"));
 			var version = newId is null ? "Version" : dynamic ? "version" : $"Math.Min(Version, {Type(newId)}.MaximumVersion)";
-			builder.AppendLine($"\t\t{(newId is null ? "" : "var handle = ")}base.MarshalRequest({opcode}, {resultInterface}, {version}, {Since(request)}, {(Attr(request, "type") == "destructor" ? "true" : "false")}, args);");
+			builder.AppendLine($"\t\t{(newId is null ? "" : "var proxyHandle = ")}base.MarshalRequest({opcode}, {resultInterface}, {version}, {Since(request)}, {(Attr(request, "type") == "destructor" ? "true" : "false")}, args);");
 			if (newId is not null)
 			{
-				builder.AppendLine(dynamic ? "\t\treturn ProtocolCatalog.Create(@interface, Display, handle);" : $"\t\treturn new {Type(newId)}(Display, handle);");
+				builder.AppendLine(dynamic ? "\t\treturn ProtocolCatalog.Create(@interface, Display, proxyHandle);" : $"\t\treturn new {Type(newId)}(Display, proxyHandle);");
 			}
 			builder.AppendLine("\t\t}\n\t}");
 			var requestText = builder.ToString(requestStart, builder.Length - requestStart);
@@ -242,6 +261,8 @@ public static class Program
 		{
 			var evt = events[opcode];
 			var eventName = Name(Attr(evt, "name"));
+			// Events named like a WaylandProxy member (xdg_exported.handle) get a suffix to avoid hiding it.
+			var eventMember = _proxyMembers.Contains(eventName) ? eventName + "Event" : eventName;
 			var args = evt.Elements("arg").ToArray();
 			builder.AppendLine($"\tpublic sealed class {eventName}EventArgs : EventArgs\n\t{{");
 			foreach (var arg in args)
@@ -253,7 +274,7 @@ public static class Program
 			{
 				builder.AppendLine($"\t\t\t{Name(Attr(args[i], "name"))} = arg{i};");
 			}
-			builder.AppendLine($"\t\t}}\n\t}}\n\tpublic event EventHandler<{eventName}EventArgs>? {eventName};");
+			builder.AppendLine($"\t\t}}\n\t}}\n\tpublic event EventHandler<{eventName}EventArgs>? {eventMember};");
 			builder.AppendLine($"\t[UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]\n\tprivate static void On{opcode}(nint data, nint proxy{string.Concat(args.Select((arg, i) => ", " + NativeType(arg) + " arg" + i))})\n\t{{\n\t\tvar target = Target<{name}>(data);\n\t\ttry\n\t\t{{");
 			var values = args.Select((arg, i) => Attr(arg, "type") switch
 			{
@@ -266,9 +287,9 @@ public static class Program
 			});
 			foreach (var pair in args.Select((arg, i) => (arg, i)).Where(pair => Attr(pair.arg, "type") == "fd"))
 			{
-				builder.AppendLine($"\t\t\tif (target.{eventName} is null)\n\t\t\t{{\n\t\t\t\tPosix.close(arg{pair.i});\n\t\t\t\treturn;\n\t\t\t}}");
+				builder.AppendLine($"\t\t\tif (target.{eventMember} is null)\n\t\t\t{{\n\t\t\t\tPosix.close(arg{pair.i});\n\t\t\t\treturn;\n\t\t\t}}");
 			}
-			builder.AppendLine($"\t\t\tvar args = new {eventName}EventArgs({string.Join(", ", values)});\n\t\t\ttarget.{eventName}?.Invoke(target, args);\n\t\t}}\n\t\tcatch (Exception error)\n\t\t{{\n\t\t\ttarget.Display.CaptureCallbackError(error);\n\t\t}}");
+			builder.AppendLine($"\t\t\tvar args = new {eventName}EventArgs({string.Join(", ", values)});\n\t\t\ttarget.{eventMember}?.Invoke(target, args);\n\t\t}}\n\t\tcatch (Exception error)\n\t\t{{\n\t\t\ttarget.Display.CaptureCallbackError(error);\n\t\t}}");
 			if (Attr(evt, "type") == "destructor")
 			{
 				builder.AppendLine("\t\tfinally\n\t\t{\n\t\t\ttarget.DisposeLocal();\n\t\t}");
@@ -281,6 +302,8 @@ public static class Program
 
 	private static string NativeType(XElement arg) => Attr(arg, "type") switch
 	{
-		"uint" => "uint", "int" or "fd" or "fixed" => "int", _ => "nint"
+		"uint" => "uint",
+		"int" or "fd" or "fixed" => "int",
+		_ => "nint"
 	};
 }

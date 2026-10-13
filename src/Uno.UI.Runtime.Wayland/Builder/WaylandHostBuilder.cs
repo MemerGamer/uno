@@ -12,6 +12,7 @@ public sealed class WaylandHostBuilder : IPlatformHostBuilder
 		{ GraphicsContextKind.OpenGLES, GraphicsContextKind.Software };
 
 	private readonly HashSet<GraphicsContextKind> _disabledKinds = new();
+	private bool _useSystemHarfBuzz;
 
 	internal WaylandHostBuilder()
 	{
@@ -55,11 +56,20 @@ public sealed class WaylandHostBuilder : IPlatformHostBuilder
 		_ => throw new ArgumentOutOfRangeException(nameof(backend), backend, null),
 	};
 
+	/// <summary>
+	/// Uses the system HarfBuzz library for text shaping instead of libHarfBuzzSharp shipped with SkiaSharp.
+	/// </summary>
+	public WaylandHostBuilder UseSystemHarfBuzz(bool value)
+	{
+		_useSystemHarfBuzz = value;
+		return this;
+	}
+
 	bool IPlatformHostBuilder.IsSupported => WaylandApplicationHost.IsSupported();
 
 	UnoPlatformHost IPlatformHostBuilder.Create(Func<Microsoft.UI.Xaml.Application> appBuilder, Type appType)
 	{
 		GraphicsRegistry.DisabledContextKinds = _disabledKinds;
-		return new WaylandApplicationHost(appBuilder);
+		return new WaylandApplicationHost(appBuilder, _useSystemHarfBuzz);
 	}
 }

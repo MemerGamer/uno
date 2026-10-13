@@ -6,8 +6,8 @@ namespace Uno.UI.Runtime.Wayland.Rendering;
 
 /// <summary>
 /// A swapchain presenting to a wl_surface. Before committing a frame it asks its owner to prepare the surface
-/// state that must land in the same commit (buffer scale and viewport), or to hold the frame back while the
-/// surface is not configured yet.
+/// state that must land in the same commit (buffer scale, viewport, configure acknowledgement), or to hold the
+/// frame back, keeping the previous buffer on screen.
 /// </summary>
 internal interface IWaylandGraphicsContext : ISwapChain
 {
@@ -21,5 +21,11 @@ internal interface IWaylandGraphicsContext : ISwapChain
 /// </summary>
 internal interface IWaylandGpuTeardownContext
 {
-	void MakeCurrentForTeardown();
+	/// <summary>Makes the context current to release GPU resources; false when it was lost.</summary>
+	bool TryMakeCurrentForTeardown();
 }
+
+/// <summary>
+/// Called with the pixel size of the frame about to be committed; false keeps the previous buffer on screen.
+/// </summary>
+internal delegate bool WaylandCommitGate(int width, int height);

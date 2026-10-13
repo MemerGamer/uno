@@ -19,6 +19,8 @@ internal sealed class WaylandCursorSurface : IWaylandCursorSurface
 		_surface = surface;
 	}
 
+	public int GetScale(double scale) => _surface.Version >= 3 ? Math.Clamp((int)Math.Ceiling(scale), 1, 8) : 1;
+
 	public void Show(uint serial, nint buffer, int width, int height, int hotspotX, int hotspotY, int scale)
 	{
 		if (_disposed)
@@ -26,7 +28,10 @@ internal sealed class WaylandCursorSurface : IWaylandCursorSurface
 			return;
 		}
 		_pointer.SetCursor(serial, _surface, hotspotX, hotspotY);
-		_surface.SetBufferScale(scale);
+		if (_surface.Version >= 3)
+		{
+			_surface.SetBufferScale(scale);
+		}
 		AttachBorrowed(buffer);
 		_surface.Damage(0, 0, int.MaxValue, int.MaxValue);
 		_surface.Commit();

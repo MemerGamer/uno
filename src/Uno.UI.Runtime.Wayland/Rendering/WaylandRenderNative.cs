@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 
 namespace Uno.UI.Runtime.Wayland.Rendering;
 
@@ -29,7 +30,7 @@ internal static partial class WaylandRenderNative
 	[LibraryImport("libEGL.so.1")]
 	internal static partial int eglBindAPI(uint api);
 	[LibraryImport("libEGL.so.1")]
-	internal static partial int eglChooseConfig(IntPtr display, int[] attributes, out IntPtr config, int count, out int matches);
+	internal static partial int eglChooseConfig(IntPtr display, int[] attributes, [Out, MarshalUsing(CountElementName = nameof(count))] IntPtr[]? configs, int count, out int matches);
 	[LibraryImport("libEGL.so.1")]
 	internal static partial int eglGetConfigAttrib(IntPtr display, IntPtr config, int attribute, out int value);
 	[LibraryImport("libEGL.so.1")]
@@ -40,6 +41,10 @@ internal static partial class WaylandRenderNative
 	internal static partial int eglMakeCurrent(IntPtr display, IntPtr draw, IntPtr read, IntPtr context);
 	[LibraryImport("libEGL.so.1")]
 	internal static partial int eglSwapBuffers(IntPtr display, IntPtr surface);
+	[LibraryImport("libEGL.so.1")]
+	internal static partial int eglSwapInterval(IntPtr display, int interval);
+	[LibraryImport("libEGL.so.1")]
+	internal static partial int eglGetError();
 	[LibraryImport("libEGL.so.1")]
 	internal static partial int eglDestroySurface(IntPtr display, IntPtr surface);
 	[LibraryImport("libEGL.so.1")]

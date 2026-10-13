@@ -13,9 +13,15 @@ namespace Uno.UI.Runtime.Wayland;
 
 internal sealed unsafe class WaylandDisplay : IDisposable
 {
+	// Bounds the startup roundtrip so a frozen compositor cannot hang host selection.
+	private const int StartupTimeoutMilliseconds = 5000;
+	private const int EINTR = 4;
+	private const int EAGAIN = 11;
+	private const int EPROTO = 71;
+
 	private readonly Dictionary<nint, WaylandProxy> _proxies = new();
 	private readonly Dictionary<uint, WaylandGlobal> _globals = new();
-	private readonly ConcurrentQueue<Action> _commands = new();
+	private readonly ConcurrentQueue<(Action Command, Action? Rejected)> _commands = new();
 	private nint _display;
 	private Thread? _thread;
 	private int _wakeRead = -1;
@@ -23,13 +29,14 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 	private bool _stopping;
 	private bool _disposing;
 	private Exception? _callbackError;
+	private volatile Exception? _dispatchError;
 	public object SyncRoot { get; } = new();
 	public WlRegistry Registry { get; private set; } = null!;
 	public int FileDescriptor { get; }
 	public bool IsDisconnected => _display == 0;
 	// Native wl_display pointer for libwayland-egl and libwayland-cursor consumers.
 	internal nint NativeHandle => _display;
-	public Exception? DispatchError { get; private set; }
+	public Exception? DispatchError => _dispatchError;
 	public bool IsDispatchThread => _thread == Thread.CurrentThread;
 	public IReadOnlyList<WaylandGlobal> Globals
 	{
@@ -80,7 +87,7 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 			display.Registry = new WlRegistry(display, registry);
 			display.Registry.Global += (_, evt) => display._globals[evt.Name] = new(evt.Name, evt.Interface, evt.Version);
 			display.Registry.GlobalRemove += (_, evt) => display._globals.Remove(evt.Name);
-			display.Roundtrip();
+			display.Roundtrip(StartupTimeoutMilliseconds);
 			return display;
 		}
 		catch
@@ -135,6 +142,51 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 		}
 	}
 
+	// Startup-only roundtrip that gives up after the timeout instead of blocking like wl_display_roundtrip.
+	private void Roundtrip(int timeoutMilliseconds)
+	{
+		lock (SyncRoot)
+		{
+			var done = false;
+			using var callback = Sync();
+			callback.Done += (_, _) => done = true;
+			var deadline = Environment.TickCount64 + timeoutMilliseconds;
+			while (!done)
+			{
+				while (WaylandNative.wl_display_prepare_read(_display) != 0)
+				{
+					Check(WaylandNative.wl_display_dispatch_pending(_display));
+				}
+				var remaining = deadline - Environment.TickCount64;
+				if (done || remaining <= 0)
+				{
+					WaylandNative.wl_display_cancel_read(_display);
+					if (done)
+					{
+						break;
+					}
+					throw new IOException($"The Wayland compositor did not answer within {timeoutMilliseconds} ms.");
+				}
+				var fd = new Posix.PollFd { Fd = FileDescriptor, Events = (short)(1 | (FlushCore() ? 4 : 0)) };
+				var result = Posix.poll(&fd, 1, (int)remaining);
+				if (result > 0 && (fd.Revents & 1) != 0)
+				{
+					Check(WaylandNative.wl_display_read_events(_display));
+				}
+				else
+				{
+					WaylandNative.wl_display_cancel_read(_display);
+					if ((fd.Revents & (8 | 16 | 32)) != 0)
+					{
+						throw new IOException("The Wayland connection closed during startup.");
+					}
+				}
+				Check(WaylandNative.wl_display_dispatch_pending(_display));
+				ThrowCallbackError();
+			}
+		}
+	}
+
 	public void Flush()
 	{
 		lock (SyncRoot)
@@ -149,13 +201,29 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 	/// Runs <paramref name="command"/> on the dispatch thread before its next read, under <see cref="SyncRoot"/>.
 	/// A failing command stops the loop like a failing event handler.
 	/// </summary>
-	public void Post(Action command)
+	public void Post(Action command) => _ = TryPost(command);
+
+	internal bool TryPost(Action command, Action? rejected = null)
 	{
 		ArgumentNullException.ThrowIfNull(command);
-		_commands.Enqueue(command);
 		lock (SyncRoot)
 		{
-			WakeDispatch();
+			if (!_stopping && !_disposing && _display != 0 && DispatchError is null)
+			{
+				_commands.Enqueue((command, rejected));
+				WakeDispatch();
+				return true;
+			}
+		}
+		rejected?.Invoke();
+		return false;
+	}
+
+	private void RejectCommands()
+	{
+		while (_commands.TryDequeue(out var command))
+		{
+			command.Rejected?.Invoke();
 		}
 	}
 
@@ -165,7 +233,7 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 		{
 			try
 			{
-				command();
+				command.Command();
 			}
 			catch (Exception error)
 			{
@@ -219,11 +287,12 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 			}
 			if (_wakeRead >= 0)
 			{
-				Posix.close(_wakeRead);
-				Posix.close(_wakeWrite);
+				_ = Posix.close(_wakeRead);
+				_ = Posix.close(_wakeWrite);
 				_wakeRead = _wakeWrite = -1;
 			}
 			_thread = null;
+			RejectCommands();
 		}
 	}
 
@@ -267,9 +336,13 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 						WaylandNative.wl_display_cancel_read(_display);
 						prepared = false;
 					}
-					if (result < 0 && error != 4)
+					if (_stopping)
 					{
-						throw new IOException($"Wayland poll failed: {error}");
+						return;
+					}
+					if (result < 0 && error != EINTR)
+					{
+						throw new IOException($"Wayland poll failed: {Marshal.GetPInvokeErrorMessage(error)}");
 					}
 					if ((fds[1].Revents & 1) != 0)
 					{
@@ -288,7 +361,7 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 		{
 			lock (SyncRoot)
 			{
-				DispatchError = error;
+				_dispatchError = error;
 			}
 		}
 		finally
@@ -297,21 +370,27 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 			{
 				WaylandNative.wl_display_cancel_read(_display);
 			}
+			lock (SyncRoot)
+			{
+				RejectCommands();
+			}
 		}
 	}
 
+	// Returns whether the socket is full (EAGAIN), so the rest goes out once it is writable.
 	private bool FlushCore()
 	{
 		if (WaylandNative.wl_display_flush(_display) >= 0)
 		{
 			return false;
 		}
-		if (Marshal.GetLastPInvokeError() == 11)
+		var errno = Marshal.GetLastPInvokeError();
+		if (errno == EAGAIN)
 		{
 			return true;
 		}
-		Check(-1);
-		return false;
+		// A failed flush does not set the display error, so report the write's own errno (e.g. EPIPE).
+		throw CreateConnectionError(errno);
 	}
 
 	internal void WakeDispatch()
@@ -319,7 +398,7 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 		if (_wakeWrite >= 0)
 		{
 			byte value = 1;
-			Posix.write(_wakeWrite, &value, 1);
+			_ = Posix.write(_wakeWrite, &value, 1);
 		}
 	}
 	internal void Register(WaylandProxy proxy)
@@ -344,8 +423,29 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 	{
 		if (result < 0)
 		{
-			throw new IOException($"Wayland connection error: {WaylandNative.wl_display_get_error(_display)}");
+			throw CreateConnectionError();
 		}
+	}
+
+	// A fatal display error: EPROTO carries the compositor's protocol error, anything else is an errno such as EPIPE.
+	private IOException CreateConnectionError(int fallbackErrno = 0)
+	{
+		var error = WaylandNative.wl_display_get_error(_display);
+		if (error == 0)
+		{
+			error = fallbackErrno;
+		}
+		if (error == EPROTO)
+		{
+			WlInterface* @interface = null;
+			uint id = 0;
+			var code = WaylandNative.wl_display_get_protocol_error(_display, &@interface, &id);
+			var name = @interface is null ? "unknown" : Marshal.PtrToStringUTF8((nint)@interface->Name);
+			return new IOException($"Wayland protocol error {code} on {name}@{id}.");
+		}
+		return error == 0
+			? new IOException("The Wayland connection failed.")
+			: new IOException($"Wayland connection error {error}: {Marshal.GetPInvokeErrorMessage(error)}.");
 	}
 	internal void ThrowIfUnavailable()
 	{

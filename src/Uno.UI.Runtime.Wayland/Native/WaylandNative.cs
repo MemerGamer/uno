@@ -19,6 +19,7 @@ internal static unsafe partial class WaylandNative
 	[LibraryImport(Library, SetLastError = true)] internal static partial int wl_display_flush(nint display);
 	[LibraryImport(Library)] internal static partial int wl_display_roundtrip(nint display);
 	[LibraryImport(Library)] internal static partial int wl_display_get_error(nint display);
+	[LibraryImport(Library)] internal static partial uint wl_display_get_protocol_error(nint display, WlInterface** @interface, uint* id);
 	[LibraryImport(Library)] internal static partial nint wl_display_create_queue(nint display);
 	[LibraryImport(Library)] internal static partial void wl_event_queue_destroy(nint queue);
 	[LibraryImport(Library)] internal static partial void wl_proxy_set_queue(nint proxy, nint queue);
@@ -79,6 +80,7 @@ internal static unsafe partial class Posix
 		internal short Revents;
 	}
 	[LibraryImport("libc", SetLastError = true)] internal static partial int poll(PollFd* fds, nuint count, int timeout);
+	[LibraryImport("libc", SetLastError = true)] internal static partial int fcntl(int fd, int command, int argument);
 	[LibraryImport("libc", SetLastError = true)] internal static partial int pipe2(int* fds, int flags);
 	[LibraryImport("libc", SetLastError = true)] internal static partial nint write(int fd, byte* buffer, nuint count);
 	[LibraryImport("libc", SetLastError = true)] internal static partial nint read(int fd, byte* buffer, nuint count);

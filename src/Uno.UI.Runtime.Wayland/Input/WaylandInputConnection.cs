@@ -48,6 +48,8 @@ internal sealed class WaylandSeat : IDisposable
 		}
 		else if (_pointerProxy is { } pointer)
 		{
+			// A released wl_pointer gets no leave event; without an exit, Uno keeps elements in PointerOver.
+			_pointer.Leave();
 			_pointer.ResetPointer();
 			pointer.Dispose();
 			_pointerProxy = null;

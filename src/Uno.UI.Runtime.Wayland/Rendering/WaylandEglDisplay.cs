@@ -43,7 +43,7 @@ internal static class WaylandEglDisplay
 			else
 			{
 				_references.Remove(display);
-				WaylandRenderNative.eglTerminate(display);
+				_ = WaylandRenderNative.eglTerminate(display);
 			}
 		}
 	}

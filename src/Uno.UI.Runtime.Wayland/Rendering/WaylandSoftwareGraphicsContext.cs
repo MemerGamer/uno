@@ -10,23 +10,25 @@ namespace Uno.UI.Runtime.Wayland.Rendering;
 
 /// <summary>
 /// Software graphics context: the backend renders into a persistent CPU buffer, which <see cref="Present"/> copies
-/// into a wl_shm buffer the compositor is not holding. All members run on the window's render thread.
+/// into a wl_shm buffer the compositor is not holding. All members run on the owner thread.
 /// </summary>
 internal sealed class WaylandSoftwareGraphicsContext : IWaylandGraphicsContext
 {
-	private const uint ShmFormatArgb8888 = 0;
+	// Bounds memory even when a compositor retains old-size buffers across resizes.
+	private const int MaximumBuffers = 2;
 
 	private readonly WlSurface _surface;
 	private readonly WlShm _shm;
 	private readonly Action<Action> _postToOwner;
-	private readonly Func<bool> _prepareCommit;
-	private readonly List<Buffer> _buffers = new();
+	private readonly WaylandCommitGate _prepareCommit;
+	private readonly List<WaylandShmBuffer> _buffers = new();
 	private SoftwareRenderTarget? _target;
+	private bool _contentsPreserved;
 	private bool _frameAcquired;
 	private bool _disposed;
 
-	// Buffer release events arrive on the dispatch thread and are posted to the render thread.
-	public WaylandSoftwareGraphicsContext(WlSurface surface, WlShm shm, Action<Action> postToOwner, Func<bool> prepareCommit)
+	// Buffer release events arrive on the dispatch thread and are posted to the owner thread.
+	public WaylandSoftwareGraphicsContext(WlSurface surface, WlShm shm, Action<Action> postToOwner, WaylandCommitGate prepareCommit)
 	{
 		_surface = surface;
 		_shm = shm;
@@ -38,8 +40,8 @@ internal sealed class WaylandSoftwareGraphicsContext : IWaylandGraphicsContext
 
 	public GraphicsContextKind Kind => GraphicsContextKind.Software;
 
-	// The render target is a persistent buffer, so the compositor can repaint only the damaged region.
-	public bool PreservesContents => true;
+	// The target outlives presentation, so an unresized frame can repaint only its damage.
+	public bool PreservesContents => _contentsPreserved;
 
 	public bool Committed { get; private set; }
 
@@ -48,13 +50,14 @@ internal sealed class WaylandSoftwareGraphicsContext : IWaylandGraphicsContext
 		ObjectDisposedException.ThrowIf(_disposed, this);
 		width = Math.Max(1, width);
 		height = Math.Max(1, height);
-		if (_target is null || _target.Width != width || _target.Height != height)
+		_contentsPreserved = _target is not null && _target.Width == width && _target.Height == height;
+		if (!_contentsPreserved)
 		{
 			_target?.Free();
 			_target = new SoftwareRenderTarget(width, height);
 		}
 		_frameAcquired = true;
-		return _target;
+		return _target!;
 	}
 
 	public void Present()
@@ -65,7 +68,8 @@ internal sealed class WaylandSoftwareGraphicsContext : IWaylandGraphicsContext
 			return;
 		}
 		_frameAcquired = false;
-		if (!_prepareCommit() || GetAvailableBuffer(target.Width, target.Height) is not { } buffer)
+		// A frame that cannot be committed stays in the target and is copied by a later present.
+		if (GetAvailableBuffer(target.Width, target.Height) is not { } buffer || !_prepareCommit(target.Width, target.Height))
 		{
 			return;
 		}
@@ -87,9 +91,9 @@ internal sealed class WaylandSoftwareGraphicsContext : IWaylandGraphicsContext
 		Committed = true;
 	}
 
-	private Buffer? GetAvailableBuffer(int width, int height)
+	private WaylandShmBuffer? GetAvailableBuffer(int width, int height)
 	{
-		Buffer? available = null;
+		WaylandShmBuffer? available = null;
 		foreach (var buffer in _buffers.ToArray())
 		{
 			if (buffer.Width != width || buffer.Height != height)
@@ -107,18 +111,17 @@ internal sealed class WaylandSoftwareGraphicsContext : IWaylandGraphicsContext
 		}
 		if (available is null)
 		{
-			// Bound memory even when a compositor retains old-size buffers across resizes.
-			if (_buffers.Count >= 2)
+			if (_buffers.Count >= MaximumBuffers)
 			{
 				return null;
 			}
-			available = new Buffer(_shm, width, height, buffer => _postToOwner(() => OnRelease(buffer)));
+			available = new WaylandShmBuffer(_shm, width, height, buffer => _postToOwner(() => OnRelease(buffer)));
 			_buffers.Add(available);
 		}
 		return available;
 	}
 
-	private void OnRelease(Buffer buffer)
+	private void OnRelease(WaylandShmBuffer buffer)
 	{
 		if (!_buffers.Contains(buffer))
 		{
@@ -135,7 +138,7 @@ internal sealed class WaylandSoftwareGraphicsContext : IWaylandGraphicsContext
 		}
 	}
 
-	private void Remove(Buffer buffer)
+	private void Remove(WaylandShmBuffer buffer)
 	{
 		_buffers.Remove(buffer);
 		buffer.Dispose();
@@ -181,73 +184,6 @@ internal sealed class WaylandSoftwareGraphicsContext : IWaylandGraphicsContext
 		{
 			NativeMemory.Free((void*)Pixels);
 			Pixels = 0;
-		}
-	}
-
-	private sealed class Buffer : IDisposable
-	{
-		private readonly Action<Buffer> _released;
-
-		public Buffer(WlShm shm, int width, int height, Action<Buffer> released)
-		{
-			Width = width;
-			Height = height;
-			_released = released;
-			var stride = checked(width * 4);
-			Length = checked(stride * height);
-			var fd = WaylandRenderNative.memfd_create("uno-wayland", 1 /* MFD_CLOEXEC */);
-			if (fd < 0)
-			{
-				throw new InvalidOperationException("memfd_create failed.");
-			}
-			WlBuffer? proxy = null;
-			try
-			{
-				if (WaylandRenderNative.ftruncate(fd, Length) != 0)
-				{
-					throw new InvalidOperationException("ftruncate failed.");
-				}
-				Memory = WaylandRenderNative.mmap(IntPtr.Zero, (nuint)Length, 3 /* PROT_READ | PROT_WRITE */, 1 /* MAP_SHARED */, fd, 0);
-				if (Memory == new IntPtr(-1))
-				{
-					Memory = IntPtr.Zero;
-					throw new InvalidOperationException("mmap failed.");
-				}
-				using var pool = shm.CreatePool(fd, Length);
-				proxy = pool.CreateBuffer(0, width, height, stride, ShmFormatArgb8888);
-				Proxy = proxy;
-				Proxy.Release += OnRelease;
-			}
-			catch
-			{
-				proxy?.Dispose();
-				if (Memory != IntPtr.Zero)
-				{
-					WaylandRenderNative.munmap(Memory, (nuint)Length);
-				}
-				throw;
-			}
-			finally
-			{
-				WaylandRenderNative.close(fd);
-			}
-		}
-
-		public int Width { get; }
-		public int Height { get; }
-		public int Length { get; }
-		public IntPtr Memory { get; }
-		public bool Busy { get; set; }
-		public bool Retired { get; set; }
-		public WlBuffer Proxy { get; }
-
-		private void OnRelease(object? sender, EventArgs args) => _released(this);
-
-		public void Dispose()
-		{
-			Proxy.Release -= OnRelease;
-			Proxy.Dispose();
-			WaylandRenderNative.munmap(Memory, (nuint)Length);
 		}
 	}
 }

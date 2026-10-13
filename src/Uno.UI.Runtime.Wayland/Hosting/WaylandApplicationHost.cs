@@ -1,7 +1,6 @@
 #nullable enable
 
 using System;
-using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
@@ -16,6 +15,15 @@ namespace Uno.UI.Runtime.Wayland;
 
 public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, IDisposable
 {
+	private const int ShutdownTimeoutMilliseconds = 5000;
+
+	// Services are registered once per process, so the connection is process-wide too: like X11's shared state,
+	// a secondary host reuses it and only the host that connected tears it down.
+	private static readonly object _connectionGate = new();
+	private static readonly WaylandCoreApplicationExtension _coreApplication = new(() => _connection);
+	private static volatile WaylandConnection? _connection;
+	private static bool _connectionClosed;
+
 	// The connection that passed probing, handed to the selected host to avoid a probe/create race.
 	private static WaylandDisplay? _probedDisplay;
 
@@ -23,13 +31,15 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 
 	private readonly Func<Application> _appBuilder;
 	private readonly EventLoop? _eventLoop;
-	private readonly WaylandCoreApplicationExtension _coreApplication;
-	private WaylandConnection? _connection;
+	private readonly object _dispatcherGate = new();
+	private bool _dispatcherStopped;
+	private bool _ownsConnection;
+	private Task? _shutdown;
 
-	internal WaylandApplicationHost(Func<Application> appBuilder)
+	internal WaylandApplicationHost(Func<Application> appBuilder, bool useSystemHarfBuzz)
 	{
 		_appBuilder = appBuilder ?? throw new ArgumentNullException(nameof(appBuilder));
-		_coreApplication = new WaylandCoreApplicationExtension(() => _connection);
+		WaylandHarfBuzz.Isolate(useSystemHarfBuzz);
 
 		if (CoreDispatcher.DispatchOverride is null)
 		{
@@ -39,7 +49,17 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 				Thread.CurrentThread.Name = "Uno Event Loop";
 				_isDispatcherThread = true;
 			});
-			CoreDispatcher.DispatchOverride = (action, _) => _eventLoop.Schedule(action);
+			// Once the connection is closed the UI thread stops, so nothing can reach the disconnected display.
+			CoreDispatcher.DispatchOverride = (action, _) =>
+			{
+				lock (_dispatcherGate)
+				{
+					if (!_dispatcherStopped)
+					{
+						_eventLoop.Schedule(action);
+					}
+				}
+			};
 			CoreDispatcher.HasThreadAccessOverride = () => _isDispatcherThread;
 		}
 		else
@@ -57,9 +77,12 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 		{
 			return false;
 		}
-		if (_probedDisplay is { IsDisconnected: false, DispatchError: null })
+		lock (_connectionGate)
 		{
-			return true;
+			if (_connection is not null || _probedDisplay is { IsDisconnected: false, DispatchError: null })
+			{
+				return true;
+			}
 		}
 		try
 		{
@@ -67,7 +90,12 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 			var display = WaylandDisplay.Connect();
 			if (HasRequiredGlobals(display))
 			{
-				_probedDisplay = display;
+				lock (_connectionGate)
+				{
+					var previous = _probedDisplay;
+					_probedDisplay = display;
+					previous?.Dispose();
+				}
 				return true;
 			}
 			display.Dispose();
@@ -93,59 +121,84 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 
 	protected override void Initialize()
 	{
-		var display = Interlocked.Exchange(ref _probedDisplay, null) ?? WaylandDisplay.Connect();
-		try
+		lock (_connectionGate)
 		{
-			if (!HasRequiredGlobals(display))
+			if (_connection is not null)
 			{
-				throw new PlatformNotSupportedException("Required Wayland globals are unavailable.");
+				return;
 			}
-			_connection = new WaylandConnection(display);
-			display.StartDispatch();
+			if (_connectionClosed)
+			{
+				// Registered services still reference the closed connection.
+				throw new InvalidOperationException("The Wayland host cannot run again after its connection was closed.");
+			}
+			var display = _probedDisplay ?? WaylandDisplay.Connect();
+			_probedDisplay = null;
+			try
+			{
+				if (!HasRequiredGlobals(display))
+				{
+					throw new PlatformNotSupportedException("Required Wayland globals are unavailable.");
+				}
+				var connection = new WaylandConnection(display);
+				display.StartDispatch();
+				WaylandRegistrations.Register(connection, _coreApplication);
+				_connection = connection;
+				_ownsConnection = true;
+			}
+			catch
+			{
+				display.Dispose();
+				throw;
+			}
 		}
-		catch
-		{
-			display.Dispose();
-			_connection = null;
-			throw;
-		}
-		WaylandRegistrations.Register(_connection, _coreApplication);
 		WaylandDiagnostics.Trace("host: connected, dispatch thread started");
 	}
 
 	protected override Task RunLoop()
 	{
 		Thread.CurrentThread.Name = "Main Thread (keep-alive)";
-		if (_eventLoop is not null)
+		try
 		{
-			_eventLoop.Schedule(StartApp);
-		}
-		else
-		{
-			CoreDispatcher.DispatchOverride(StartApp, NativeDispatcherPriority.Normal);
-		}
-
-		while (!ShouldExit())
-		{
-			Thread.Sleep(100);
-		}
-
-		if (_connection?.Display.DispatchError is { } error)
-		{
-			WaylandDiagnostics.Trace($"host: dispatch failed: {error}");
-			if (this.Log().IsEnabled(LogLevel.Error))
+			if (_eventLoop is not null)
 			{
-				this.Log().Error("The Wayland connection failed.", error);
+				_eventLoop.Schedule(StartApp);
 			}
-			throw new IOException("The Wayland connection failed.", error);
+			else
+			{
+				CoreDispatcher.DispatchOverride(StartApp, NativeDispatcherPriority.Normal);
+			}
+
+			while (!ShouldExit())
+			{
+				Thread.Sleep(100);
+			}
+
+			if (_connection?.Display.DispatchError is { } error)
+			{
+				// The compositor went away or ended the connection: nothing can be shown anymore, so the app ends
+				// with a failure exit code instead of an unhandled exception.
+				if (this.Log().IsEnabled(LogLevel.Error))
+				{
+					this.Log().Error("The Wayland connection failed; exiting.", error);
+				}
+				Environment.ExitCode = 1;
+			}
+			else
+			{
+				WaylandDiagnostics.Trace("host: exiting");
+			}
+			return Task.CompletedTask;
 		}
-		WaylandDiagnostics.Trace("host: exiting");
-		return Task.CompletedTask;
+		finally
+		{
+			Dispose();
+		}
 	}
 
 	private bool ShouldExit()
 	{
-		if (_coreApplication.ExitRequested || _connection?.Display.DispatchError is not null)
+		if (Volatile.Read(ref _shutdown) is not null || _coreApplication.ExitRequested || _connection?.Display.DispatchError is not null)
 		{
 			return true;
 		}
@@ -163,9 +216,115 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 		});
 	}
 
+	// Waits for the ordered shutdown unless called on the UI thread, which the shutdown itself needs.
 	public void Dispose()
 	{
-		_connection?.Dispose();
-		_connection = null;
+		if (!_ownsConnection)
+		{
+			return;
+		}
+		var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var shutdown = Interlocked.CompareExchange(ref _shutdown, started.Task, null);
+		if (shutdown is null)
+		{
+			shutdown = started.Task;
+			_ = ShutdownAsync(started);
+		}
+		if (CoreDispatcher.HasThreadAccessOverride?.Invoke() != true)
+		{
+			shutdown.GetAwaiter().GetResult();
+		}
+	}
+
+	// Windows close on the UI thread; each render thread then releases its EGL or wl_shm resources and destroys the
+	// window's protocol objects. Only then do the UI and dispatch threads stop and the display disconnect.
+	private async Task ShutdownAsync(TaskCompletionSource completion)
+	{
+		try
+		{
+			var connection = _connection!;
+			WaylandDiagnostics.Trace("host: shutdown started");
+			if (!await RunOnUIAsync("closing windows", connection.CloseAllWindows).ConfigureAwait(false))
+			{
+				return;
+			}
+			WaylandDiagnostics.Trace("host: windows closed");
+			if (!await RunOnUIAsync("stopping the UI thread", StopDispatcher).ConfigureAwait(false))
+			{
+				return;
+			}
+			connection.Dispose();
+			lock (_connectionGate)
+			{
+				_connection = null;
+				_connectionClosed = true;
+			}
+			WaylandDiagnostics.Trace("host: disconnected");
+		}
+		catch (Exception error)
+		{
+			if (this.Log().IsEnabled(LogLevel.Error))
+			{
+				this.Log().Error("The Wayland host failed to shut down.", error);
+			}
+		}
+		finally
+		{
+			completion.TrySetResult();
+		}
+	}
+
+	private Task StopDispatcher()
+	{
+		lock (_dispatcherGate)
+		{
+			_dispatcherStopped = true;
+			_eventLoop?.Dispose();
+		}
+		return Task.CompletedTask;
+	}
+
+	// False when the step failed or timed out: a renderer may still use the native display, so the connection is
+	// left for process exit to reclaim.
+	private async Task<bool> RunOnUIAsync(string name, Func<Task> step)
+	{
+		var result = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+		void Run()
+		{
+			try
+			{
+				result.TrySetResult(step());
+			}
+			catch (Exception error)
+			{
+				result.TrySetException(error);
+			}
+		}
+		if (CoreDispatcher.HasThreadAccessOverride?.Invoke() == true)
+		{
+			Run();
+		}
+		else
+		{
+			CoreDispatcher.DispatchOverride(Run, NativeDispatcherPriority.High);
+		}
+		var task = result.Task.Unwrap();
+		if (await Task.WhenAny(task, Task.Delay(ShutdownTimeoutMilliseconds)).ConfigureAwait(false) != task)
+		{
+			if (this.Log().IsEnabled(LogLevel.Error))
+			{
+				this.Log().Error($"Wayland shutdown timed out after {ShutdownTimeoutMilliseconds} ms while {name}; the connection is left open.");
+			}
+			return false;
+		}
+		if (task.Exception is { } error)
+		{
+			if (this.Log().IsEnabled(LogLevel.Error))
+			{
+				this.Log().Error($"Wayland shutdown failed while {name}; the connection is left open.", error);
+			}
+			return false;
+		}
+		return true;
 	}
 }

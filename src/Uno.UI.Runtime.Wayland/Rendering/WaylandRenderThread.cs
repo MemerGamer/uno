@@ -2,14 +2,20 @@
 using System;
 using System.Collections.Concurrent;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Uno.UI.Runtime.Wayland.Rendering;
 
-// Single owner thread for one window's renderer, frame scheduler, Skia surfaces and EGL context.
+// Single owner thread for one window's renderer, frame scheduler and graphics context.
 internal sealed class WaylandRenderThread : IDisposable
 {
 	private readonly BlockingCollection<Action> _queue = new();
 	private readonly Thread _thread;
+	private readonly object _gate = new();
+	private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+	private bool _completed;
+
+	internal Task Completion => _completion.Task;
 	private readonly Action<Exception> _onError;
 
 	public WaylandRenderThread(string name, Action<Exception> onError)
@@ -21,32 +27,51 @@ internal sealed class WaylandRenderThread : IDisposable
 
 	public void Post(Action action)
 	{
-		try
+		lock (_gate)
 		{
-			_queue.Add(action);
-		}
-		catch (InvalidOperationException)
-		{
-			// Completed: the window is closing and its renderer is gone.
+			if (!_completed)
+			{
+				_queue.Add(action);
+			}
 		}
 	}
 
 	private void Run()
 	{
-		foreach (var action in _queue.GetConsumingEnumerable())
+		try
 		{
-			try
+			foreach (var action in _queue.GetConsumingEnumerable())
 			{
-				action();
+				try
+				{
+					action();
+				}
+				catch (Exception error)
+				{
+					_onError(error);
+				}
 			}
-			catch (Exception error)
+		}
+		finally
+		{
+			lock (_gate)
 			{
-				_onError(error);
+				_completed = true;
+				_queue.Dispose();
 			}
+			_completion.TrySetResult();
 		}
 	}
 
-	// The thread drains queued work, including disposal posted before this call, then exits.
-	// Not joined: the UI thread must never wait on rendering.
-	public void Dispose() => _queue.CompleteAdding();
+	public void Dispose()
+	{
+		lock (_gate)
+		{
+			if (!_completed)
+			{
+				_completed = true;
+				_queue.CompleteAdding();
+			}
+		}
+	}
 }
