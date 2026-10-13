@@ -73,6 +73,8 @@ internal sealed class WaylandConnection : IDisposable
 	// Written on the dispatch thread; read under SyncRoot or on the dispatch thread.
 	internal uint SeatCapabilities { get; private set; }
 	internal (int Width, int Height) OutputPixelSize { get; private set; }
+	// Serial of the latest keyboard enter, key or button event, for requests that require user interaction. Dispatch thread only.
+	internal uint InputSerial { get; set; }
 	internal (int Width, int Height) OutputPhysicalSizeMm { get; private set; }
 
 	internal string AppId { get; set; } = "uno.app";
