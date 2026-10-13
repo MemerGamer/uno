@@ -67,14 +67,47 @@ public sealed class KeyboardRepeatTests
 		});
 	}
 
+	[TestMethod]
+	public void RepeatKeepsTheDeliveryModeOfThePress()
+	{
+		WithKeyboard((keyboard, _) =>
+		{
+			var events = new List<string>();
+			keyboard.KeyDown += (_, args) => events.Add($"down {args.VirtualKey}");
+			keyboard.KeyUp += (_, args) => events.Add($"up {args.VirtualKey}");
+			keyboard.RepeatInfo(0, 0);
+
+			// A Compose string press only ever inserts text, even once Control is held.
+			ComposeAcute(keyboard, 36); // j́
+			keyboard.Key(36, 2);
+			keyboard.UpdateModifiers(4, 0, 0, 0); // Control
+			keyboard.Key(36, 2);
+			keyboard.Key(36, 0);
+			keyboard.UpdateModifiers(0, 0, 0, 0);
+			CollectionAssert.AreEqual(Array.Empty<string>(), events);
+
+			// A key event press keeps raising key events, even once Control is released.
+			keyboard.UpdateModifiers(4, 0, 0, 0);
+			ComposeAcute(keyboard, 36);
+			keyboard.UpdateModifiers(0, 0, 0, 0);
+			keyboard.Key(36, 2);
+			keyboard.Key(36, 1);
+			keyboard.Key(36, 0);
+			CollectionAssert.AreEqual(new[] { "down J", "down J", "down J", "up J" }, events);
+		});
+	}
+
 	private static char? GetText(KeyEventArgs args)
 		=> (char?)typeof(KeyEventArgs).GetProperty("UnicodeKey", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(args);
 
 	private static void ComposeAcuteE(WaylandKeyboardInputSource keyboard)
+		=> ComposeAcute(keyboard, 18); // e
+
+	private static void ComposeAcute(WaylandKeyboardInputSource keyboard, uint key)
 	{
 		keyboard.Key(40, 1); // us(intl) apostrophe: dead_acute
 		keyboard.Key(40, 0);
-		keyboard.Key(18, 1); // e
+		keyboard.Key(key, 1);
 	}
 
 	private static void WithKeyboard(Action<WaylandKeyboardInputSource, InputConnection> test)

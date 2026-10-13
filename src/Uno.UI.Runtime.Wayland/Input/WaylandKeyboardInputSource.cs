@@ -180,7 +180,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 		{
 			if (_rate == 0 && _pressed.TryGetValue(key, out var repeated))
 			{
-				Emit(key, repeated.VirtualKey, true, true, repeated.ComposedText, repeated.ComposedString);
+				EmitRepeat(key, repeated);
 			}
 			return;
 		}
@@ -194,13 +194,17 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			{
 				return;
 			}
+			if (_pressed.TryGetValue(key, out var pressed))
+			{
+				EmitRepeat(key, pressed);
+				return;
+			}
 			var sym = WaylandXkb.GetSym(_state, key + 8);
 			var vk = LinuxKeyMap.FromKeysym(sym);
-			var wasDown = _pressed.TryGetValue(key, out var pressed);
 			var keyText = WaylandXkb.GetUtf32(_state, key + 8);
-			var composed = wasDown ? pressed.ComposedText : null;
-			var composedString = wasDown ? pressed.ComposedString : null;
-			if (!wasDown && _compose is { } compose)
+			uint? composed = null;
+			string? composedString = null;
+			if (_compose is { } compose)
 			{
 				// Like keys taken by an input method, keys consumed by a dead-key or Compose sequence raise no key events.
 				var fed = compose.Feed(sym, keyText, out var completeText);
@@ -211,8 +215,8 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 				composed = fed != keyText ? fed : null;
 				composedString = completeText is { Length: > 1 } ? completeText : null;
 			}
-			var committedText = !Emit(key, vk, true, wasDown, composed ?? keyText, composedString);
-			_pressed[key] = new(vk, composed, composedString, committedText);
+			var committedText = !Emit(key, vk, true, false, composed ?? keyText, composedString);
+			_pressed[key] = new(vk, committedText ? composed ?? keyText : composed, composedString, committedText);
 			if (_rate > 0 && WaylandXkb.Repeats(_keymap, key + 8) != 0)
 			{
 				StopRepeat();
@@ -222,7 +226,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 				{
 					if (!_disposed && _focused && generation == _generation && _pressed.TryGetValue(key, out var repeated))
 					{
-						Emit(key, repeated.VirtualKey, true, true, repeated.ComposedText, repeated.ComposedString);
+						EmitRepeat(key, repeated);
 					}
 				}), null, _delay, Math.Max(1, 1000 / _rate));
 			}
@@ -239,8 +243,11 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			}
 		}
 	}
+	private void EmitRepeat(uint key, PressedKey pressed)
+		=> Emit(key, pressed.VirtualKey, true, true, pressed.ComposedText, pressed.ComposedString, pressed.CommittedText);
+
 	// Returns false when the press committed a complete string instead of raising KeyDown.
-	private bool Emit(uint key, VirtualKey vk, bool down, bool previous, uint? text = null, string? composedString = null)
+	private bool Emit(uint key, VirtualKey vk, bool down, bool previous, uint? text = null, string? composedString = null, bool? committedText = null)
 	{
 		var unicode = text ?? (down && _state != 0 ? WaylandXkb.GetUtf32(_state, key + 8) : 0);
 		char? character = unicode is >= 32 and <= 0xffff && unicode is not (>= 0xd800 and <= 0xdfff) || unicode == 13 ? (char)unicode : null;
@@ -250,7 +257,11 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			character = null;
 			completeText = null;
 		}
-		if (down && completeText is not null)
+		if (committedText == true && completeText is null)
+		{
+			return false;
+		}
+		if (down && committedText != false && completeText is not null)
 		{
 			// Like input method text, complete strings raise no key events: a KeyDown without UnicodeKey would still
 			// insert the key's own character. Without an input method, the composition callbacks insert the string
