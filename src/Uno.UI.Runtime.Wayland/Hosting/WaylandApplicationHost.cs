@@ -5,7 +5,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Uno.Foundation.Logging;
-using Uno.Helpers;
 using Uno.UI.Dispatching;
 using Uno.UI.Hosting;
 using Uno.UI.Runtime.Linux;
@@ -31,9 +30,7 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 	[ThreadStatic] private static bool _isDispatcherThread;
 
 	private readonly Func<Application> _appBuilder;
-	private readonly EventLoop? _eventLoop;
-	private readonly object _dispatcherGate = new();
-	private bool _dispatcherStopped;
+	private readonly WaylandDispatcher? _eventLoop;
 	private bool _ownsConnection;
 	private Task? _shutdown;
 
@@ -44,23 +41,13 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 
 		if (CoreDispatcher.DispatchOverride is null)
 		{
-			_eventLoop = new EventLoop();
+			_eventLoop = new WaylandDispatcher();
 			_eventLoop.Schedule(() =>
 			{
 				Thread.CurrentThread.Name = "Uno Event Loop";
 				_isDispatcherThread = true;
 			});
-			// Once the connection is closed the UI thread stops, so nothing can reach the disconnected display.
-			CoreDispatcher.DispatchOverride = (action, _) =>
-			{
-				lock (_dispatcherGate)
-				{
-					if (!_dispatcherStopped)
-					{
-						_eventLoop.Schedule(action);
-					}
-				}
-			};
+			CoreDispatcher.DispatchOverride = (action, _) => _eventLoop.Schedule(action);
 			CoreDispatcher.HasThreadAccessOverride = () => _isDispatcherThread;
 		}
 		else
@@ -264,7 +251,7 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 		}
 		catch (Exception error)
 		{
-			if (this.Log().IsEnabled(LogLevel.Error))
+			if (_connection?.Display.DispatchError is null && this.Log().IsEnabled(LogLevel.Error))
 			{
 				this.Log().Error("The Wayland host failed to shut down.", error);
 			}
@@ -275,15 +262,7 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 		}
 	}
 
-	private Task StopDispatcher()
-	{
-		lock (_dispatcherGate)
-		{
-			_dispatcherStopped = true;
-			_eventLoop?.Dispose();
-		}
-		return Task.CompletedTask;
-	}
+	private Task StopDispatcher() => _eventLoop?.Stop() ?? Task.CompletedTask;
 
 	// False when the step failed or timed out: a renderer may still use the native display, so the connection is
 	// left for process exit to reclaim.
@@ -318,9 +297,13 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 			}
 			return false;
 		}
-		if (task.Exception is { } error)
+		try
 		{
-			if (this.Log().IsEnabled(LogLevel.Error))
+			await task.ConfigureAwait(false);
+		}
+		catch (Exception error)
+		{
+			if (_connection?.Display.DispatchError is null && this.Log().IsEnabled(LogLevel.Error))
 			{
 				this.Log().Error($"Wayland shutdown failed while {name}; the connection is left open.", error);
 			}

@@ -22,6 +22,7 @@ internal sealed class WaylandConnection : IDisposable
 	private readonly Dictionary<uint, WaylandOutput> _outputs = new();
 	private volatile WaylandOutput? _defaultOutput;
 	// UI thread: render-thread teardown of closed windows that has not finished yet.
+	// Failed teardowns are kept so shutdown observes them.
 	private readonly List<Task> _retiringWindows = new();
 	private volatile bool _allWindowsClosed;
 	// The launcher's startup token, consumed by the first activation (xdg-activation-v1 startup notification).
@@ -231,9 +232,14 @@ internal sealed class WaylandConnection : IDisposable
 	internal void RemoveWindow(WaylandWindowWrapper window, Task completion)
 	{
 		_windows.Remove(window);
-		_retiringWindows.RemoveAll(task => task.IsCompleted);
-		_retiringWindows.Add(completion);
+		TrackWindowTeardown(completion);
 		_allWindowsClosed = _windows.Count == 0;
+	}
+
+	internal void TrackWindowTeardown(Task completion)
+	{
+		_retiringWindows.RemoveAll(task => task.IsCompletedSuccessfully);
+		_retiringWindows.Add(completion);
 	}
 
 	internal bool AllWindowsClosed => _allWindowsClosed;
