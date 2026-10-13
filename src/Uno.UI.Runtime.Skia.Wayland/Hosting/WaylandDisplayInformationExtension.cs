@@ -9,6 +9,7 @@ using Windows.Graphics.Display;
 namespace Uno.WinUI.Runtime.Skia.Wayland;
 
 // Per-window scale comes from the surface (fractional-scale-v1 or preferred_buffer_scale), never output millimetres.
+// Resolution and size describe the output the window is on; the window raises DpiChanged when that changes.
 internal sealed class WaylandDisplayInformationExtension : IDisplayInformationExtension
 {
 	private readonly DisplayInformation _owner;
@@ -40,11 +41,13 @@ internal sealed class WaylandDisplayInformationExtension : IDisplayInformationEx
 
 	private double Scale => Window?.Scale ?? 1;
 
+	private WaylandOutputInfo? Output => Window?.OutputInfo ?? _connection.DefaultOutputInfo;
+
 	public DisplayOrientations CurrentOrientation => DisplayOrientations.Landscape;
 
-	public uint ScreenWidthInRawPixels => (uint)Math.Max(_connection.OutputPixelSize.Width, 0);
+	public uint ScreenWidthInRawPixels => (uint)Math.Max(Output?.PixelWidth ?? 0, 0);
 
-	public uint ScreenHeightInRawPixels => (uint)Math.Max(_connection.OutputPixelSize.Height, 0);
+	public uint ScreenHeightInRawPixels => (uint)Math.Max(Output?.PixelHeight ?? 0, 0);
 
 	public float LogicalDpi => (float)(DisplayInformation.BaseDpi * Scale);
 
@@ -52,14 +55,7 @@ internal sealed class WaylandDisplayInformationExtension : IDisplayInformationEx
 
 	public ResolutionScale ResolutionScale => (ResolutionScale)(int)Math.Round(Scale * 100);
 
-	public double? DiagonalSizeInInches
-	{
-		get
-		{
-			var (width, height) = _connection.OutputPhysicalSizeMm;
-			return width > 0 && height > 0 ? Math.Sqrt(width * width + height * height) / 25.4 : null;
-		}
-	}
+	public double? DiagonalSizeInInches => Output?.DiagonalSizeInInches;
 
 	internal void NotifyDpiChanged() => _owner.NotifyDpiChanged();
 }

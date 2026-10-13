@@ -46,7 +46,22 @@ public sealed class App : Application
 		panel.Children.Add(counter);
 		panel.Children.Add(button);
 		window.Content = new Grid { Background = new SolidColorBrush(Colors.SteelBlue), Children = { panel } };
+		if (Environment.GetEnvironmentVariable("WAYLAND_SAMPLE_ANIMATE") == "1")
+		{
+			// Continuous animation: one UI frame per Rendering tick, reported once per second.
+			var frames = 0;
+			var frameText = new TextBlock { FontSize = 18, Foreground = new SolidColorBrush(Colors.White), HorizontalAlignment = HorizontalAlignment.Center };
+			panel.Children.Add(frameText);
+			CompositionTarget.Rendering += (_, _) => frameText.Text = $"UI frames: {++frames}";
+			var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+			timer.Tick += (_, _) => Console.WriteLine($"UI frames: {frames}");
+			timer.Start();
+		}
 		window.Activate();
+		var display = Windows.Graphics.Display.DisplayInformation.GetForCurrentView();
+		void ReportDisplay() => Console.WriteLine($"DisplayInformation: {display.ScreenWidthInRawPixels}x{display.ScreenHeightInRawPixels} scale {display.RawPixelsPerViewPixel} dpi {display.LogicalDpi} diagonal {display.DiagonalSizeInInches?.ToString() ?? "n/a"}");
+		display.DpiChanged += (_, _) => ReportDisplay();
+		ReportDisplay();
 		Console.WriteLine("OnLaunched: window activated");
 	}
 

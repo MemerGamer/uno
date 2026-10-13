@@ -3,6 +3,7 @@
 #nullable enable
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Microsoft.UI.Xaml;
 using Uno.UI.Xaml.Controls;
@@ -45,6 +46,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase
 	private int _requestedWidth = InitialWidth;
 	private int _requestedHeight = InitialHeight;
 	private bool _configured;
+	// Most recently entered last; the last one is the window's current output.
+	private readonly List<WaylandOutput> _enteredOutputs = new();
+	private volatile WaylandOutputInfo? _outputInfo;
 
 	internal WaylandWindowWrapper(WaylandConnection connection, Window window, XamlRoot root)
 		: base(window, root)
@@ -58,6 +62,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase
 		{
 			_surface = connection.Compositor.CreateSurface();
 			_surface.PreferredBufferScale += OnPreferredBufferScale;
+			_surface.Enter += OnSurfaceEnter;
+			_surface.Leave += OnSurfaceLeave;
+			connection.OutputRemoved += OnOutputRemoved;
 			_xdgSurface = connection.WmBase.GetXdgSurface(_surface);
 			_xdgSurface.Configure += OnXdgSurfaceConfigure;
 			_toplevel = _xdgSurface.GetToplevel();
@@ -152,6 +159,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase
 
 	internal void SetDisplayInformationExtension(WaylandDisplayInformationExtension extension) => _displayInformation = extension;
 
+	// The output the window was last seen entering, or the first advertised one before it was mapped.
+	internal WaylandOutputInfo? OutputInfo => _outputInfo ?? _connection.DefaultOutputInfo;
+
 	// Dispatch thread handlers: copy state, acknowledge, then post to the UI and render owners.
 	private void OnToplevelConfigure(object? sender, XdgToplevel.ConfigureEventArgs args)
 	{
@@ -202,6 +212,76 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase
 		if (_configured)
 		{
 			Publish(_logicalWidth, _logicalHeight);
+		}
+	}
+
+	private void OnSurfaceEnter(object? sender, WlSurface.EnterEventArgs args)
+	{
+		if (_connection.FindOutput(args.Output) is not { } output)
+		{
+			return;
+		}
+		if (!_enteredOutputs.Remove(output))
+		{
+			output.Changed += OnEnteredOutputChanged;
+		}
+		_enteredOutputs.Add(output);
+		WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: entered output {output.Info.Name}"));
+		OnOutputsChanged();
+	}
+
+	private void OnSurfaceLeave(object? sender, WlSurface.LeaveEventArgs args)
+	{
+		if (_connection.FindOutput(args.Output) is { } output)
+		{
+			LeaveOutput(output);
+		}
+	}
+
+	private void OnOutputRemoved(object? sender, WaylandOutput output) => LeaveOutput(output);
+
+	private void LeaveOutput(WaylandOutput output)
+	{
+		output.Changed -= OnEnteredOutputChanged;
+		if (_enteredOutputs.Remove(output))
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: left output {output.Info.Name}"));
+			OnOutputsChanged();
+		}
+	}
+
+	private void OnEnteredOutputChanged(object? sender, EventArgs args) => OnOutputsChanged();
+
+	private void OnOutputsChanged()
+	{
+		if (_closed)
+		{
+			return;
+		}
+		// Keep the last output while the window is on none (e.g. hidden), like the integer scale below.
+		var current = _enteredOutputs.Count > 0 ? _enteredOutputs[^1].Info : _outputInfo;
+		if (current != _outputInfo)
+		{
+			_outputInfo = current;
+			WaylandConnection.PostToUI(() => _displayInformation?.NotifyDpiChanged());
+		}
+		// Surfaces before v6 get no preferred_buffer_scale: derive it from the entered outputs instead.
+		if (_surface.Version < 6)
+		{
+			var infos = new List<WaylandOutputInfo>(_enteredOutputs.Count);
+			foreach (var output in _enteredOutputs)
+			{
+				infos.Add(output.Info);
+			}
+			var scale = WaylandOutput.GetIntegerScale(infos, _integerScale);
+			if (scale != _integerScale)
+			{
+				_integerScale = scale;
+				if (_configured)
+				{
+					Publish(_logicalWidth, _logicalHeight);
+				}
+			}
 		}
 	}
 
@@ -265,6 +345,12 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase
 		_connection.RemoveWindow(this);
 		_host.Dispose(() =>
 		{
+			_connection.OutputRemoved -= OnOutputRemoved;
+			foreach (var output in _enteredOutputs)
+			{
+				output.Changed -= OnEnteredOutputChanged;
+			}
+			_enteredOutputs.Clear();
 			_decoration?.Dispose();
 			_fractionalScale?.Dispose();
 			_viewport?.Dispose();

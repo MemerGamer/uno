@@ -19,6 +19,9 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 internal sealed class WaylandConnection : IDisposable
 {
 	private readonly HashSet<WaylandWindowWrapper> _windows = new();
+	// Dispatch thread or SyncRoot.
+	private readonly Dictionary<uint, WaylandOutput> _outputs = new();
+	private volatile WaylandOutput? _defaultOutput;
 	private bool _hadWindow;
 
 	internal WaylandConnection(WaylandDisplay display)
@@ -34,7 +37,7 @@ internal sealed class WaylandConnection : IDisposable
 			FractionalScale = Viewporter is null ? null : TryBind<WpFractionalScaleManagerV1>(WpFractionalScaleManagerV1.ProtocolName, 1);
 			Decorations = TryBind<ZxdgDecorationManagerV1>(ZxdgDecorationManagerV1.ProtocolName, 1);
 			CursorShape = TryBind<WpCursorShapeManagerV1>(WpCursorShapeManagerV1.ProtocolName, 1);
-			// TODO: multiple seats and outputs; the first advertised one is used for now.
+			// TODO: multiple seats; the first advertised one is used for now.
 			Seat = TryBind<WlSeat>(WlSeat.ProtocolName, 9);
 			if (Seat is not null)
 			{
@@ -44,18 +47,31 @@ internal sealed class WaylandConnection : IDisposable
 					WaylandDiagnostics.Trace(FormattableString.Invariant($"seat: capabilities pointer={(e.Capabilities & 1) != 0} keyboard={(e.Capabilities & 2) != 0} touch={(e.Capabilities & 4) != 0}"));
 				};
 			}
-			Output = TryBind<WlOutput>(WlOutput.ProtocolName, 4);
-			if (Output is not null)
+			foreach (var global in display.Globals)
 			{
-				Output.Mode += (_, e) =>
+				if (global.Interface == WlOutput.ProtocolName)
 				{
-					if ((e.Flags & 1) != 0)
-					{
-						OutputPixelSize = (e.Width, e.Height);
-					}
-				};
-				Output.Geometry += (_, e) => OutputPhysicalSizeMm = (e.PhysicalWidth, e.PhysicalHeight);
+					AddOutput(global);
+				}
 			}
+			// Outputs come and go with monitor hotplug; the display's own registry handler has already updated its globals.
+			display.Registry.Global += (_, e) =>
+			{
+				if (e.Interface == WlOutput.ProtocolName)
+				{
+					AddOutput(new WaylandGlobal(e.Name, e.Interface, e.Version));
+				}
+			};
+			display.Registry.GlobalRemove += (_, e) =>
+			{
+				if (_outputs.Remove(e.Name, out var output))
+				{
+					WaylandDiagnostics.Trace(FormattableString.Invariant($"output {output.Info.Name}: removed"));
+					UpdateDefaultOutput();
+					OutputRemoved?.Invoke(this, output);
+					output.Dispose();
+				}
+			};
 		}
 	}
 
@@ -68,12 +84,50 @@ internal sealed class WaylandConnection : IDisposable
 	internal ZxdgDecorationManagerV1? Decorations { get; }
 	internal WpCursorShapeManagerV1? CursorShape { get; }
 	internal WlSeat? Seat { get; }
-	internal WlOutput? Output { get; }
 
 	// Written on the dispatch thread; read under SyncRoot or on the dispatch thread.
 	internal uint SeatCapabilities { get; private set; }
-	internal (int Width, int Height) OutputPixelSize { get; private set; }
-	internal (int Width, int Height) OutputPhysicalSizeMm { get; private set; }
+
+	// Raised on the dispatch thread before the removed output's proxy is released.
+	internal event EventHandler<WaylandOutput>? OutputRemoved;
+
+	// Dispatch thread or SyncRoot.
+	internal WaylandOutput? FindOutput(WlOutput? proxy)
+	{
+		foreach (var output in _outputs.Values)
+		{
+			if (output.Proxy == proxy)
+			{
+				return output;
+			}
+		}
+		return null;
+	}
+
+	// Any thread: the first advertised output, for windows that have not entered one yet.
+	internal WaylandOutputInfo? DefaultOutputInfo => _defaultOutput?.Info;
+
+	private void AddOutput(WaylandGlobal global)
+	{
+		var proxy = (WlOutput)Display.Registry.Bind(global.Name, WlOutput.ProtocolName, Math.Min(global.Version, WlOutput.MaximumVersion));
+		var output = new WaylandOutput(global.Name, proxy);
+		output.Changed += (_, _) => WaylandDiagnostics.Trace(FormattableString.Invariant($"output {output.Info.Name}: {output.Info.PixelWidth}x{output.Info.PixelHeight} scale {output.Info.Scale} \"{output.Info.Description}\""));
+		_outputs.Add(global.Name, output);
+		UpdateDefaultOutput();
+	}
+
+	private void UpdateDefaultOutput()
+	{
+		WaylandOutput? first = null;
+		foreach (var output in _outputs.Values)
+		{
+			if (first is null || output.GlobalName < first.GlobalName)
+			{
+				first = output;
+			}
+		}
+		_defaultOutput = first;
+	}
 
 	internal string AppId { get; set; } = "uno.app";
 
