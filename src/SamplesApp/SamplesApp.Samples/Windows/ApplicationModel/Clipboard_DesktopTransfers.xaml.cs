@@ -89,7 +89,7 @@ public sealed partial class Clipboard_DesktopTransfers : Page
 
 	private void DragOverTarget(object sender, DragEventArgs e)
 	{
-		e.AcceptedOperation = e.AllowedOperations & (AcceptMove.IsChecked == true
+		e.AcceptedOperation = e.AllowedOperations & (AcceptMove.IsOn
 			? DataPackageOperation.Copy | DataPackageOperation.Move : DataPackageOperation.Copy);
 	}
 
