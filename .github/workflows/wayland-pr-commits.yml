@@ -1,0 +1,168 @@
+name: Wayland PR commits
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 'Exclusive base commit/ref (must be an ancestor of head)'
+        required: true
+        type: string
+        default: 56e430f5c5
+      head:
+        description: 'Inclusive head commit/ref'
+        required: true
+        type: string
+        default: wayland/pr
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wayland-pr-commits-${{ inputs.base }}-${{ inputs.head }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+defaults:
+  run:
+    shell: bash
+    working-directory: source
+
+jobs:
+  range:
+    if: github.repository == 'MemerGamer/uno'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.range.outputs.matrix }}
+      base: ${{ steps.range.outputs.base }}
+      head: ${{ steps.range.outputs.head }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.head }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - name: Resolve range and enumerate every commit
+        id: range
+        env:
+          BASE_REF: ${{ inputs.base }}
+          HEAD_REF: ${{ inputs.head }}
+        run: python3 ../ci-tools/build/wayland-ci/commit-range.py >> "$GITHUB_OUTPUT"
+
+  commits:
+    needs: range
+    name: Strict Release ${{ matrix.sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.range.outputs.matrix) }}
+    steps:
+      - name: Check out this commit alone
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ matrix.sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        id: dotnet
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+      - name: Select installed .NET 10 SDK
+        run: python3 ../ci-tools/build/wayland-ci/select-sdk.py
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-wayland-commits-${{ steps.dotnet.outputs.dotnet-version }}-${{ hashFiles('source/**/packages.lock.json', 'source/**/*.props', 'source/**/*.targets', 'source/**/*.csproj', 'source/**/global.json', 'source/**/nuget.config', 'ci-tools/build/wayland-ci/host-tests.targets') }}
+          restore-keys: ${{ runner.os }}-wayland-commits-${{ steps.dotnet.outputs.dotnet-version }}-
+      - name: Install native Linux dependencies
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y \
+            weston xvfb fluxbox libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+            libxkbcommon0 libegl1 libgl1-mesa-dri vlc libvlc-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Strict Release build and available tests at this commit
+        run: bash ../ci-tools/build/wayland-ci/build-tests.sh commit net10.0
+      - name: Upload this commit's TRX
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wayland-commit-${{ matrix.sha }}
+          path: source/artifacts/wayland-unit-tests/**/*.trx
+          if-no-files-found: error
+          retention-days: 14
+
+  style:
+    needs: range
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.range.outputs.head }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        id: dotnet
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+      - name: Select installed .NET 10 SDK
+        run: python3 ../ci-tools/build/wayland-ci/select-sdk.py
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-wayland-commits-${{ steps.dotnet.outputs.dotnet-version }}-${{ hashFiles('source/**/packages.lock.json', 'source/**/*.props', 'source/**/*.targets', 'source/**/*.csproj', 'source/**/global.json', 'source/**/nuget.config', 'ci-tools/build/wayland-ci/host-tests.targets') }}
+          restore-keys: ${{ runner.os }}-wayland-commits-${{ steps.dotnet.outputs.dotnet-version }}-
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Commit messages with Uno's commitsar 0.20.2 config
+        env:
+          BASE_SHA: ${{ needs.range.outputs.base }}
+        run: bash ../ci-tools/build/wayland-ci/commit-style.sh "$BASE_SHA"
+      - name: Changed documentation and XAML
+        if: always()
+        env:
+          BASE_SHA: ${{ needs.range.outputs.base }}
+        run: python3 ../ci-tools/build/wayland-ci/changed-style.py "$BASE_SHA"
+      - name: Upload XAML drift patch
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wayland-xaml-style-patch
+          path: source/artifacts/xaml-style.patch
+          if-no-files-found: ignore
+          retention-days: 14

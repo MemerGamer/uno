@@ -1,78 +1,196 @@
-name: Wayland desktop packages
+name: Wayland packages
 
 on:
   push:
-    tags: ['wayland-v*']
+    tags: ['uno-wayland-*']
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Package version (X.Y.Z-wayland.N)'
+      ref:
+        description: 'Reviewed host source branch, tag or SHA'
         required: true
-        default: '6.7.135-wayland.1'
+        default: wayland/host
         type: string
-      tfm:
-        description: 'Consumer desktop TFM'
-        default: net9.0
-        type: choice
-        options: [net9.0, net10.0]
+      version:
+        description: 'Fresh 6.7.135-wayland.N version; never reuse a version'
+        required: true
+        default: 6.7.135-wayland.5
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: wayland-packages-${{ inputs.version && format('uno-wayland-{0}', inputs.version) || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+defaults:
+  run:
+    shell: bash
+    working-directory: source
+
 jobs:
-  packages:
+  prepare:
     if: github.repository == 'MemerGamer/uno'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      packages: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ inputs.ref || github.ref }}
+          path: source
           fetch-depth: 0
-      - uses: actions/setup-dotnet@v4
+          persist-credentials: false
+      - name: Freeze host source and release identity
+        id: release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$INPUT_VERSION
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            version=${GITHUB_REF_NAME#uno-wayland-}
+          fi
+          [[ "$version" =~ ^6\.7\.135-wayland\.[0-9]+$ ]] || exit 2
+          tag="uno-wayland-$version"
+          test -f src/Uno.UI.Runtime.Skia.Wayland/Uno.UI.Runtime.Skia.Wayland.csproj
+          test -f build/wayland/build-local-packages.sh
+          # A port-line ref must never supply the LinuxFiles host packages.
+          git merge-base --is-ancestor HEAD refs/remotes/origin/wayland/host
+          sha=$(git rev-parse HEAD)
+          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            test "$(git rev-parse "refs/tags/$tag^{commit}")" = "$sha"
+          fi
+          # Fail closed on API errors, and reject drafts as well as published releases.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[].tag_name' > "$RUNNER_TEMP/existing-release-tags"
+          if grep -Fxq "$tag" "$RUNNER_TEMP/existing-release-tags"; then
+            echo 'Release already exists. Publish the existing draft or use a fresh version.' >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  packages:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        id: dotnet
         with:
           dotnet-version: |
             9.0.x
             10.0.x
-      - name: Select version
-        id: version
-        shell: bash
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/wayland-v* ]]; then
-            version=${GITHUB_REF_NAME#wayland-v}
-          else
-            version=$INPUT_VERSION
-          fi
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-wayland\.[0-9]+$ ]] || exit 2
-          echo "value=$version" >> "$GITHUB_OUTPUT"
-      - name: Build desktop packages
-        shell: bash
-        env:
-          PACKAGE_VERSION: ${{ steps.version.outputs.value }}
-          DESKTOP_TFM: ${{ inputs.tfm || 'net9.0' }}
-        run: |
-          build/wayland/build-local-packages.sh --strict \
-            --version "$PACKAGE_VERSION" --tfm "$DESKTOP_TFM" \
-            --feed "$RUNNER_TEMP/wayland-feed"
-      - uses: actions/upload-artifact@v4
+      - name: Select installed .NET 10 SDK
+        run: python3 ../ci-tools/build/wayland-ci/select-sdk.py
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          name: wayland-packages-${{ steps.version.outputs.value }}-${{ inputs.tfm || 'net9.0' }}
-          path: ${{ runner.temp }}/wayland-feed/*.nupkg
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-wayland-packages-${{ steps.dotnet.outputs.dotnet-version }}-${{ hashFiles('source/**/packages.lock.json', 'source/**/*.props', 'source/**/*.targets', 'source/**/*.csproj', 'source/**/global.json', 'source/**/nuget.config', 'ci-tools/build/wayland-ci/host-tests.targets') }}
+          restore-keys: ${{ runner.os }}-wayland-packages-${{ steps.dotnet.outputs.dotnet-version }}-
+      - name: Build and pack net10.0 desktop packages
+        env:
+          PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          bash build/wayland/build-local-packages.sh --strict \
+            --version "$PACKAGE_VERSION" --tfm net10.0 \
+            --feed "$RUNNER_TEMP/wayland-feed"
+      - name: Verify all eight packages and produce the release manifest
+        env:
+          PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python3 ../ci-tools/build/wayland-ci/verify-packages.py \
+            "$RUNNER_TEMP/wayland-feed" "$PACKAGE_VERSION"
+          cd "$RUNNER_TEMP/wayland-feed"
+          sha256sum --check --strict SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: uno-wayland-${{ needs.prepare.outputs.version }}
+          path: |
+            ${{ runner.temp }}/wayland-feed/*.nupkg
+            ${{ runner.temp }}/wayland-feed/SHA256SUMS
           if-no-files-found: error
           retention-days: 30
-      # Enable the repository variable WAYLAND_PUBLISH_PACKAGES=true to publish tag builds.
-      - name: Publish to GitHub Packages
-        if: startsWith(github.ref, 'refs/tags/wayland-v') && vars.WAYLAND_PUBLISH_PACKAGES == 'true'
-        shell: bash
+
+  release:
+    needs: [prepare, packages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: uno-wayland-${{ needs.prepare.outputs.version }}
+          path: release-assets
+      - name: Reverify and create a draft prerelease with these exact bytes
         env:
-          NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
         run: |
-          for package in "$RUNNER_TEMP/wayland-feed"/*.nupkg; do
-            dotnet nuget push "$package" \
-              --source https://nuget.pkg.github.com/MemerGamer/index.json \
-              --api-key "$NUGET_AUTH_TOKEN" --skip-duplicate
-          done
+          cp release-assets/SHA256SUMS "$RUNNER_TEMP/original-SHA256SUMS"
+          python3 ci-tools/build/wayland-ci/verify-packages.py release-assets "$PACKAGE_VERSION"
+          cmp "$RUNNER_TEMP/original-SHA256SUMS" release-assets/SHA256SUMS
+          # Recheck tag identity immediately before writing. Create it only on dispatch.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG" \
+            > "$RUNNER_TEMP/release-refs.json"
+          if jq -e --arg tag "refs/tags/$TAG" 'any(.[]; .ref == $tag)' "$RUNNER_TEMP/release-refs.json" >/dev/null; then
+            ref_type=$(jq -r --arg tag "refs/tags/$TAG" '.[] | select(.ref == $tag) | .object.type' "$RUNNER_TEMP/release-refs.json")
+            ref_sha=$(jq -r --arg tag "refs/tags/$TAG" '.[] | select(.ref == $tag) | .object.sha' "$RUNNER_TEMP/release-refs.json")
+            while [[ "$ref_type" == tag ]]; do
+              gh api "repos/$GITHUB_REPOSITORY/git/tags/$ref_sha" > "$RUNNER_TEMP/peeled-tag.json"
+              ref_type=$(jq -r .object.type "$RUNNER_TEMP/peeled-tag.json")
+              ref_sha=$(jq -r .object.sha "$RUNNER_TEMP/peeled-tag.json")
+            done
+            test "$ref_type" = commit
+            test "$ref_sha" = "$SOURCE_SHA"
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$TAG" -f sha="$SOURCE_SHA"
+          fi
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Desktop net10.0 Uno Wayland packages from source commit $SOURCE_SHA.
+
+          Review the eight SHA256SUMS entries and commit matching LinuxFiles pins before publishing this draft.
+          Publish these exact assets; never rebuild, replace assets, or reuse this version.
+          Uno's upstream licenses and contributor attribution are preserved in the packages.
+          EOF
+          gh release create "$TAG" release-assets/*.nupkg release-assets/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease \
+            --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          echo "Draft release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Commit reviewed LinuxFiles pins, then publish this draft without rebuilding.' >> "$GITHUB_STEP_SUMMARY"

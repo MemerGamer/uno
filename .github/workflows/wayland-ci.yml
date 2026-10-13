@@ -1,0 +1,346 @@
+name: Wayland CI
+
+on:
+  push:
+    branches: ['wayland/**']
+  pull_request:
+    branches: ['wayland/**']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Source branch, tag or SHA (workflow stays on the selected workflow branch)'
+        type: string
+        default: wayland/port
+        required: true
+      filter:
+        description: 'Runtime class/method substrings, separated by |'
+        type: string
+        default: 'Given_Wayland|Given_AppWindow|Given_Window|Given_InputNonClientPointerSource|Given_TextBox|Given_RichEditBox|Given_Clipboard|Given_DragView'
+      full_suite:
+        description: 'Run the entire runtime suite on both hosts (ignores filter)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wayland-ci-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+defaults:
+  run:
+    shell: bash
+    working-directory: source
+
+jobs:
+  detect:
+    if: github.repository == 'MemerGamer/uno'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      line: ${{ steps.line.outputs.line }}
+      tfm: ${{ steps.line.outputs.tfm }}
+      sha: ${{ steps.line.outputs.sha }}
+    steps:
+      - name: Check out requested ref (PRs use the tested merge commit)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          path: source
+          persist-credentials: false
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - name: Detect source layout and freeze the commit
+        id: line
+        run: |
+          python3 ../ci-tools/build/wayland-ci/detect.py >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build-host:
+    needs: detect
+    if: needs.detect.outputs.line == 'host'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out target source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.detect.outputs.sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        id: dotnet
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+      - name: Select installed .NET 10 SDK
+        run: python3 ../ci-tools/build/wayland-ci/select-sdk.py
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-wayland-host-${{ steps.dotnet.outputs.dotnet-version }}-${{ hashFiles('source/**/packages.lock.json', 'source/**/*.props', 'source/**/*.targets', 'source/**/*.csproj', 'source/**/global.json', 'source/**/nuget.config', 'ci-tools/build/wayland-ci/host-tests.targets') }}
+          restore-keys: ${{ runner.os }}-wayland-host-${{ steps.dotnet.outputs.dotnet-version }}-
+      - name: Install native Linux dependencies
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y \
+            weston xvfb fluxbox libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+            libxkbcommon0 libegl1 libgl1-mesa-dri vlc libvlc-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Strict Release build and unit tests
+        env:
+          LINE: ${{ needs.detect.outputs.line }}
+          TFM: ${{ needs.detect.outputs.tfm }}
+        run: bash ../ci-tools/build/wayland-ci/build-tests.sh "$LINE" "$TFM"
+      - name: Upload unit test TRX
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wayland-unit-tests-host
+          path: source/artifacts/wayland-unit-tests/**/*.trx
+          if-no-files-found: error
+          retention-days: 14
+
+  build-port:
+    needs: detect
+    if: needs.detect.outputs.line == 'port'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out target source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.detect.outputs.sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        id: dotnet
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+      - name: Select installed .NET 10 SDK
+        run: python3 ../ci-tools/build/wayland-ci/select-sdk.py
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-wayland-port-${{ steps.dotnet.outputs.dotnet-version }}-${{ hashFiles('source/**/packages.lock.json', 'source/**/*.props', 'source/**/*.targets', 'source/**/*.csproj', 'source/**/global.json', 'source/**/nuget.config', 'ci-tools/build/wayland-ci/host-tests.targets') }}
+          restore-keys: ${{ runner.os }}-wayland-port-${{ steps.dotnet.outputs.dotnet-version }}-
+      - name: Install native Linux dependencies
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y \
+            weston xvfb fluxbox libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+            libxkbcommon0 libegl1 libgl1-mesa-dri vlc libvlc-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Strict Release build and unit tests
+        env:
+          LINE: ${{ needs.detect.outputs.line }}
+          TFM: ${{ needs.detect.outputs.tfm }}
+        run: bash ../ci-tools/build/wayland-ci/build-tests.sh "$LINE" "$TFM"
+      - name: Upload unit test TRX
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wayland-unit-tests-port
+          path: source/artifacts/wayland-unit-tests/**/*.trx
+          if-no-files-found: error
+          retention-days: 14
+
+  runtime-build:
+    needs: detect
+    if: needs.detect.outputs.line == 'port'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out target source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.detect.outputs.sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        id: dotnet
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+      - name: Select installed .NET 10 SDK
+        run: python3 ../ci-tools/build/wayland-ci/select-sdk.py
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-wayland-runtime-${{ steps.dotnet.outputs.dotnet-version }}-${{ hashFiles('source/**/packages.lock.json', 'source/**/*.props', 'source/**/*.targets', 'source/**/*.csproj', 'source/**/global.json', 'source/**/nuget.config', 'ci-tools/build/wayland-ci/host-tests.targets') }}
+          restore-keys: ${{ runner.os }}-wayland-runtime-${{ steps.dotnet.outputs.dotnet-version }}-
+      - name: Build the same SamplesApp desktop head as Uno CI
+        run: |
+          dotnet build src/SamplesApp/SamplesApp/SamplesApp.csproj -c Release \
+            -p:UnoTargetFrameworkOverride=net10.0-desktop -f net10.0-desktop \
+            -p:UNO_DISABLE_ANALYZERS_IN_SAMPLES=true -p:GeneratePackageOnBuild=false \
+            -p:ContinuousIntegrationBuild=true -p:UnoFastDevBuild=false
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wayland-samplesapp-desktop
+          path: source/src/SamplesApp/SamplesApp/bin/Release/net10.0-desktop/
+          if-no-files-found: error
+          retention-days: 7
+
+  runtime:
+    needs: [detect, runtime-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: wayland
+            use_xvfb: 'false'
+            use_weston: 'true'
+          - host: x11
+            use_xvfb: 'true'
+            use_weston: 'false'
+    steps:
+      - name: Check out target source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.detect.outputs.sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        id: dotnet
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+      - name: Select installed .NET 10 SDK
+        run: python3 ../ci-tools/build/wayland-ci/select-sdk.py
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-wayland-runtime-${{ steps.dotnet.outputs.dotnet-version }}-${{ hashFiles('source/**/packages.lock.json', 'source/**/*.props', 'source/**/*.targets', 'source/**/*.csproj', 'source/**/global.json', 'source/**/nuget.config', 'ci-tools/build/wayland-ci/host-tests.targets') }}
+          restore-keys: ${{ runner.os }}-wayland-runtime-${{ steps.dotnet.outputs.dotnet-version }}-
+      - name: Install native Linux dependencies
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y \
+            weston xvfb fluxbox libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+            libxkbcommon0 libegl1 libgl1-mesa-dri vlc libvlc-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wayland-samplesapp-desktop
+          path: source/build/samplesapp-desktop-skia
+      - name: Build hot reload dependencies as Uno CI does
+        run: |
+          dotnet build src/SourceGenerators/Uno.UI.Tasks/Uno.UI.Tasks.csproj -c Debug
+          dotnet build src/SourceGenerators/Uno.UI.SourceGenerators/Uno.UI.SourceGenerators.csproj -c Debug
+          dotnet build src/Uno.UI.RemoteControl.Host/Uno.UI.RemoteControl.Host.csproj -c Debug
+      - name: Run Uno runtime harness
+        env:
+          USE_XVFB: ${{ matrix.use_xvfb }}
+          USE_WESTON: ${{ matrix.use_weston }}
+          RUNTIME_HOST: ${{ matrix.host }}
+          INPUT_FILTER: ${{ inputs.filter || 'Given_Wayland|Given_AppWindow|Given_Window|Given_InputNonClientPointerSource|Given_TextBox|Given_RichEditBox|Given_Clipboard|Given_DragView' }}
+          FULL_SUITE: ${{ inputs.full_suite || false }}
+          UNO_WAYLAND_RENDERER: Software
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          export BUILD_SOURCESDIRECTORY="$PWD"
+          export SamplesAppArtifactName=samplesapp-desktop-skia
+          export SamplesAppArtifactPath="$PWD/build/$SamplesAppArtifactName"
+          export UNO_TEST_RESULT_LABEL="-$RUNTIME_HOST"
+          # The Uno runner consumes base64-encoded | separated substrings.
+          if [[ "$FULL_SUITE" == true ]]; then
+            export UITEST_RUNTIME_TESTS_FILTER=
+          else
+            export UITEST_RUNTIME_TESTS_FILTER=$(printf '%s' "$INPUT_FILTER" | base64 -w 0)
+          fi
+          unset WAYLAND_DISPLAY DISPLAY UNO_EXPECT_HOST
+          # Exactly the useXvfb/useWeston pair in Uno's desktop-linux template.
+          bash build/test-scripts/linux-skia-runtime-tests.sh "$USE_XVFB" "$USE_WESTON"
+      - name: Gate runtime results (the Uno script itself only rejects empty XML)
+        if: always()
+        env:
+          RUNTIME_HOST: ${{ matrix.host }}
+        run: |
+          python3 ../ci-tools/build/wayland-ci/compare-results.py \
+            --check "build/skia-linux-$RUNTIME_HOST-runtime-tests-results.xml" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload runtime XML and harness logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wayland-runtime-${{ matrix.host }}
+          path: |
+            source/build/skia-linux-${{ matrix.host }}-runtime-tests-results.xml
+            source/build/uitests-failure-results/
+          if-no-files-found: error
+          retention-days: 14
+
+  runtime-summary:
+    needs: [detect, runtime-build, runtime]
+    if: always() && needs.detect.outputs.line == 'port'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Check out CI tooling from the workflow revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-tools
+          sparse-checkout: build/wayland-ci
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wayland-runtime-*
+          path: results
+      - name: Compare Wayland with X11, including failed runs
+        run: |
+          python3 ci-tools/build/wayland-ci/compare-results.py \
+            results/wayland-runtime-wayland/skia-linux-wayland-runtime-tests-results.xml \
+            results/wayland-runtime-x11/skia-linux-x11-runtime-tests-results.xml >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,10 @@
+<Project>
+	<!-- The host scanner tests live outside src/ and do not inherit its TRX reporter. -->
+	<PropertyGroup>
+		<TestingPlatformDotNetTestSupport>true</TestingPlatformDotNetTestSupport>
+		<TestingPlatformCaptureOutput>false</TestingPlatformCaptureOutput>
+	</PropertyGroup>
+	<ItemGroup Condition="'$(MSBuildProjectName)' == 'Wayland.Scanner.Tests'">
+		<PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.5.1" />
+	</ItemGroup>
+</Project>
