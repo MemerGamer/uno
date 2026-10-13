@@ -17,6 +17,8 @@ public static class Program
 
 	public static readonly IReadOnlySet<string> OmittedInterfaces = new HashSet<string>(StringComparer.Ordinal)
 	{
+		"zxdg_imported_v2",
+		"zxdg_importer_v2",
 		"wl_shell",
 		"wl_shell_surface",
 		"zwp_tablet_tool_v2",
@@ -242,6 +244,7 @@ public static class Program
 		{
 			var evt = events[opcode];
 			var eventName = Name(Attr(evt, "name"));
+			var eventMember = eventName is "Display" or "Handle" or "Version" or "InterfaceName" or "Dispose" ? eventName + "Event" : eventName;
 			var args = evt.Elements("arg").ToArray();
 			builder.AppendLine($"\tpublic sealed class {eventName}EventArgs : EventArgs\n\t{{");
 			foreach (var arg in args)
@@ -253,7 +256,7 @@ public static class Program
 			{
 				builder.AppendLine($"\t\t\t{Name(Attr(args[i], "name"))} = arg{i};");
 			}
-			builder.AppendLine($"\t\t}}\n\t}}\n\tpublic event EventHandler<{eventName}EventArgs>? {eventName};");
+			builder.AppendLine($"\t\t}}\n\t}}\n\tpublic event EventHandler<{eventName}EventArgs>? {eventMember};");
 			builder.AppendLine($"\t[UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]\n\tprivate static void On{opcode}(nint data, nint proxy{string.Concat(args.Select((arg, i) => ", " + NativeType(arg) + " arg" + i))})\n\t{{\n\t\tvar target = Target<{name}>(data);\n\t\ttry\n\t\t{{");
 			var values = args.Select((arg, i) => Attr(arg, "type") switch
 			{
@@ -266,9 +269,9 @@ public static class Program
 			});
 			foreach (var pair in args.Select((arg, i) => (arg, i)).Where(pair => Attr(pair.arg, "type") == "fd"))
 			{
-				builder.AppendLine($"\t\t\tif (target.{eventName} is null)\n\t\t\t{{\n\t\t\t\tPosix.close(arg{pair.i});\n\t\t\t\treturn;\n\t\t\t}}");
+				builder.AppendLine($"\t\t\tif (target.{eventMember} is null)\n\t\t\t{{\n\t\t\t\tPosix.close(arg{pair.i});\n\t\t\t\treturn;\n\t\t\t}}");
 			}
-			builder.AppendLine($"\t\t\tvar args = new {eventName}EventArgs({string.Join(", ", values)});\n\t\t\ttarget.{eventName}?.Invoke(target, args);\n\t\t}}\n\t\tcatch (Exception error)\n\t\t{{\n\t\t\ttarget.Display.CaptureCallbackError(error);\n\t\t}}");
+			builder.AppendLine($"\t\t\tvar args = new {eventName}EventArgs({string.Join(", ", values)});\n\t\t\ttarget.{eventMember}?.Invoke(target, args);\n\t\t}}\n\t\tcatch (Exception error)\n\t\t{{\n\t\t\ttarget.Display.CaptureCallbackError(error);\n\t\t}}");
 			if (Attr(evt, "type") == "destructor")
 			{
 				builder.AppendLine("\t\tfinally\n\t\t{\n\t\t\ttarget.DisposeLocal();\n\t\t}");

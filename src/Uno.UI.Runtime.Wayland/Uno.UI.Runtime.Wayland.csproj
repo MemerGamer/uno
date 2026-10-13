@@ -4,6 +4,8 @@
 		<Nullable>enable</Nullable>
 	</PropertyGroup>
 
+	<Import Project="../Uno.UI.Runtime.Linux.Shared/Uno.UI.Runtime.Linux.Shared.props" />
+
 	<Import Project="../targetframework-override-noplatform.props" />
 
 	<PropertyGroup>

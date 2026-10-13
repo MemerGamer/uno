@@ -31,6 +31,8 @@ internal sealed class WaylandConnection : IDisposable
 			Viewporter = TryBind<WpViewporter>(WpViewporter.ProtocolName, 1);
 			FractionalScale = Viewporter is null ? null : TryBind<WpFractionalScaleManagerV1>(WpFractionalScaleManagerV1.ProtocolName, 1);
 			Decorations = TryBind<ZxdgDecorationManagerV1>(ZxdgDecorationManagerV1.ProtocolName, 1);
+			TextInputManager = TryBind<ZwpTextInputManagerV3>(ZwpTextInputManagerV3.ProtocolName, 1);
+			Exporter = TryBind<ZxdgExporterV2>(ZxdgExporterV2.ProtocolName, 1);
 			CursorShape = TryBind<WpCursorShapeManagerV1>(WpCursorShapeManagerV1.ProtocolName, 1);
 			// TODO: multiple seats and outputs; the first advertised one is used for now.
 			Seat = TryBind<WlSeat>(WlSeat.ProtocolName, 9);
@@ -65,6 +67,8 @@ internal sealed class WaylandConnection : IDisposable
 	internal WpFractionalScaleManagerV1? FractionalScale { get; }
 	internal ZxdgDecorationManagerV1? Decorations { get; }
 	internal WpCursorShapeManagerV1? CursorShape { get; }
+	internal ZwpTextInputManagerV3? TextInputManager { get; }
+	internal ZxdgExporterV2? Exporter { get; }
 	internal WlSeat? Seat { get; }
 	internal WlOutput? Output { get; }
 
@@ -76,6 +80,11 @@ internal sealed class WaylandConnection : IDisposable
 	// The xdg_toplevel app_id, matched by compositors against the application's .desktop file (WM_CLASS on X11).
 	internal static string AppId
 		=> Windows.ApplicationModel.Package.Current.Id.Name is { Length: > 0 } name ? name : "uno.app";
+
+	// Dispatch thread: allows keyboard compose to reset when the input method produces text.
+	internal event EventHandler? TextInputReceived;
+
+	internal void NotifyTextInputReceived() => TextInputReceived?.Invoke(this, EventArgs.Empty);
 
 	internal static void PostToUI(Action action)
 		=> NativeDispatcher.Main.Enqueue(action, NativeDispatcherPriority.High);
