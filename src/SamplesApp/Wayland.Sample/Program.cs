@@ -86,7 +86,9 @@ public sealed class App : Application
 			Place(canvas, portals, 400, 140);
 		}
 		Place(canvas, WindowScenario.CreateControls(window), 40, 440);
-		window.Content = TitleBarSample.Wrap(window, canvas);
+		// Pinned to the bottom-right corner, so a frame showing an older layout at a new size is visible in frame dumps.
+		var edgeMarker = new Border { Width = 16, Height = 16, Background = new SolidColorBrush(Colors.Magenta), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom };
+		window.Content = TitleBarSample.Wrap(window, new Grid { Children = { canvas, edgeMarker } });
 		// The canvas has a background, so it is hit-testable as a drop target.
 		DataTransferProbe.Attach(canvas);
 		window.Activated += (_, e) => Console.WriteLine($"main: activated {e.WindowActivationState}");

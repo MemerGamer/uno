@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using SkiaSharp;
 using Uno.Foundation.Logging;
+using Uno.UI.Composition;
 using Uno.UI.Helpers;
 using Uno.UI.Hosting;
 using Uno.WinUI.Runtime.Skia.Wayland.Input;
@@ -18,9 +19,6 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 
 internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 {
-	// Bounds the wait for matching content, so a size Uno never renders cannot blank the window.
-	private const int MaxStaleFrames = 8;
-
 	private readonly Window _window;
 	private readonly XamlRoot _xamlRoot;
 	private readonly WaylandConnection _connection;
@@ -37,15 +35,20 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	private GRContext? _layerContext;
 	private SKSurface? _canvasSurface;
 	private int _frame;
-	private int _staleFrames;
 	private SKSizeI _canvasSize;
+	private readonly WaylandFrameReadiness _readiness = new();
+	private readonly Func<long, bool> _preparePresentation;
+
+	// UI thread state.
+	private CompositionTarget? _frameTarget;
 
 	// Dispatch thread state.
 	private WaylandCursor? _cursor;
 	private WlPointer? _cursorPointer;
 
-	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged)
+	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, bool> preparePresentation)
 	{
+		_preparePresentation = preparePresentation;
 		_connection = connection;
 		_id = id;
 		_window = window;
@@ -108,8 +111,46 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		}
 	}
 
-	// Called after the configure serial was acknowledged on the dispatch thread.
-	internal void Configure(int logicalWidth, int logicalHeight, uint preferredScale, int integerScale)
+	// UI thread, after the configure's bounds and scale were applied. The canvas follows new bounds
+	// immediately, while Uno records the new layout only in a later frame.
+	internal void ConfigureUI(long generation, bool boundsChanged)
+	{
+		if (RootElement?.Visual.CompositionTarget is not CompositionTarget compositionTarget)
+		{
+			// Nothing was recorded yet, so no older layout can be presented.
+			_readiness.ConfigureUI(generation, boundsChanged: false);
+			return;
+		}
+		var waits = _readiness.ConfigureUI(generation, boundsChanged);
+		WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: UI configure generation {generation}{(waits ? " waits for layout" : "")}"));
+		if (waits)
+		{
+			if (_frameTarget is null)
+			{
+				_frameTarget = compositionTarget;
+				compositionTarget.FrameRendered += OnFrameRendered;
+			}
+			// Records a frame even when layout leaves the visuals unchanged.
+			((ICompositionTarget)compositionTarget).RequestNewFrame();
+		}
+	}
+
+	// UI thread.
+	private void OnFrameRendered()
+	{
+		var bounds = _xamlRoot.Bounds;
+		// The recorded picture reflects the new bounds only if no layout pass was still pending.
+		var arranged = SkiaRenderHelper.CanRecordPicture(RootElement)
+			&& Math.Abs(RootElement.RenderSize.Width - bounds.Width) * Scale <= 1
+			&& Math.Abs(RootElement.RenderSize.Height - bounds.Height) * Scale <= 1;
+		if (_readiness.OnFrameRecorded(arranged))
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: layout recorded at {bounds.Width}x{bounds.Height}{(arranged ? "" : " (gave up waiting)")}"));
+			InvalidateRender();
+		}
+	}
+
+	internal void Configure(int logicalWidth, int logicalHeight, uint preferredScale, int integerScale, long generation)
 	{
 		_renderThread.Post(() =>
 		{
@@ -117,6 +158,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				return;
 			}
+			_readiness.ConfigureRender(generation);
 			if (preferredScale != 0)
 			{
 				renderer.Scale.SetPreferredScale(preferredScale);
@@ -138,18 +180,20 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	// configure or scale, so a frame rendered for stale geometry is never presented.
 	private bool Draw(SKSurface target, GRContext? gpuContext)
 	{
+		_readiness.BeginFrame();
 		RenderContent(gpuContext);
 		var canvas = target.Canvas;
 		var bounds = canvas.DeviceClipBounds;
 		var content = _canvasSize;
-		// One pixel of tolerance: Uno rounds the canvas size half to even, buffers round half up.
-		if ((Math.Abs(content.Width - bounds.Width) > 1 || Math.Abs(content.Height - bounds.Height) > 1)
-			&& ++_staleFrames <= MaxStaleFrames)
+		if (!_readiness.CanPresent(content.Width, content.Height, bounds.Width, bounds.Height))
 		{
-			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: skip stale content {content.Width}x{content.Height} for buffer {bounds.Width}x{bounds.Height}"));
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: skip stale content {content.Width}x{content.Height} generation {_readiness.RenderGeneration} for buffer {bounds.Width}x{bounds.Height}"));
 			return false;
 		}
-		_staleFrames = 0;
+		if (!_preparePresentation(_readiness.RenderGeneration))
+		{
+			return false;
+		}
 		canvas.Clear(SKColors.White);
 		if (gpuContext is not null)
 		{
@@ -251,6 +295,11 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			return;
 		}
 		_disposed = true;
+		if (_frameTarget is not null)
+		{
+			_frameTarget.FrameRendered -= OnFrameRendered;
+			_frameTarget = null;
+		}
 		XamlRootMap.Unregister(_xamlRoot);
 		var display = _connection.Display;
 		display.Post(() =>

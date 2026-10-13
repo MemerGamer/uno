@@ -79,6 +79,29 @@ public sealed partial class DisplayTests
 	}
 
 	[TestMethod]
+	public void StoppedDisplayRejectsPostedOwnership()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		display.StartDispatch();
+		display.StopDispatch();
+		var rejected = 0;
+		Assert.IsFalse(display.TryPost(() => Assert.Fail("Stopped dispatch executed a command."), () => rejected++));
+		Assert.AreEqual(1, rejected);
+	}
+
+	[TestMethod]
+	public void ShutdownReleasesQueuedOwnership()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		var rejected = 0;
+		Assert.IsTrue(display.TryPost(() => Assert.Fail("Queued command should be rejected."), () => rejected++));
+		display.StopDispatch();
+		Assert.AreEqual(1, rejected);
+	}
+
+	[TestMethod]
 	public void BindClampsToGeneratedVersion()
 	{
 		using var peer = new ProtocolPeer(compositorVersion: WlCompositor.MaximumVersion + 1);

@@ -55,7 +55,7 @@ internal sealed class WaylandRenderer : IDisposable
 		_scheduler = new WaylandFrameScheduler(surface, Render, () => ProduceUnpresentedFrame(produceUnpresentedFrame), postToOwner);
 	}
 
-	// Call only after acknowledging the associated xdg_surface.configure serial.
+	// Stage size; the host acknowledges the configure immediately before a matching commit.
 	public void Configure(int logicalWidth, int logicalHeight)
 	{
 		ObjectDisposedException.ThrowIf(_disposed, this);

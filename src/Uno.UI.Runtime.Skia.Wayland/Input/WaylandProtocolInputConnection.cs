@@ -131,8 +131,8 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		var proxy = _seat.GetTouch();
 		var binding = new Binding(proxy);
 		var ids = new HashSet<int>();
-		EventHandler<WlTouch.DownEventArgs> down = (_, e) => { if (_ownsSurface(e.Surface)) { ids.Add(e.Id); sink.TouchDown(e.Time, e.Id, e.X.ToDouble(), e.Y.ToDouble()); } };
-		EventHandler<WlTouch.UpEventArgs> up = (_, e) => { if (ids.Remove(e.Id)) { sink.TouchUp(e.Time, e.Id); } };
+		EventHandler<WlTouch.DownEventArgs> down = (_, e) => { if (_ownsSurface(e.Surface)) { ids.Add(e.Id); InputSerial?.Invoke(this, e.Serial); sink.TouchDown(e.Time, e.Id, e.X.ToDouble(), e.Y.ToDouble()); } };
+		EventHandler<WlTouch.UpEventArgs> up = (_, e) => { if (ids.Remove(e.Id)) { InputSerial?.Invoke(this, e.Serial); sink.TouchUp(e.Time, e.Id); } };
 		EventHandler<WlTouch.MotionEventArgs> motion = (_, e) => { if (ids.Contains(e.Id)) { sink.TouchMotion(e.Time, e.Id, e.X.ToDouble(), e.Y.ToDouble()); } };
 		EventHandler<WlTouch.FrameEventArgs> frame = (_, _) => sink.TouchFrame();
 		EventHandler<WlTouch.CancelEventArgs> cancel = (_, _) => { ids.Clear(); sink.TouchCancel(); };
