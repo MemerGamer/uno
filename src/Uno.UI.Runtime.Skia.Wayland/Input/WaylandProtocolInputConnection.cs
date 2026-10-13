@@ -30,6 +30,8 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 	public WlPointer? Pointer { get; private set; }
 	// Raised on the dispatch thread before the wl_pointer is released, so cursor objects can go first.
 	public event Action? PointerReleasing;
+	// Raised on the dispatch thread with the serial of each keyboard enter, key and pointer button event.
+	public event Action<uint>? InputSerial;
 
 	public IDisposable GetPointer(WaylandPointerInputSource sink)
 	{
@@ -61,6 +63,9 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		proxy.AxisValue120 += value120;
 		proxy.AxisStop += stop;
 		proxy.Frame += frame;
+		EventHandler<WlPointer.ButtonEventArgs> buttonSerial = (_, e) => InputSerial?.Invoke(e.Serial);
+		proxy.Button += buttonSerial;
+		binding.Remove.Add(() => proxy.Button -= buttonSerial);
 		binding.Remove.Add(() =>
 		{
 			PointerReleasing?.Invoke();
@@ -98,6 +103,15 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		proxy.Key += key;
 		proxy.Modifiers += modifiers;
 		proxy.RepeatInfo += repeat;
+		EventHandler<WlKeyboard.EnterEventArgs> enterSerial = (_, e) => InputSerial?.Invoke(e.Serial);
+		EventHandler<WlKeyboard.KeyEventArgs> keySerial = (_, e) => InputSerial?.Invoke(e.Serial);
+		proxy.Enter += enterSerial;
+		proxy.Key += keySerial;
+		binding.Remove.Add(() =>
+		{
+			proxy.Enter -= enterSerial;
+			proxy.Key -= keySerial;
+		});
 		binding.Remove.Add(() =>
 		{
 			proxy.Keymap -= keymap;

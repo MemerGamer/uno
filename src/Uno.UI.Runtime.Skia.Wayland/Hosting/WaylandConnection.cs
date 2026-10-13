@@ -128,6 +128,8 @@ internal sealed class WaylandConnection : IDisposable
 		}
 		_defaultOutput = first;
 	}
+	// Serial of the latest keyboard enter, key or button event, for requests that require user interaction. Dispatch thread only.
+	internal uint InputSerial { get; set; }
 
 	internal string AppId { get; set; } = "uno.app";
 
