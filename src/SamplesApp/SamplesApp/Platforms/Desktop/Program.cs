@@ -81,7 +81,19 @@ internal static class Program
 		host = builder
 			.Build();
 
+		var hostAssembly = host.GetType().Assembly.GetName().Name;
+		Console.WriteLine($"SamplesApp host: {hostAssembly}");
+		if (Environment.GetEnvironmentVariable("UNO_EXPECT_HOST") is { Length: > 0 } expectedHost
+			&& hostAssembly != expectedHost)
+		{
+			throw new InvalidOperationException($"Expected host {expectedHost}, selected {hostAssembly}.");
+		}
+
 		host.Run();
+		if (Environment.GetEnvironmentVariable("UNO_WAYLAND_LIFECYCLE_SMOKE") == "1")
+		{
+			Console.WriteLine("Wayland lifecycle: host stopped");
+		}
 	}
 
 	private static System.Reflection.Assembly? Default_Resolving(AssemblyLoadContext alc, System.Reflection.AssemblyName assemblyName)

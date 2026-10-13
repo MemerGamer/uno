@@ -19,7 +19,7 @@ public sealed partial class DisplayTests
 	{
 		if (!OperatingSystem.IsLinux() || !NativeLibrary.TryLoad("libwayland-client.so.0", out var library))
 		{
-			Assert.Inconclusive("libwayland-client is required to dispatch the Wayland protocol.");
+			Assert.Inconclusive("libwayland-client is required for the in-process protocol peer.");
 			return;
 		}
 		NativeLibrary.Free(library);

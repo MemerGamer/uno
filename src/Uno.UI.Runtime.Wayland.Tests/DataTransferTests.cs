@@ -7,7 +7,7 @@ using Uno.UI.Runtime.Wayland.Native;
 namespace Uno.UI.Runtime.Wayland.Tests;
 
 [TestClass]
-public sealed class DataTransferTests
+public sealed partial class DataTransferTests
 {
 	private static readonly string[] ParsedUriList = ["/a", "/b", "/c", "/f"];
 	private static readonly string[] ParsedCut = ["/x"];
@@ -42,6 +42,7 @@ public sealed class DataTransferTests
 	[TestMethod]
 	public void PipeTransfersLargePayloadsAcrossThreads()
 	{
+		RequireLinux();
 		var data = new byte[3 * 1024 * 1024 + 17];
 		new Random(1).NextBytes(data);
 		var (read, write) = WaylandPipe.Create();
@@ -54,6 +55,7 @@ public sealed class DataTransferTests
 	[TestMethod]
 	public void PipeReadTimesOutWhenTheWriterStaysSilent()
 	{
+		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
 		try
 		{
@@ -68,6 +70,7 @@ public sealed class DataTransferTests
 	[TestMethod]
 	public void PipeWriteFailsWhenTheReaderIsGone()
 	{
+		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
 		_ = Posix.close(read);
 		Assert.IsFalse(WaylandPipe.WriteAll(write, Encoding.UTF8.GetBytes("text"), TimeSpan.FromSeconds(1)));
@@ -75,6 +78,7 @@ public sealed class DataTransferTests
 	[TestMethod]
 	public async Task PipeWriteTimesOutWithANonReadingPeer()
 	{
+		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
 		try
 		{
@@ -90,6 +94,7 @@ public sealed class DataTransferTests
 	[TestMethod]
 	public async Task PipeRejectsTransfersAboveTheSizeLimit()
 	{
+		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
 		var writer = Task.Run(() => WaylandPipe.WriteAll(write, new byte[128 * 1024], TimeSpan.FromSeconds(1)));
 		Assert.IsNull(WaylandPipe.ReadToEnd(read, TimeSpan.FromSeconds(1), maximumSize: 1024));
@@ -134,6 +139,7 @@ public sealed class DataTransferTests
 	[TestMethod]
 	public async Task PipeReadDeadlineIsNotExtendedByProgress()
 	{
+		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
 		using var cancellation = new CancellationTokenSource();
 		var writer = Task.Run(async () =>
@@ -166,15 +172,10 @@ public sealed class DataTransferTests
 		}
 	}
 
-	private static unsafe bool WriteByte(int fd)
-	{
-		byte value = 1;
-		return Posix.write(fd, &value, 1) == 1;
-	}
-
 	[TestMethod]
 	public void OversizedWriteClosesTheSendDescriptor()
 	{
+		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
 		try
 		{
@@ -190,6 +191,7 @@ public sealed class DataTransferTests
 	[TestMethod]
 	public async Task CancelledWriteClosesTheSendDescriptor()
 	{
+		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
 		using var cancellation = new CancellationTokenSource();
 		try
@@ -205,9 +207,24 @@ public sealed class DataTransferTests
 		}
 	}
 
+	private static void RequireLinux()
+	{
+		if (!OperatingSystem.IsLinux())
+		{
+			Assert.Inconclusive("Linux pipe interop is required for this transfer test.");
+		}
+	}
+
+	private static unsafe bool WriteByte(int fd)
+	{
+		byte value = 1;
+		return Posix.write(fd, &value, 1) == 1;
+	}
+
 	[TestMethod]
 	public async Task StalledProductionClosesTheSendDescriptor()
 	{
+		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
 		try
 		{
@@ -229,6 +246,7 @@ public sealed class DataTransferTests
 	[TestMethod]
 	public async Task FaultedProductionClosesTheSendDescriptor()
 	{
+		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
 		try
 		{
@@ -244,6 +262,7 @@ public sealed class DataTransferTests
 	[TestMethod]
 	public async Task CancelledProductionClosesTheSendDescriptor()
 	{
+		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
 		using var cancellation = new CancellationTokenSource();
 		try

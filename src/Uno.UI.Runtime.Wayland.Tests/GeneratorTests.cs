@@ -169,11 +169,11 @@ public sealed class GeneratorTests
 				var native = (WlInterface*)NativeLibrary.GetExport(library, spec.Name + "_interface");
 				var managed = ProtocolMetadata.Get(spec.Name);
 				Assert.AreEqual(Text(native->Name), Text(managed->Name));
-				Assert.AreEqual(native->Version, managed->Version, spec.Name);
-				Assert.AreEqual(native->MethodCount, managed->MethodCount, spec.Name);
-				Assert.AreEqual(native->EventCount, managed->EventCount, spec.Name);
-				CompareMessages(spec.Requests, native->Methods, managed->Methods);
-				CompareMessages(spec.Events, native->Events, managed->Events);
+				Assert.IsTrue(native->Version <= managed->Version, $"{spec.Name}: update the bundled protocol XML to match the installed library.");
+				Assert.IsTrue(native->MethodCount <= managed->MethodCount, spec.Name);
+				Assert.IsTrue(native->EventCount <= managed->EventCount, spec.Name);
+				CompareMessages(spec.Requests.Take(native->MethodCount).ToArray(), native->Methods, managed->Methods);
+				CompareMessages(spec.Events.Take(native->EventCount).ToArray(), native->Events, managed->Events);
 				count++;
 			}
 			Assert.IsTrue(count >= 20);

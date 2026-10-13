@@ -1,4 +1,5 @@
 #nullable enable
+using System.Runtime.InteropServices;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Uno.UI.Runtime.Wayland.Input;
 
@@ -42,6 +43,17 @@ public sealed class KeyboardComposeTests
 			compose.Reset();
 			Assert.AreEqual((uint)'e', compose.Feed('e', 'e'));
 		});
+	}
+
+	[TestInitialize]
+	public void RequireXkbcommon()
+	{
+		if (!OperatingSystem.IsLinux() || !NativeLibrary.TryLoad("libxkbcommon.so.0", out var library))
+		{
+			Assert.Inconclusive("libxkbcommon and its compose tables are required.");
+			return;
+		}
+		NativeLibrary.Free(library);
 	}
 
 	private static void WithCompose(Action<WaylandKeyboardCompose> test)
