@@ -38,7 +38,7 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 		{
 			if (_isMonitoringEnabled)
 			{
-				WaylandConnection.PostToUI(() => ContentChanged?.Invoke(this, EventArgs.Empty));
+				_device.PostToUI(() => ContentChanged?.Invoke(this, EventArgs.Empty));
 			}
 		};
 	}
@@ -131,7 +131,7 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 			cache[mimeType] = data = completion.Task;
 			try
 			{
-				WaylandConnection.PostToUI(async () =>
+				_device.PostToUI(async () =>
 				{
 					if (cancellationToken.IsCancellationRequested)
 					{

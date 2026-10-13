@@ -3,10 +3,10 @@
 #nullable enable
 
 using System;
-using System.Collections.Generic;
 using Microsoft.UI.Xaml.Controls;
 using Uno.UI.Hosting;
 using Uno.UI.Xaml.Controls.Extensions;
+using Uno.WinUI.Runtime.Skia.Wayland.Input;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland;
@@ -22,20 +22,18 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 	private const uint ChangeCauseInputMethod = 0;
 	private const uint ChangeCauseOther = 1;
 
-	private readonly IWaylandTextInput _textInput;
+	private readonly IWaylandTextInput? _textInput;
+	private readonly Action<Action> _postToUI;
 
-	// Dispatch thread: double-buffered state, applied at done.
-	private string? _pendingPreedit;
-	private int _pendingPreeditCursor;
-	private string? _pendingCommit;
-	private uint _pendingDeleteBefore;
-	private uint _pendingDeleteAfter;
+	// Under _stateLock: double-buffered state, applied at done.
+	private readonly WaylandTextInputBatch _pending = new();
 
 	// Under _stateLock (the display's SyncRoot): the state of each commit, keyed by its serial, so a done
 	// applies to the session and surrounding text it was computed for.
 	private readonly object _stateLock;
-	private readonly Dictionary<uint, (long Session, TextBox TextBox, WaylandTextInputText.SurroundingText? Surrounding, string Text, long Revision)> _committedStates = new();
+	private readonly WaylandTextInputStateHistory<TextBox> _committedStates = new(MaximumCommittedStates);
 	private uint _commitSerial;
+	private TextBox? _sessionTextBox;
 	private long _session;
 
 	// UI thread.
@@ -45,6 +43,10 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 	private long _readOnlyToken;
 	private long _enabledToken;
 	private long _textToken;
+	private long _predictionToken;
+	private long _spellingToken;
+	private long _inputScopeToken;
+	private long _acceptsReturnToken;
 	private long _textRevision;
 	private string _revisionText = string.Empty;
 	private bool _enabled;
@@ -55,48 +57,55 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 	private bool _deferState;
 	private bool _stateDirty;
 	private WaylandTextInputText.SurroundingText? _surroundingText;
+	private (WaylandTextInputText.SurroundingText Surrounding, string Text, (int X, int Y, int Width, int Height)? Caret, (uint Hint, uint Purpose) Content)? _lastSentState;
 
-	internal WaylandImeTextBoxExtension(IWaylandTextInput textInput, object syncRoot, Action? onTextInput = null)
+	internal WaylandImeTextBoxExtension(IWaylandTextInput? textInput, object syncRoot, Action<Action> postToUI, Action? onTextInput = null)
 	{
 		_stateLock = syncRoot;
+		_postToUI = postToUI;
+		_textInput = textInput;
+		if (textInput is null)
+		{
+			return;
+		}
 		lock (syncRoot)
 		{
-			_textInput = textInput;
-			_textInput.Enter += (_, e) => WaylandConnection.PostToUI(() => OnEnter(e.Surface));
-			_textInput.Leave += (_, e) => WaylandConnection.PostToUI(() => OnLeave(e.Surface));
-			_textInput.PreeditString += (_, e) =>
+			textInput.Enter += (_, e) => _postToUI(() => OnEnter(e.Surface));
+			textInput.Leave += (_, e) => _postToUI(() => OnLeave(e.Surface));
+			textInput.PreeditString += (_, e) =>
 			{
 				if (!string.IsNullOrEmpty(e.Text))
 				{
 					onTextInput?.Invoke();
 				}
-				_pendingPreedit = e.Text;
-				_pendingPreeditCursor = e.CursorBegin;
+				_pending.Preedit = e.Text;
+				_pending.PreeditCursor = e.CursorBegin;
 			};
-			_textInput.CommitString += (_, e) =>
+			textInput.CommitString += (_, e) =>
 			{
 				if (!string.IsNullOrEmpty(e.Text))
 				{
 					onTextInput?.Invoke();
 				}
-				_pendingCommit = e.Text;
+				_pending.Commit = e.Text;
 			};
-			_textInput.DeleteSurroundingText += (_, e) =>
+			textInput.DeleteSurroundingText += (_, e) =>
 			{
-				_pendingDeleteBefore = e.BeforeLength;
-				_pendingDeleteAfter = e.AfterLength;
+				_pending.DeleteBefore = e.BeforeLength;
+				_pending.DeleteAfter = e.AfterLength;
 			};
-			_textInput.Done += OnDone;
+			textInput.Done += OnDone;
 		}
 	}
 
+	// Without text-input-v3, the same focused session receives complete keyboard Compose strings.
 	internal static WaylandImeTextBoxExtension? TryCreate(WaylandConnection connection)
 	{
 		lock (connection.Display.SyncRoot)
 		{
 			return connection.TextInputManager is { } manager && connection.Seat is { } seat
-				? new WaylandImeTextBoxExtension(new WaylandTextInput(manager.GetTextInput(seat)), connection.Display.SyncRoot, connection.NotifyTextInputReceived)
-				: null;
+				? new WaylandImeTextBoxExtension(new WaylandTextInput(manager.GetTextInput(seat)), connection.Display.SyncRoot, connection.PostToUI, connection.NotifyTextInputReceived)
+				: new WaylandImeTextBoxExtension(null, connection.Display.SyncRoot, connection.PostToUI);
 		}
 	}
 
@@ -118,6 +127,10 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		_textToken = textBox.RegisterPropertyChangedCallback(TextBox.TextProperty, (_, _) => UpdateTextRevision(textBox));
 		_readOnlyToken = textBox.RegisterPropertyChangedCallback(TextBox.IsReadOnlyProperty, (_, _) => UpdateState(textBox));
 		_enabledToken = textBox.RegisterPropertyChangedCallback(TextBox.IsEnabledProperty, (_, _) => UpdateState(textBox));
+		_predictionToken = textBox.RegisterPropertyChangedCallback(TextBox.IsTextPredictionEnabledProperty, (_, _) => UpdateContentState(textBox));
+		_spellingToken = textBox.RegisterPropertyChangedCallback(TextBox.IsSpellCheckEnabledProperty, (_, _) => UpdateContentState(textBox));
+		_inputScopeToken = textBox.RegisterPropertyChangedCallback(TextBox.InputScopeProperty, (_, _) => UpdateContentState(textBox));
+		_acceptsReturnToken = textBox.RegisterPropertyChangedCallback(TextBox.AcceptsReturnProperty, (_, _) => UpdateContentState(textBox));
 		_textBoxSurface = textBox.XamlRoot is { } xamlRoot && XamlRootMap.GetHostForRoot(xamlRoot) is WaylandXamlRootHost host ? host.Surface : null;
 		_isComposing = false;
 		if (_textBoxSurface is not null && _textBoxSurface == _focusedSurface)
@@ -140,21 +153,52 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			textBox.UnregisterPropertyChangedCallback(TextBox.TextProperty, _textToken);
 			textBox.UnregisterPropertyChangedCallback(TextBox.IsReadOnlyProperty, _readOnlyToken);
 			textBox.UnregisterPropertyChangedCallback(TextBox.IsEnabledProperty, _enabledToken);
+			textBox.UnregisterPropertyChangedCallback(TextBox.IsTextPredictionEnabledProperty, _predictionToken);
+			textBox.UnregisterPropertyChangedCallback(TextBox.IsSpellCheckEnabledProperty, _spellingToken);
+			textBox.UnregisterPropertyChangedCallback(TextBox.InputScopeProperty, _inputScopeToken);
+			textBox.UnregisterPropertyChangedCallback(TextBox.AcceptsReturnProperty, _acceptsReturnToken);
 		}
 		_textBox = null;
 		_textBoxSurface = null;
 		_surroundingText = null;
 	}
 
-	// Sends the surrounding text and caret rectangle of the focused TextBox after it changed.
-	internal void UpdateState(TextBox textBox)
+	private void UpdateContentState(TextBox host)
 	{
-		if (textBox != _textBox || _applyingInputMethodChange)
+		if (host != _textBox)
 		{
 			return;
 		}
-		UpdateTextRevision(textBox);
-		if (textBox.IsReadOnly || !textBox.IsEnabled)
+		if (_applyingInputMethodChange)
+		{
+			// Publish after composition callbacks finish, when the surrounding text is consistent.
+			_stateDirty = true;
+		}
+		else
+		{
+			UpdateState(host);
+		}
+	}
+
+	// Sends the surrounding text and caret rectangle of the focused TextBox after it changed.
+	internal void UpdateState(TextBox host)
+	{
+		if (host != _textBox || _applyingInputMethodChange)
+		{
+			return;
+		}
+		UpdateTextRevision(host);
+		if (_isComposing && !host.IsComposing)
+		{
+			// An external edit canceled the host's preedit; its span no longer belongs to this session.
+			Disable();
+			if (_textBoxSurface == _focusedSurface && _focusedSurface is not null)
+			{
+				Enable();
+			}
+			return;
+		}
+		if (host.IsReadOnly || !host.IsEnabled)
 		{
 			Disable();
 			return;
@@ -165,23 +209,24 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		}
 		else
 		{
-			SendState(textBox, ChangeCauseOther);
+			SendState(host, ChangeCauseOther);
 		}
 	}
 
 	private void CommitState()
 	{
+		var state = _enabled && _textBox is { } host
+			? new WaylandTextInputStateHistory<TextBox>.State(_session, host, _supportsSurrounding ? _surroundingText : null, GetTextWithoutPreedit(host), _textRevision)
+			: (WaylandTextInputStateHistory<TextBox>.State?)null;
 		lock (_stateLock)
 		{
-			_textInput.Commit();
 			_commitSerial = unchecked(_commitSerial + 1);
-			if (_enabled && _textBox is { } textBox)
+			if (state is { } committedState)
 			{
-				_committedStates[_commitSerial] = (_session, textBox, _supportsSurrounding ? _surroundingText : null, GetTextWithoutPreedit(textBox), _textRevision);
-				// An input method need not answer every commit, so only a window of recent states is kept.
-				_committedStates.Remove(unchecked(_commitSerial - MaximumCommittedStates));
+				_committedStates.Record(_commitSerial, committedState);
 			}
 		}
+		_textInput?.Commit();
 	}
 
 	private void Disable()
@@ -189,8 +234,9 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		lock (_stateLock)
 		{
 			_session++;
+			_sessionTextBox = null;
 			_committedStates.Clear();
-			ResetPending();
+			_pending.Disable();
 		}
 		if (_isComposing)
 		{
@@ -198,18 +244,19 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			CompositionEnded?.Invoke(this, EventArgs.Empty);
 		}
 		_deferState = _stateDirty = false;
+		_lastSentState = null;
 		if (_enabled)
 		{
 			_enabled = false;
-			_textInput.Disable();
+			_textInput?.Disable();
 			CommitState();
 			WaylandDiagnostics.Trace("text-input: disabled");
 		}
 	}
 
-	private void SendState(TextBox textBox, uint cause)
+	private void SendState(TextBox host, uint cause)
 	{
-		if (!_enabled || textBox != _textBox)
+		if (!_enabled || host != _textBox)
 		{
 			return;
 		}
@@ -219,8 +266,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			_stateDirty = true;
 			return;
 		}
-		_textInput.SetTextChangeCause(cause);
-		var surrounding = CalculateSurrounding(textBox);
+		var surrounding = CalculateSurrounding(host);
 		if (_supportsSurrounding && !surrounding.IsSupported)
 		{
 			// Support is fixed for an enable/disable context; reset it rather than send a false anchor.
@@ -228,33 +274,73 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			Enable();
 			return;
 		}
+		var caretRectangle = GetCaretRectangle(host);
+		var content = WaylandTextInputContent.Get(
+			host.InputScope?.Names.Count > 0 ? host.InputScope.Names[0].NameValue : Microsoft.UI.Xaml.Input.InputScopeNameValue.Default,
+			host.IsTextPredictionEnabled, host.IsSpellCheckEnabled, host.AcceptsReturn);
+		var state = (surrounding, GetTextWithoutPreedit(host), caretRectangle, content);
+		if (_lastSentState == state)
+		{
+			_stateDirty = false;
+			return;
+		}
+		_textInput?.SetTextChangeCause(cause);
+		_textInput?.SetContentType(content.Hint, content.Purpose);
 		_surroundingText = surrounding;
 		if (_supportsSurrounding)
 		{
-			_textInput.SetSurroundingText(surrounding.Text, surrounding.Cursor, surrounding.Anchor);
+			_textInput?.SetSurroundingText(surrounding.Text, surrounding.Cursor, surrounding.Anchor);
 		}
 
-		if (GetCaretRectangle(textBox) is { } caret)
+		if (caretRectangle is { } caret)
 		{
-			_textInput.SetCursorRectangle(caret.X, caret.Y, caret.Width, caret.Height);
+			_textInput?.SetCursorRectangle(caret.X, caret.Y, caret.Width, caret.Height);
 		}
 		CommitState();
+		_lastSentState = state;
 		_stateDirty = false;
 	}
 
 	private void Enable()
 	{
-		if (_textBox is not { IsReadOnly: false, IsEnabled: true } textBox)
+		if (_textBox is not { IsReadOnly: false, IsEnabled: true } host || _textInput is null)
 		{
 			return;
 		}
-		_supportsSurrounding = CalculateSurrounding(textBox).IsSupported;
+		_supportsSurrounding = CalculateSurrounding(host).IsSupported;
 		// Enabling again resets the input method state for the newly focused TextBox.
 		_enabled = true;
-		_textInput.Enable();
-		_textInput.SetContentType((uint)ZwpTextInputV3.ContentHintValues.None, (uint)ZwpTextInputV3.ContentPurposeValues.Normal);
+		lock (_stateLock)
+		{
+			_pending.Begin(unchecked(_commitSerial + 1));
+			_sessionTextBox = host;
+		}
+		_lastSentState = null;
+		_textInput?.Enable();
 		WaylandDiagnostics.Trace("text-input: enabled");
-		SendState(textBox, ChangeCauseOther);
+		SendState(host, ChangeCauseOther);
+	}
+
+	// Old batches still belong to this focus session, but their deletion offsets are stale.
+	private void ResynchronizeState(TextBox host)
+	{
+		var supportsSurrounding = CalculateSurrounding(host).IsSupported;
+		lock (_stateLock)
+		{
+			_committedStates.Clear();
+			// Reserve the disable commit before publishing the new surrounding-text boundary.
+			_commitSerial = unchecked(_commitSerial + 1);
+			_pending.Resynchronize(unchecked(_commitSerial + 1));
+		}
+		_deferState = _stateDirty = false;
+		_lastSentState = null;
+		_enabled = false;
+		_textInput?.Disable();
+		_textInput?.Commit();
+		_supportsSurrounding = supportsSurrounding;
+		_enabled = true;
+		_textInput?.Enable();
+		SendState(host, ChangeCauseOther);
 	}
 
 	private void OnEnter(WlSurface surface)
@@ -285,40 +371,40 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 	// Dispatch thread.
 	private void OnDone(object? sender, ZwpTextInputV3.DoneEventArgs args)
 	{
-		var preedit = _pendingPreedit;
-		var preeditCursor = _pendingPreeditCursor;
-		var commit = _pendingCommit;
-		var deleteBefore = _pendingDeleteBefore;
-		var deleteAfter = _pendingDeleteAfter;
-		ResetPending();
+		Action? apply = null;
 		lock (_stateLock)
 		{
-			if (_committedStates.TryGetValue(args.Serial, out var state))
+			var batch = _pending.Take(args.Serial, _commitSerial);
+			if (batch.Disposition != WaylandTextInputBatchDisposition.Reject && _sessionTextBox is { } host)
 			{
-				WaylandConnection.PostToUI(() => Apply(args.Serial, state.Session, state.TextBox, state.Surrounding, state.Text, state.Revision, preedit, preeditCursor, commit, deleteBefore, deleteAfter));
+				var state = _committedStates.GetStateOrCurrent(args.Serial, _session, host);
+				apply = () => Apply(args.Serial, state.Session, state.Host, state.Surrounding, state.Text, state.Revision,
+					batch.Preedit, batch.PreeditCursor, batch.Commit, batch.DeleteBefore, batch.DeleteAfter);
 			}
 		}
-	}
-
-	private void ResetPending()
-	{
-		_pendingPreedit = null;
-		_pendingPreeditCursor = 0;
-		_pendingCommit = null;
-		_pendingDeleteBefore = 0;
-		_pendingDeleteAfter = 0;
+		if (apply is not null)
+		{
+			_postToUI(apply);
+		}
 	}
 
 	// Applies a done event in the order the protocol specifies: delete surrounding text (dropping the preedit
 	// first), insert the commit string, then show the new preedit. A preedit update alone keeps the composition.
-	private void Apply(uint serial, long session, TextBox textBox, WaylandTextInputText.SurroundingText? surrounding, string text, long revision, string? preedit, int preeditCursor, string? commit, uint deleteBefore, uint deleteAfter)
+	private void Apply(uint serial, long session, TextBox host, WaylandTextInputText.SurroundingText? surrounding, string text, long revision, string? preedit, int preeditCursor, string? commit, uint deleteBefore, uint deleteAfter)
 	{
-		if (!_enabled || session != _session || textBox != _textBox || textBox.IsReadOnly || !textBox.IsEnabled)
+		if (!_enabled || session != _session || host != _textBox || (host.IsReadOnly || !host.IsEnabled))
 		{
 			return;
 		}
+		bool oldContext;
 		lock (_stateLock)
 		{
+			// A resync after done was posted also makes this batch's deletion stale.
+			oldContext = _pending.GetDisposition(serial, _commitSerial) == WaylandTextInputBatchDisposition.ApplyWithoutDeletion;
+			if (oldContext)
+			{
+				deleteBefore = deleteAfter = 0;
+			}
 			if (_committedStates.TryGetValue(serial, out var state))
 			{
 				surrounding = state.Surrounding;
@@ -327,26 +413,27 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			}
 		}
 		var deleting = deleteBefore != 0 || deleteAfter != 0;
-		if (deleting && (revision != _textRevision || text != GetTextWithoutPreedit(textBox)))
-		{
-			// The deletion offsets refer to text that changed since; resynchronize instead of deleting other text.
-			WaylandDiagnostics.Trace("text-input: stale deletion, resetting");
-			Disable();
-			Enable();
-			return;
-		}
-		_deferState = serial != _commitSerial;
+		var reconcileDeletion = deleting && (surrounding is not { IsSupported: true } || revision != _textRevision || text != GetTextWithoutPreedit(host));
 		var wasComposing = _isComposing;
 		_applyingInputMethodChange = true;
 		try
 		{
+			if (reconcileDeletion)
+			{
+				// Only deletion needs the old surrounding-text snapshot; commit and preedit still apply.
+				WaylandDiagnostics.Trace("text-input: stale deletion, resetting");
+				deleting = false;
+				OnPreeditChanged(null, 0);
+				ResynchronizeState(host);
+			}
+			_deferState = !oldContext && !reconcileDeletion && serial != _commitSerial;
 			if (deleting && _isComposing)
 			{
 				OnPreeditChanged(null, 0);
 			}
 			if (deleting && surrounding is { IsSupported: true } snapshot)
 			{
-				DeleteSurroundingText(textBox, snapshot, deleteBefore, deleteAfter);
+				DeleteSurroundingText(host, snapshot, deleteBefore, deleteAfter);
 			}
 			if (commit is not null)
 			{
@@ -354,40 +441,35 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			}
 			// A new preedit replaces the selection; the surrounding text excludes it and keeps the caret at its start.
 			OnPreeditChanged(preedit, preeditCursor);
-			_surroundingText = CalculateSurrounding(textBox);
+			_surroundingText = CalculateSurrounding(host);
 		}
 		finally
 		{
-			_revisionText = textBox.Text ?? string.Empty;
+			_revisionText = host.Text ?? string.Empty;
 			_applyingInputMethodChange = false;
 		}
+		var currentText = GetTextWithoutPreedit(host);
 		lock (_stateLock)
 		{
 			if (serial == _commitSerial)
 			{
-				foreach (var previous in new List<uint>(_committedStates.Keys))
-				{
-					if (previous != serial)
-					{
-						_committedStates.Remove(previous);
-					}
-				}
+				_committedStates.RetainOnly(serial);
 			}
-			if (_committedStates.ContainsKey(serial))
+			if (_committedStates.TryGetValue(serial, out _))
 			{
-				_committedStates[serial] = (session, textBox, _supportsSurrounding ? _surroundingText : null, GetTextWithoutPreedit(textBox), _textRevision);
+				_committedStates.Record(serial, new(session, host, _supportsSurrounding ? _surroundingText : null, currentText, _textRevision));
 			}
 		}
 		// A preedit-only update leaves the surrounding text unchanged; its start and end move the caret.
 		if (deleting || commit is not null || wasComposing != _isComposing || _stateDirty)
 		{
-			SendState(textBox, ChangeCauseInputMethod);
+			SendState(host, ChangeCauseInputMethod);
 		}
 	}
 
-	private void UpdateTextRevision(TextBox textBox)
+	private void UpdateTextRevision(TextBox host)
 	{
-		var text = textBox.Text ?? string.Empty;
+		var text = host.Text ?? string.Empty;
 		if (!_applyingInputMethodChange && text != _revisionText)
 		{
 			_revisionText = text;
@@ -426,6 +508,30 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		var selectionLength = after.Start - before.Start - before.Length;
 		textBox.Text = text.Remove(after.Start, after.Length).Remove(before.Start, before.Length);
 		textBox.Select(before.Start, selectionLength);
+	}
+
+	internal bool TryCommitKeyboardText(WaylandKeyboardInputSource source, string text)
+	{
+		if (_textBox is not { IsReadOnly: false, IsEnabled: true } textBox
+			|| textBox.XamlRoot is not { } root
+			|| XamlRootMap.GetHostForRoot(root) is not WaylandXamlRootHost rootHost
+			|| rootHost.KeyboardSource != source)
+		{
+			return false;
+		}
+		_applyingInputMethodChange = true;
+		try
+		{
+			OnCommittedText(text);
+			_surroundingText = CalculateSurrounding(textBox);
+		}
+		finally
+		{
+			_revisionText = textBox.Text ?? string.Empty;
+			_applyingInputMethodChange = false;
+		}
+		SendState(textBox, ChangeCauseOther);
+		return true;
 	}
 
 	private void OnCommittedText(string text)

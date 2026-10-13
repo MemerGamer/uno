@@ -22,12 +22,12 @@ internal sealed class WaylandSoftwareRenderer : IDisposable
 		_shm = shm;
 		_postToOwner = postToOwner;
 	}
-	public bool Render(int width, int height, Func<SKSurface, bool> draw)
+	public WaylandRenderResult Render(int width, int height, Func<SKSurface, bool> draw, Func<Func<bool>, bool>? prepareCommit = null)
 	{
 		ObjectDisposedException.ThrowIf(_disposed, this);
 		if (width <= 0 || height <= 0)
 		{
-			return false;
+			return WaylandRenderResult.BufferUnavailable;
 		}
 		Buffer? available = null;
 		foreach (var buffer in _buffers.ToArray())
@@ -50,28 +50,33 @@ internal sealed class WaylandSoftwareRenderer : IDisposable
 			// Bound memory even when a compositor retains old-size buffers across resizes.
 			if (_buffers.Count >= 2)
 			{
-				return false;
+				return WaylandRenderResult.BufferUnavailable;
 			}
 			available = new Buffer(_shm, width, height, buffer => _postToOwner(() => OnRelease(buffer)));
 			_buffers.Add(available);
 		}
 		if (!draw(available.Surface))
 		{
-			return false;
+			return WaylandRenderResult.ContentRejected;
 		}
 		available.Surface.Canvas.Flush();
-		available.Busy = true;
-		_surface.Attach(available.Proxy, 0, 0);
-		if (_surface.Version >= 4)
+		bool Submit()
 		{
-			_surface.DamageBuffer(0, 0, width, height);
+			available.Busy = true;
+			_surface.Attach(available.Proxy, 0, 0);
+			if (_surface.Version >= 4)
+			{
+				_surface.DamageBuffer(0, 0, width, height);
+			}
+			else
+			{
+				_surface.Damage(0, 0, int.MaxValue, int.MaxValue);
+			}
+			_surface.Commit();
+			return true;
 		}
-		else
-		{
-			_surface.Damage(0, 0, int.MaxValue, int.MaxValue);
-		}
-		_surface.Commit();
-		return true;
+		var presented = prepareCommit is null ? Submit() : prepareCommit(Submit);
+		return presented ? WaylandRenderResult.Presented : WaylandRenderResult.BufferUnavailable;
 	}
 	private void OnRelease(Buffer buffer)
 	{

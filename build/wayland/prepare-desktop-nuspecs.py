@@ -78,6 +78,11 @@ def prepare(root, tfm, version, output):
                 continue
             source = resolve_pattern(base, item.get('src'))
             if not glob.glob(source, recursive=True):
+                # XML doc comments are generated only by CI builds.
+                if source.endswith('*.xml'):
+                    print(f'Skipping missing documentation: {source}', file=sys.stderr)
+                    files.remove(item)
+                    continue
                 raise RuntimeError(f'Missing package asset: {source}')
             item.set('src', source)
             item.set('target', target)

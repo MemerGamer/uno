@@ -2,6 +2,7 @@
 
 using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Uno.UI.Xaml.Controls.Extensions;
 using Uno.WinUI.Runtime.Skia.Wayland;
@@ -25,6 +26,9 @@ public sealed class TextInputSessionTests
 		public bool Enabled { get; private set; }
 		private bool _pendingEnabled;
 		public WaylandTextInputText.SurroundingText? Surrounding { get; private set; }
+		public (uint Hint, uint Purpose)? Content { get; private set; }
+		public int ContentTypeRequests { get; private set; }
+		private (uint Hint, uint Purpose)? _pendingContent;
 		private WaylandTextInputText.SurroundingText? _pendingSurrounding;
 		public void Enable()
 		{
@@ -41,9 +45,14 @@ public sealed class TextInputSessionTests
 			Serial++;
 			Enabled = _pendingEnabled;
 			Surrounding = _pendingSurrounding;
+			Content = _pendingContent;
 		}
 		public void SetTextChangeCause(uint cause) { }
-		public void SetContentType(uint hint, uint purpose) { }
+		public void SetContentType(uint hint, uint purpose)
+		{
+			ContentTypeRequests++;
+			_pendingContent = (hint, purpose);
+		}
 		public void SetSurroundingText(string text, int cursor, int anchor) => _pendingSurrounding = new(text, 0, cursor, anchor);
 		public void SetCursorRectangle(int x, int y, int width, int height) { }
 		public void EnterSurface(WlSurface surface) => Enter?.Invoke(this, new(surface));
@@ -63,7 +72,7 @@ public sealed class TextInputSessionTests
 		{
 			using var compose = new WaylandKeyboardCompose(context, "en_US.UTF-8");
 			var input = new Input();
-			_ = new WaylandImeTextBoxExtension(input, new object(), compose.Reset);
+			_ = new WaylandImeTextBoxExtension(input, new object(), WaylandConnection.Pending.Enqueue, compose.Reset);
 			Assert.IsNull(compose.Feed(0xfe51, 0));
 			input.Preedit("a");
 			Assert.AreEqual((uint)'e', compose.Feed('e', 'e'));
@@ -89,10 +98,11 @@ public sealed class TextInputSessionTests
 		public Host(string text = "abc", int start = 1, int length = 0, bool readOnly = false)
 		{
 			WaylandConnection.Pending.Clear();
-			Extension = new(Input, new());
+			Extension = new(Input, new(), WaylandConnection.Pending.Enqueue);
 			Extension.CompositionStarted += (_, _) =>
 			{
 				Started++;
+				Box.IsComposing = true;
 				Box.CompositionStartIndex = Box.SelectionStart;
 				Box.CompositionLength = Box.SelectionLength;
 			};
@@ -111,6 +121,7 @@ public sealed class TextInputSessionTests
 			Extension.CompositionEnded += (_, _) =>
 			{
 				Ended++;
+				Box.IsComposing = false;
 				Box.CompositionLength = 0;
 			};
 			Focus(text, start, length, readOnly);
@@ -139,6 +150,123 @@ public sealed class TextInputSessionTests
 			Input.Finish(serial);
 			WaylandConnection.Drain();
 		}
+	}
+
+	[TestMethod]
+	public void ConfigurationChangesPublishContentTypeAndCommit()
+	{
+		var host = new Host();
+		var serial = host.Input.Serial;
+		var requests = host.Input.ContentTypeRequests;
+		var hint = ZwpTextInputV3.ContentHintValues.Spellcheck;
+		host.Box.IsTextPredictionEnabled = false;
+		Assert.AreEqual(((uint)hint, (uint)ZwpTextInputV3.ContentPurposeValues.Normal), host.Input.Content!.Value);
+		Assert.AreEqual(++serial, host.Input.Serial);
+		Assert.AreEqual(++requests, host.Input.ContentTypeRequests);
+		host.Box.IsSpellCheckEnabled = false;
+		Assert.AreEqual((0u, (uint)ZwpTextInputV3.ContentPurposeValues.Normal), host.Input.Content!.Value);
+		Assert.AreEqual(++serial, host.Input.Serial);
+		Assert.AreEqual(++requests, host.Input.ContentTypeRequests);
+		host.Box.InputScope = new InputScope { Names = { new InputScopeName(InputScopeNameValue.EmailSmtpAddress) } };
+		Assert.AreEqual((0u, (uint)ZwpTextInputV3.ContentPurposeValues.Email), host.Input.Content!.Value);
+		Assert.AreEqual(++serial, host.Input.Serial);
+		Assert.AreEqual(++requests, host.Input.ContentTypeRequests);
+		host.Box.AcceptsReturn = true;
+		Assert.AreEqual(((uint)ZwpTextInputV3.ContentHintValues.Multiline, (uint)ZwpTextInputV3.ContentPurposeValues.Email), host.Input.Content!.Value);
+		Assert.AreEqual(++serial, host.Input.Serial);
+		Assert.AreEqual(++requests, host.Input.ContentTypeRequests);
+		host.Box.AcceptsReturn = true;
+		Assert.AreEqual(requests, host.Input.ContentTypeRequests, "An unchanged value must not republish hints.");
+	}
+
+	[TestMethod]
+	[DataRow(false)]
+	[DataRow(true)]
+	public void ContentHintChangedInsideCompositionUpdatedPublishesAfterApply(bool deferState)
+	{
+		var host = new Host();
+		host.Input.Preedit("k");
+		host.Finish();
+		Assert.IsTrue(host.Extension.IsComposing);
+		var oldSerial = host.Input.Serial;
+		if (deferState)
+		{
+			host.Box.IsSpellCheckEnabled = false;
+		}
+		var currentSerial = host.Input.Serial;
+		var requests = host.Input.ContentTypeRequests;
+		var content = host.Input.Content;
+		var updates = 0;
+		host.Extension.CompositionUpdated += (_, _) =>
+		{
+			updates++;
+			host.Box.IsTextPredictionEnabled = false;
+			Assert.AreEqual(requests, host.Input.ContentTypeRequests, "Hints must wait until input application completes.");
+			Assert.AreEqual(currentSerial, host.Input.Serial);
+		};
+		host.Input.Preedit("ka");
+		host.Finish(oldSerial);
+		Assert.AreEqual(1, updates);
+		Assert.IsTrue(host.Extension.IsComposing);
+		if (deferState)
+		{
+			Assert.AreEqual(requests, host.Input.ContentTypeRequests, "A stale done must keep hint publication deferred.");
+			Assert.AreEqual(currentSerial, host.Input.Serial);
+			Assert.AreEqual(content, host.Input.Content);
+			host.Input.Preedit("kan");
+			host.Finish(currentSerial);
+			Assert.AreEqual(2, updates);
+		}
+		Assert.IsTrue(host.Extension.IsComposing);
+		Assert.AreEqual(requests + 1, host.Input.ContentTypeRequests);
+		Assert.AreEqual(currentSerial + 1, host.Input.Serial);
+		var hint = deferState ? 0u : (uint)ZwpTextInputV3.ContentHintValues.Spellcheck;
+		Assert.AreEqual((hint, (uint)ZwpTextInputV3.ContentPurposeValues.Normal), host.Input.Content!.Value);
+		Assert.AreEqual("abc", host.Input.Surrounding!.Value.Text, "Published surrounding text must exclude the completed preedit update.");
+	}
+
+	[TestMethod]
+	public void ContentPropertySubscriptionsFollowFocusAndAreRemovedAtSessionEnd()
+	{
+		var host = new Host();
+		var oldBox = host.Box;
+		Assert.AreEqual(7, oldBox.PropertyCallbackCount);
+		host.Focus("other");
+		Assert.AreEqual(0, oldBox.PropertyCallbackCount);
+		Assert.AreEqual(7, host.Box.PropertyCallbackCount);
+		var requests = host.Input.ContentTypeRequests;
+		oldBox.IsTextPredictionEnabled = false;
+		oldBox.IsSpellCheckEnabled = false;
+		oldBox.InputScope = new InputScope { Names = { new InputScopeName(InputScopeNameValue.Number) } };
+		oldBox.AcceptsReturn = true;
+		Assert.AreEqual(requests, host.Input.ContentTypeRequests);
+		host.Box.IsTextPredictionEnabled = false;
+		Assert.AreEqual(requests + 1, host.Input.ContentTypeRequests);
+		host.Extension.EndImeSession();
+		Assert.AreEqual(0, host.Box.PropertyCallbackCount);
+		host.Box.IsSpellCheckEnabled = false;
+		host.Box.InputScope = new InputScope { Names = { new InputScopeName(InputScopeNameValue.Number) } };
+		host.Box.AcceptsReturn = true;
+		Assert.AreEqual(requests + 1, host.Input.ContentTypeRequests);
+	}
+
+	[TestMethod]
+	public void DeferredConfigurationPublishesAfterMatchingDone()
+	{
+		var host = new Host();
+		var old = host.Input.Serial;
+		host.Box.Select(2, 0);
+		host.Extension.UpdateState(host.Box);
+		var current = host.Input.Serial;
+		host.Input.Text("X");
+		host.Finish(old);
+		var requests = host.Input.ContentTypeRequests;
+		host.Box.AcceptsReturn = true;
+		Assert.AreEqual(requests, host.Input.ContentTypeRequests);
+		host.Finish(current);
+		Assert.AreEqual(requests + 1, host.Input.ContentTypeRequests);
+		Assert.AreEqual(current + 1, host.Input.Serial);
+		Assert.AreNotEqual(0u, host.Input.Content!.Value.Hint & (uint)ZwpTextInputV3.ContentHintValues.Multiline);
 	}
 
 	[TestMethod]
@@ -311,7 +439,7 @@ public sealed class TextInputSessionTests
 	}
 
 	[TestMethod]
-	public void SameLengthEditRejectsQueuedDeletionAndCommit()
+	public void SameLengthEditRejectsQueuedDeletionButKeepsCommit()
 	{
 		var host = new Host("abc", 1);
 		host.Input.Delete(1, 0);
@@ -319,8 +447,8 @@ public sealed class TextInputSessionTests
 		host.Input.Finish();
 		host.Box.Text = "xyz";
 		WaylandConnection.Drain();
-		Assert.AreEqual("xyz", host.Box.Text);
-		Assert.AreEqual("xyz", host.Input.Surrounding!.Value.Text);
+		Assert.AreEqual("xXyz", host.Box.Text);
+		Assert.AreEqual("xXyz", host.Input.Surrounding!.Value.Text);
 	}
 
 	[TestMethod]
@@ -348,8 +476,8 @@ public sealed class TextInputSessionTests
 		host.Input.Text("Y");
 		host.Input.Finish();
 		WaylandConnection.Drain();
-		Assert.AreEqual("Xbc", host.Box.Text);
-		Assert.AreEqual("Xbc", host.Input.Surrounding!.Value.Text);
+		Assert.AreEqual("XYbc", host.Box.Text);
+		Assert.AreEqual("XYbc", host.Input.Surrounding!.Value.Text);
 	}
 
 	[TestMethod]
@@ -380,18 +508,22 @@ public sealed class TextInputSessionTests
 		}
 		// One commit per update: no disable/enable resets.
 		Assert.AreEqual(serial + 1000, host.Input.Serial);
-		var states = (System.Collections.ICollection)typeof(WaylandImeTextBoxExtension)
+		var history = (WaylandTextInputStateHistory<TextBox>)typeof(WaylandImeTextBoxExtension)
 			.GetField("_committedStates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
 			.GetValue(host.Extension)!;
-		Assert.IsTrue(states.Count <= 64);
-		// A done for a retired state is ignored.
+		var states = (System.Collections.ICollection)typeof(WaylandTextInputStateHistory<TextBox>)
+			.GetField("_states", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+			.GetValue(history)!;
+		Assert.AreEqual(64, states.Count);
+		Assert.IsFalse(history.TryGetValue(serial, out _));
+		// An evicted snapshot cannot delete, but its commit still belongs to this session.
 		host.Input.Delete(1, 0);
 		host.Input.Text("X");
 		host.Finish(serial);
-		Assert.AreEqual("abc", host.Box.Text);
+		Assert.AreEqual("Xabc", host.Box.Text);
 		host.Input.Text("Y");
 		host.Finish();
-		Assert.AreEqual("Yabc", host.Box.Text);
+		Assert.AreEqual("XYabc", host.Box.Text);
 	}
 
 	[TestMethod]

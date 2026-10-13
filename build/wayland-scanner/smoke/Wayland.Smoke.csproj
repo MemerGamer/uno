@@ -9,5 +9,6 @@
 	<ItemGroup>
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Native/**/*.cs" Link="Native/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Protocols/**/*.cs" Link="Protocols/%(Filename)%(Extension)" />
+		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Rendering/WaylandPresentationCoordinator.cs" Link="Rendering/%(Filename)%(Extension)" />
 	</ItemGroup>
 </Project>

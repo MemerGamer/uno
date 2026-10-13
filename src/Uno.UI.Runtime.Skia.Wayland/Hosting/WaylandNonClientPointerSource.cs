@@ -38,7 +38,7 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 
 	private readonly WaylandProtocolInputConnection? _input;
 	private readonly WaylandPointerInputSource _pointer;
-	private readonly WaylandPointerPress _press = new(WaylandConnection.PostToUI);
+	private readonly WaylandPointerPress _press;
 
 	// Set on the UI thread when the window closes; read before posting requests to the dispatch thread.
 	private volatile bool _disposed;
@@ -51,6 +51,7 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 	internal WaylandNonClientPointerSource(WaylandConnection connection, XdgToplevel toplevel, Window window, int windowId, WaylandXamlRootHost host, Func<double> scale, Action<Action> post)
 	{
 		_connection = connection;
+		_press = new(connection.PostToUI);
 		_toplevel = toplevel;
 		_window = window;
 		_windowId = windowId;

@@ -389,7 +389,11 @@ internal abstract partial class BaseWindowImplementation : IWindowImplementation
 		{
 			NativeWindowWrapper?.Show(true);
 
-			OnActivationStateChanged(CoreWindowActivationState.CodeActivated);
+			// Hosts that are not ready raise activation once their native state is applied.
+			if (NativeWindowWrapper is not { IsReadyForActivation: false })
+			{
+				OnActivationStateChanged(CoreWindowActivationState.CodeActivated);
+			}
 
 			if (!_splashDismissed)
 			{

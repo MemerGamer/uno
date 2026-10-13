@@ -1,4 +1,5 @@
-// Licensed under the MIT License.
+// Licensed under the MIT License. See LICENSE in the project root for license information.
+
 #nullable enable
 using System;
 using System.Collections.Concurrent;
@@ -7,7 +8,7 @@ using System.Threading.Tasks;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland.Rendering;
 
-// Single owner thread for one window's renderer, frame scheduler, Skia surfaces and EGL context.
+// Single owner thread for one window's renderer, frame scheduler and graphics context.
 internal sealed class WaylandRenderThread : IDisposable
 {
 	private readonly BlockingCollection<Action> _queue = new();
@@ -53,6 +54,10 @@ internal sealed class WaylandRenderThread : IDisposable
 				}
 			}
 		}
+		catch (Exception error)
+		{
+			_completion.TrySetException(error);
+		}
 		finally
 		{
 			lock (_gate)
@@ -61,6 +66,31 @@ internal sealed class WaylandRenderThread : IDisposable
 				_queue.Dispose();
 			}
 			_completion.TrySetResult();
+		}
+	}
+
+	internal void Complete(Action cleanup)
+	{
+		lock (_gate)
+		{
+			if (_completed)
+			{
+				return;
+			}
+			_queue.Add(() =>
+			{
+				try
+				{
+					cleanup();
+				}
+				catch (Exception error)
+				{
+					_completion.TrySetException(error);
+					throw;
+				}
+			});
+			_completed = true;
+			_queue.CompleteAdding();
 		}
 	}
 

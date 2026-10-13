@@ -94,7 +94,7 @@ internal sealed class WaylandCoreApplicationExtension : ICoreApplicationExtensio
 
 	public void Exit()
 	{
-		WaylandConnection.PostToUI(() =>
+		_connection()?.PostToUI(() =>
 		{
 			_ = _connection()?.CloseAllWindows();
 			_exitRequested = true;

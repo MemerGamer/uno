@@ -14,6 +14,7 @@ internal sealed class WaylandRenderer : IDisposable
 	private readonly Action<Action> _postToOwner;
 	private readonly WaylandFrameScheduler _scheduler;
 	private readonly Func<SKSurface, GRContext?, bool> _draw;
+	private readonly Func<Func<bool>, bool> _prepareCommit;
 	private WaylandEglRenderer? _egl;
 	private WaylandSoftwareRenderer? _software;
 	private int _width;
@@ -30,29 +31,40 @@ internal sealed class WaylandRenderer : IDisposable
 	public event EventHandler? BackendChanged;
 
 	// Both frame paths validate the GPU context before the host draws its retained layer.
-	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Func<SKSurface, GRContext?, bool> draw, Action<GRContext?> produceUnpresentedFrame, Action releaseRetainedLayer, Action<Action> postToOwner, bool forceSoftware = false)
+	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Func<SKSurface, GRContext?, bool> draw, Action<GRContext?> produceUnpresentedFrame, Action releaseRetainedLayer, Action<Action> postToOwner, Func<Func<bool>, bool> prepareCommit, bool forceSoftware = false)
 	{
 		_surface = surface;
 		_shm = shm;
 		_draw = draw;
+		_prepareCommit = prepareCommit;
 		_postToOwner = postToOwner;
 		Scale = new WaylandRenderScale(surface, viewport);
-		if (!forceSoftware && Environment.GetEnvironmentVariable("UNO_WAYLAND_FORCE_SOFTWARE") != "1")
+		try
 		{
-			try
+			if (!forceSoftware && Environment.GetEnvironmentVariable("UNO_WAYLAND_FORCE_SOFTWARE") != "1")
 			{
-				_egl = new WaylandEglRenderer(display, surface, releaseRetainedLayer);
+				try
+				{
+					_egl = new WaylandEglRenderer(display, surface, releaseRetainedLayer);
+				}
+				catch (Exception error) when (error is InvalidOperationException or NotSupportedException or DllNotFoundException or EntryPointNotFoundException)
+				{
+					EglInitializationError = error;
+				}
 			}
-			catch (Exception error) when (error is InvalidOperationException or NotSupportedException or DllNotFoundException or EntryPointNotFoundException)
+			if (_egl is null)
 			{
-				EglInitializationError = error;
+				UseSoftware();
 			}
+			_scheduler = new WaylandFrameScheduler(surface, Render, () => ProduceUnpresentedFrame(produceUnpresentedFrame), postToOwner);
 		}
-		if (_egl is null)
+		catch
 		{
-			UseSoftware();
+			WaylandCleanup.Run(
+				() => _software?.Dispose(),
+				() => _egl?.Dispose());
+			throw;
 		}
-		_scheduler = new WaylandFrameScheduler(surface, Render, () => ProduceUnpresentedFrame(produceUnpresentedFrame), postToOwner);
 	}
 
 	// Stage size; the host acknowledges the configure immediately before a matching commit.
@@ -66,10 +78,12 @@ internal sealed class WaylandRenderer : IDisposable
 		_width = logicalWidth;
 		_height = logicalHeight;
 		_configured = true;
-		_scheduler.Invalidate();
+		_scheduler.PresentationReady();
 	}
 
 	public void Invalidate() => _scheduler.Invalidate();
+
+	public void PresentationReady() => _scheduler.PresentationReady();
 
 	public void ProduceUnpresentedFrame(Action<GRContext?> produce)
 	{
@@ -78,7 +92,7 @@ internal sealed class WaylandRenderer : IDisposable
 		{
 			try
 			{
-				var size = Scale.Apply(Math.Max(_width, 1), Math.Max(_height, 1));
+				var size = GetBufferSize();
 				egl.EnsureContext(size.Width, size.Height);
 			}
 			catch (Exception error) when (egl.IsContextLost)
@@ -97,38 +111,33 @@ internal sealed class WaylandRenderer : IDisposable
 
 	private void OnBufferAvailable(object? sender, EventArgs args) => _scheduler.BufferAvailable();
 
-	private bool Render()
+	private WaylandRenderResult Render()
 	{
 		if (!_configured)
 		{
-			return false;
+			return WaylandRenderResult.BufferUnavailable;
 		}
-		var size = Scale.Apply(_width, _height);
+		var size = GetBufferSize();
 		if (_egl is { } egl)
 		{
-			var drawn = false;
 			try
 			{
-				if (egl.Render(size.Width, size.Height, (surface, context) => drawn = _draw(surface, context)))
-				{
-					return true;
-				}
-				if (!drawn)
-				{
-					// The host declined a stale frame; the next invalidation retries it.
-					return false;
-				}
+				return egl.Render(size.Width, size.Height, (surface, context) => _draw(surface, context), _prepareCommit);
 			}
 			catch (Exception error) when (egl.IsContextLost)
 			{
 				FallBackToSoftware(error);
+				return WaylandRenderResult.ContextRecovered;
 			}
-			// The frame was dropped with the lost context; retry with the new context or backend.
-			_postToOwner(Invalidate);
-			return false;
 		}
-		return _software!.Render(size.Width, size.Height, surface => _draw(surface, null));
+		return _software!.Render(size.Width, size.Height, surface => _draw(surface, null), _prepareCommit);
 	}
+
+	private (int Width, int Height) GetBufferSize()
+		=> (WaylandRenderScale.ToBufferPixels(Math.Max(_width, 1), Scale.EffectiveScale),
+			WaylandRenderScale.ToBufferPixels(Math.Max(_height, 1), Scale.EffectiveScale));
+
+	internal void ApplyScale() => Scale.Apply(_width, _height);
 
 	private void FallBackToSoftware(Exception error)
 	{

@@ -109,6 +109,7 @@ internal static class WaylandDataFormats
 		// References created from a stream hand out that same stream on every open, so it is rewound and left
 		// open for the package owner.
 		var stream = await reference.OpenReadAsync();
+		using var ownedStream = reference.OwnsOpenedStream ? stream : null;
 		stream.Seek(0);
 		using var buffer = new MemoryStream();
 		await stream.AsStreamForRead().CopyToAsync(buffer);

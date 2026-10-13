@@ -21,6 +21,7 @@ internal sealed class WaylandPortalParentWindowProvider(WaylandConnection connec
 
 	public async Task<PortalParentWindow?> GetParentWindowAsync(CancellationToken token)
 	{
+		token.ThrowIfCancellationRequested();
 		if (AppWindow.GetFromWindowId(ApplicationView.GetForCurrentViewSafe().WindowId) is not { } appWindow
 			|| Microsoft.UI.Xaml.Window.GetFromAppWindow(appWindow) is not { } window
 			|| connection.FindWindow(window) is not { } wrapper)
@@ -44,7 +45,12 @@ internal sealed class WaylandPortalParentWindowProvider(WaylandConnection connec
 		// Destroying the exported object revokes the handle, so it lives until the portal request completes.
 		var lifetime = Disposable.Create(() => connection.Display.Post(exported.Dispose));
 
-		if (await Task.WhenAny(handle.Task, Task.Delay(_handleTimeout, token)) != handle.Task)
+		try
+		{
+			var parentHandle = await handle.Task.WaitAsync(_handleTimeout, token);
+			return new PortalParentWindow("wayland:" + parentHandle, lifetime);
+		}
+		catch (TimeoutException)
 		{
 			if (this.Log().IsEnabled(LogLevel.Warning))
 			{
@@ -52,12 +58,10 @@ internal sealed class WaylandPortalParentWindowProvider(WaylandConnection connec
 			}
 			return new PortalParentWindow(string.Empty, lifetime);
 		}
-
-		var parentHandle = await handle.Task;
-		if (WaylandDiagnostics.IsEnabled)
+		catch
 		{
-			WaylandDiagnostics.Trace($"portal: exported parent window handle {parentHandle}");
+			lifetime.Dispose();
+			throw;
 		}
-		return new PortalParentWindow("wayland:" + parentHandle, lifetime);
 	}
 }
