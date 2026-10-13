@@ -45,6 +45,10 @@ public sealed class GeneratorTests
 			foreach (var file in Directory.GetFiles(first))
 			{
 				Assert.AreEqual(File.ReadAllText(file), File.ReadAllText(Path.Combine(second, Path.GetFileName(file))));
+				foreach (var line in File.ReadLines(file))
+				{
+					Assert.AreEqual(line.TrimEnd(), line, $"Trailing whitespace in {Path.GetFileName(file)}");
+				}
 			}
 			var exported = File.ReadAllText(Path.Combine(first, "ZxdgExportedV2.g.cs"));
 			StringAssert.Contains(exported, "event EventHandler<HandleEventArgs>? HandleEvent;");
