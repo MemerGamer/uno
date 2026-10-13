@@ -52,6 +52,8 @@ internal abstract class NativeWindowWrapperBase : INativeWindowWrapper
 
 	public bool WasShown { get; set; }
 
+	public virtual bool IsReadyForActivation => true;
+
 	internal void SetWindow(Window window, XamlRoot xamlRoot)
 	{
 		_window = window;

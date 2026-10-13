@@ -6,6 +6,7 @@ using Combinatorial.MSTest;
 using AwesomeAssertions;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Private.Infrastructure;
 using Windows.Graphics;
 
@@ -27,7 +28,7 @@ public class Given_AppWindow
 			Assert.Inconclusive();
 		}
 
-		AssertPositioningAndSizingSupport();
+		AssertSizingSupport();
 
 		var appWindow = TestServices.WindowHelper.CurrentTestWindow.AppWindow;
 		AppWindowChangedEventArgs args = null;
@@ -55,7 +56,7 @@ public class Given_AppWindow
 	[TestMethod]
 	public async Task When_Move()
 	{
-		AssertPositioningAndSizingSupport();
+		AssertPositioningSupport();
 
 		var appWindow = TestServices.WindowHelper.CurrentTestWindow.AppWindow;
 		AppWindowChangedEventArgs args = null;
@@ -83,9 +84,9 @@ public class Given_AppWindow
 	[TestMethod]
 	public async Task When_Resize_Before_Activate()
 	{
-		AssertPositioningAndSizingSupport();
+		AssertSizingSupport();
 
-		var newWindow = new Window();
+		var newWindow = new Window { Content = new Grid() };
 		var appWindow = newWindow.AppWindow;
 		AppWindowChangedEventArgs args = null;
 		void OnChanged(AppWindow s, AppWindowChangedEventArgs e)
@@ -94,32 +95,31 @@ public class Given_AppWindow
 		}
 		appWindow.Changed += OnChanged;
 		var originalSize = appWindow.Size;
-		var activated = false;
 		try
 		{
 			var adjustedSize = new SizeInt32() { Width = originalSize.Width + 10, Height = originalSize.Height + 10 };
 			appWindow.Resize(adjustedSize);
-			await TestServices.WindowHelper.WaitFor(() => args is not null);
+			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => args is not null));
 			Assert.IsTrue(args.DidSizeChange);
 			Assert.AreEqual(appWindow.Size, adjustedSize);
 
-			newWindow.Activated += (s, e) => activated = true;
-			newWindow.Activate();
-			await TestServices.WindowHelper.WaitFor(() => activated);
-
-			Assert.AreEqual(appWindow.Size, adjustedSize);
+			await ActivateAndWaitForBounds(newWindow, () =>
+			{
+				Assert.AreEqual(adjustedSize, appWindow.Size);
+				Assert.AreEqual(OverlappedPresenterState.Restored, ((OverlappedPresenter)appWindow.Presenter).State);
+			});
 		}
 		finally
 		{
-			await TestServices.WindowHelper.WaitForIdle();
-			await TestServices.RunOnUIThread(() => newWindow.Close());
+			appWindow.Changed -= OnChanged;
+			newWindow.Close();
 		}
 	}
 
 	[TestMethod]
 	public async Task When_Move_Before_Activate()
 	{
-		AssertPositioningAndSizingSupport();
+		AssertPositioningSupport();
 
 		var newWindow = new Window();
 		var appWindow = newWindow.AppWindow;
@@ -154,14 +154,157 @@ public class Given_AppWindow
 
 	[TestMethod]
 	[CombinatorialData]
+	public async Task When_Resize_Twice_Before_Activate(bool extendContentIntoTitleBar)
+	{
+		AssertSizingSupport();
+
+		var newWindow = new Window
+		{
+			Content = new Grid(),
+			ExtendsContentIntoTitleBar = extendContentIntoTitleBar
+		};
+		var appWindow = newWindow.AppWindow;
+		var resized = false;
+		var requestedSize = new SizeInt32(720, 560);
+		void OnChanged(AppWindow sender, AppWindowChangedEventArgs args)
+		{
+			resized |= args.DidSizeChange && sender.Size.Equals(requestedSize);
+		}
+		appWindow.Changed += OnChanged;
+		try
+		{
+			appWindow.Resize(new SizeInt32(640, 480));
+			appWindow.Resize(requestedSize);
+			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => resized));
+			Assert.AreEqual(requestedSize, appWindow.Size);
+			Assert.IsFalse(appWindow.IsVisible);
+
+			await ActivateAndWaitForBounds(newWindow, () =>
+			{
+				Assert.AreEqual(requestedSize, appWindow.Size);
+				Assert.AreEqual(OverlappedPresenterState.Restored, ((OverlappedPresenter)appWindow.Presenter).State);
+			});
+		}
+		finally
+		{
+			appWindow.Changed -= OnChanged;
+			newWindow.Close();
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWayland)]
+	public async Task When_Resize_Before_Activate_Then_Maximize()
+	{
+		AssertSizingSupport();
+
+		var newWindow = new Window { Content = new Grid() };
+		var appWindow = newWindow.AppWindow;
+		var requestedSize = new SizeInt32(320, 240);
+		try
+		{
+			appWindow.Resize(requestedSize);
+			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => appWindow.Size.Equals(requestedSize)));
+			var presenter = (OverlappedPresenter)appWindow.Presenter;
+			presenter.Maximize();
+			await ActivateAndWaitForBounds(newWindow, () =>
+			{
+				Assert.AreEqual(OverlappedPresenterState.Maximized, presenter.State);
+				// A nonzero maximized configure overrides the floating size requested before mapping.
+				Assert.AreNotEqual(requestedSize, appWindow.Size);
+			});
+		}
+		finally
+		{
+			newWindow.Close();
+		}
+	}
+
+	[TestMethod]
+	public async Task When_First_Activation_Observes_Applied_Bounds()
+	{
+		AssertSizingSupport();
+
+		var newWindow = new Window { Content = new Grid() };
+		var appWindow = newWindow.AppWindow;
+		var requestedSize = new SizeInt32(320, 240);
+		var isWayland = RuntimeTestsPlatformHelper.CurrentPlatform == RuntimeTestPlatforms.SkiaWayland;
+		try
+		{
+			appWindow.Resize(requestedSize);
+			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => appWindow.Size.Equals(requestedSize)));
+			var presenter = (OverlappedPresenter)appWindow.Presenter;
+			if (isWayland)
+			{
+				// Wayland applies maximization only when the compositor configures the window.
+				presenter.Maximize();
+			}
+			await ActivateAndWaitForBounds(newWindow, () =>
+			{
+				Assert.AreEqual(isWayland ? OverlappedPresenterState.Maximized : OverlappedPresenterState.Restored, presenter.State);
+				if (isWayland)
+				{
+					Assert.AreNotEqual(requestedSize, appWindow.Size);
+				}
+				else
+				{
+					Assert.AreEqual(requestedSize, appWindow.Size);
+				}
+			});
+		}
+		finally
+		{
+			newWindow.Close();
+		}
+	}
+
+	[TestMethod]
+	[CombinatorialData]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWayland)]
+	public async Task When_Move_Is_Unsupported(bool activateWindow)
+	{
+		var newWindow = new Window();
+		var appWindow = newWindow.AppWindow;
+		var positionChanged = false;
+		var activated = false;
+		void OnChanged(AppWindow sender, AppWindowChangedEventArgs args)
+		{
+			positionChanged |= args.DidPositionChange;
+		}
+		appWindow.Changed += OnChanged;
+		try
+		{
+			if (activateWindow)
+			{
+				newWindow.Activated += (s, e) => activated = true;
+				newWindow.Activate();
+				await TestServices.WindowHelper.WaitFor(() => activated);
+			}
+
+			appWindow.Move(new PointInt32(40, 40));
+			await TestServices.WindowHelper.WaitForIdle();
+			Assert.AreEqual(new PointInt32(0, 0), appWindow.Position);
+			Assert.IsFalse(positionChanged);
+		}
+		finally
+		{
+			appWindow.Changed -= OnChanged;
+			await TestServices.WindowHelper.WaitForIdle();
+			await TestServices.RunOnUIThread(() => newWindow.Close());
+		}
+	}
+
+	[TestMethod]
+	[CombinatorialData]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/21435")]
 	[PlatformCondition(ConditionMode.Exclude, RuntimeTestPlatforms.SkiaX11 | RuntimeTestPlatforms.NativeWinUI)] // Skia/X11: Fail in CI (#21194)
 	public async Task When_Change_Window_State_Before_Activate(OverlappedPresenterState state)
 	{
-		AssertPositioningAndSizingSupport();
+		AssertSizingSupport();
 		var newWindow = new Window();
 		var appWindow = newWindow.AppWindow;
 		var activated = false;
+		var stateAtActivation = OverlappedPresenterState.Restored;
 		try
 		{
 			var overlappedPresenter = (OverlappedPresenter)appWindow.Presenter;
@@ -172,9 +315,17 @@ public class Given_AppWindow
 				_ => () => overlappedPresenter.Restore()
 			};
 			act.Should().NotThrow();
-			newWindow.Activated += (s, e) => activated = true;
+			newWindow.Activated += (s, e) =>
+			{
+				if (!activated && e.WindowActivationState != WindowActivationState.Deactivated)
+				{
+					stateAtActivation = overlappedPresenter.State;
+					activated = true;
+				}
+			};
 			newWindow.Activate();
-			await TestServices.WindowHelper.WaitFor(() => activated);
+			await TestServices.WindowHelper.WaitFor(() => activated, timeoutMS: 5000);
+			Assert.AreEqual(state, stateAtActivation);
 			Assert.AreEqual(state, overlappedPresenter.State);
 		}
 		finally
@@ -189,7 +340,7 @@ public class Given_AppWindow
 	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWin32)]
 	public async Task When_Maximized_With_Extended_TitleBar_Client_Is_Inset_From_Window()
 	{
-		AssertPositioningAndSizingSupport();
+		AssertSizingSupport();
 
 		var newWindow = new Window();
 		newWindow.ExtendsContentIntoTitleBar = true;
@@ -228,7 +379,67 @@ public class Given_AppWindow
 		}
 	}
 
-	private void AssertPositioningAndSizingSupport()
+	private static async Task ActivateAndWaitForBounds(Window window, Action assertBounds)
+	{
+		var appWindow = window.AppWindow;
+		var activation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var isWayland = RuntimeTestsPlatformHelper.CurrentPlatform == RuntimeTestPlatforms.SkiaWayland;
+		void OnActivated(object sender, WindowActivatedEventArgs args)
+		{
+			if (activation.Task.IsCompleted || args.WindowActivationState == WindowActivationState.Deactivated)
+			{
+				return;
+			}
+			try
+			{
+				Assert.IsTrue(appWindow.ClientSize.Width > 0 && appWindow.ClientSize.Height > 0);
+				Assert.IsTrue(appWindow.ClientSize.Width <= appWindow.Size.Width && appWindow.ClientSize.Height <= appWindow.Size.Height);
+				assertBounds();
+				activation.SetResult(true);
+			}
+			catch (Exception error)
+			{
+				activation.SetException(error);
+			}
+		}
+		window.Activated += OnActivated;
+		try
+		{
+			window.Activate();
+			await WaitWithTimeout(activation.Task);
+			var content = (FrameworkElement)window.Content;
+			await WaitWithTimeout(TestServices.WindowHelper.WaitForLoaded(content, timeoutMS: 5000));
+			if (isWayland)
+			{
+				await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() =>
+					content.XamlRoot is { } root &&
+					Math.Abs(root.Size.Width * root.RasterizationScale - appWindow.ClientSize.Width) <= 1 &&
+					Math.Abs(root.Size.Height * root.RasterizationScale - appWindow.ClientSize.Height) <= 1,
+					timeoutMS: 5000, message: "XamlRoot bounds matching AppWindow.ClientSize"));
+			}
+		}
+		finally
+		{
+			window.Activated -= OnActivated;
+		}
+	}
+
+	private static async Task WaitWithTimeout(Task task)
+	{
+		Assert.AreSame(task, await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(5))), "Timed out waiting for window state.");
+		await task;
+	}
+
+	private void AssertPositioningSupport()
+	{
+		AssertSizingSupport();
+		if (RuntimeTestsPlatformHelper.CurrentPlatform == RuntimeTestPlatforms.SkiaWayland)
+		{
+			Assert.Inconclusive("xdg-shell does not support positioning toplevel windows.");
+		}
+	}
+
+	private void AssertSizingSupport()
 	{
 		if (!OperatingSystem.IsLinux() &&
 			!OperatingSystem.IsWindows() &&

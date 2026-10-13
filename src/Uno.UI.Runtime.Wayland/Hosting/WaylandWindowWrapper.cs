@@ -22,6 +22,7 @@ namespace Uno.UI.Runtime.Wayland;
 // One wl_surface + xdg_surface + xdg_toplevel per Uno Window, sharing the host connection.
 // Window state follows xdg-shell: the compositor's configure is authoritative for size, maximized,
 // fullscreen and activation; requests made here are hints that come back through configure.
+// xdg-shell hides global positions; inherited screen conversions use Position (0, 0) and rasterization scale.
 internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDecorationsOwner
 {
 	private const WaylandToplevelStates ConstrainedStates = WaylandToplevelStates.Maximized | WaylandToplevelStates.Fullscreen | WaylandToplevelStates.Tiled;
@@ -44,6 +45,8 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	// UI thread state.
 	private WaylandToplevelStates _uiStates;
+	private bool _hasAppliedConfigure;
+	private bool _activationRequested;
 	private volatile bool _minimizeRequested;
 	// Written on the dispatch thread, also read by Minimize on the UI thread.
 	private volatile WaylandWindowCapabilities _capabilities = WaylandWindowCapabilities.All;
@@ -92,6 +95,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		_connection = connection;
 		_id = Interlocked.Increment(ref _nextId);
 		OwnerWindow = window;
+		ActivationState = CoreWindowActivationState.Deactivated;
 		_darkDecorations = Application.Current?.RequestedTheme == ApplicationTheme.Dark;
 		var package = Windows.ApplicationModel.Package.Current;
 		var titleBar = window.AppWindow.TitleBar;
@@ -137,6 +141,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			NonClientPointerSource = new WaylandNonClientPointerSource(connection, _toplevel, window, _id, _host, () => Scale, Post);
 			connection.AddWindow(this);
 			RasterizationScale = 1;
+			// The deferred bounds notification must not raise AppWindow.Changed for the initial size.
+			var initialSize = new SizeInt32(InitialWidth, InitialHeight);
+			SetSizes(initialSize, initialSize);
 			titleBar.ExtendsContentIntoTitleBarChanged += ExtendContentIntoTitleBar;
 			CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBarChanged += OnCoreTitleBarChanged;
 			// Publish a provisional size so content can load and trigger Show; configure replaces it.
@@ -196,6 +203,8 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	internal WaylandNonClientPointerSource NonClientPointerSource { get; }
 
 	public override object NativeWindow => _surface;
+
+	public override bool IsReadyForActivation => _hasAppliedConfigure;
 
 	public override string Title
 	{
@@ -283,7 +292,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	}
 
 	internal protected override void Activate()
-		=> Post(() =>
+	{
+		_activationRequested = true;
+		Post(() =>
 		{
 			if (_minimizeRequested || (_states & WaylandToplevelStates.Activated) == 0)
 			{
@@ -294,6 +305,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 				_connection.Activate(_surface, () => !_closed);
 			}
 		});
+	}
 
 	public override void Resize(SizeInt32 size)
 	{
@@ -310,7 +322,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			_floatingWidth = width;
 			_floatingHeight = height;
 			// Maximized, fullscreen and tiled sizes are compositor constraints; floating sizes are hints.
-			if (_configured && (_states & ConstrainedStates) == 0)
+			if ((_states & ConstrainedStates) == 0)
 			{
 				_geometryWidth = width;
 				_geometryHeight = height;
@@ -318,19 +330,6 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 				Publish();
 			}
 		});
-	}
-
-	// xdg-shell hides window positions from clients, so there is no mapping to screen coordinates.
-	public override bool TryConvertLocalToScreen(Point localPoint, out PointInt32 screenPoint)
-	{
-		screenPoint = default;
-		return false;
-	}
-
-	public override bool TryConvertScreenToLocal(PointInt32 screenPoint, out Point localPoint)
-	{
-		localPoint = default;
-		return false;
 	}
 
 	public override void ExtendContentIntoTitleBar(bool extend)
@@ -517,8 +516,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: configure serial={args.Serial} suggested={_pendingWidth}x{_pendingHeight} geometry={_geometryWidth}x{_geometryHeight} content={_layout.ContentWidth}x{_layout.ContentHeight} states={_states} decorations={(_serverSideDecorations ? "server" : "client")} -> {(_configureSerial is null ? "acknowledged" : "pending presentation")}"));
 		}
-		_connection.PostToUI(() => ActivationState = activated ? CoreWindowActivationState.PointerActivated : CoreWindowActivationState.Deactivated);
-		Publish();
+		Publish(notifyActivation: true);
 	}
 
 	private void OnPreferredFractionalScale(object? sender, WpFractionalScaleV1.PreferredScaleEventArgs args)
@@ -805,7 +803,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 	}
 
-	private void Publish()
+	private void Publish(bool notifyActivation = false)
 	{
 		var generation = ++_configureGeneration;
 		if (_clientDecorations is { } decorations)
@@ -817,8 +815,24 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		var titleBarHeight = _layout.TitleBarHeight;
 		var states = _states;
 		var scale = EffectiveScale;
-		_connection.PostToUI(() => ApplyConfigure(width, height, titleBarHeight, scale, states, generation));
-		_host.Configure(width, height, _preferredScale, _integerScale, generation);
+		_connection.PostToUI(() =>
+		{
+			ApplyConfigure(width, height, titleBarHeight, scale, states, generation);
+			if (notifyActivation && !_closed)
+			{
+				// Even an unchanged size must be applied before activation observers inspect the window.
+				var initialActivation = !_hasAppliedConfigure && _activationRequested;
+				_hasAppliedConfigure = true;
+				ActivationState = (states & WaylandToplevelStates.Activated) != 0
+					? CoreWindowActivationState.PointerActivated
+					: initialActivation ? CoreWindowActivationState.CodeActivated : CoreWindowActivationState.Deactivated;
+			}
+		});
+		// Pre-activation resizes update managed bounds, but buffers must wait for the first configure.
+		if (_configured)
+		{
+			_host.Configure(width, height, _preferredScale, _integerScale, generation);
+		}
 	}
 
 	// UI thread.
