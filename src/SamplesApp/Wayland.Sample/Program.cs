@@ -4,6 +4,7 @@
 
 using System;
 using Microsoft.UI;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -92,6 +93,13 @@ public sealed class App : Application
 		// The canvas has a background, so it is hit-testable as a drop target.
 		DataTransferProbe.Attach(canvas);
 		window.Activated += (_, e) => Console.WriteLine($"main: activated {e.WindowActivationState}");
+		window.AppWindow.Changed += (_, e) =>
+		{
+			if (e.DidPresenterChange)
+			{
+				Console.WriteLine($"main: presenter changed {(window.AppWindow.Presenter as OverlappedPresenter)?.State.ToString() ?? window.AppWindow.Presenter.Kind.ToString()}");
+			}
+		};
 		window.Activate();
 		var display = Windows.Graphics.Display.DisplayInformation.GetForCurrentView();
 		void ReportDisplay() => Console.WriteLine($"DisplayInformation: {display.ScreenWidthInRawPixels}x{display.ScreenHeightInRawPixels} scale {display.RawPixelsPerViewPixel} dpi {display.LogicalDpi} diagonal {display.DiagonalSizeInInches?.ToString() ?? "n/a"}");

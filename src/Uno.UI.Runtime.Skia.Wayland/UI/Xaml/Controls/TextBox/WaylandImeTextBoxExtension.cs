@@ -56,7 +56,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 	private bool _stateDirty;
 	private WaylandTextInputText.SurroundingText? _surroundingText;
 
-	internal WaylandImeTextBoxExtension(IWaylandTextInput textInput, object syncRoot)
+	internal WaylandImeTextBoxExtension(IWaylandTextInput textInput, object syncRoot, Action? onTextInput = null)
 	{
 		_stateLock = syncRoot;
 		lock (syncRoot)
@@ -66,10 +66,21 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			_textInput.Leave += (_, e) => WaylandConnection.PostToUI(() => OnLeave(e.Surface));
 			_textInput.PreeditString += (_, e) =>
 			{
+				if (!string.IsNullOrEmpty(e.Text))
+				{
+					onTextInput?.Invoke();
+				}
 				_pendingPreedit = e.Text;
 				_pendingPreeditCursor = e.CursorBegin;
 			};
-			_textInput.CommitString += (_, e) => _pendingCommit = e.Text;
+			_textInput.CommitString += (_, e) =>
+			{
+				if (!string.IsNullOrEmpty(e.Text))
+				{
+					onTextInput?.Invoke();
+				}
+				_pendingCommit = e.Text;
+			};
 			_textInput.DeleteSurroundingText += (_, e) =>
 			{
 				_pendingDeleteBefore = e.BeforeLength;
@@ -84,7 +95,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		lock (connection.Display.SyncRoot)
 		{
 			return connection.TextInputManager is { } manager && connection.Seat is { } seat
-				? new WaylandImeTextBoxExtension(new WaylandTextInput(manager.GetTextInput(seat)), connection.Display.SyncRoot)
+				? new WaylandImeTextBoxExtension(new WaylandTextInput(manager.GetTextInput(seat)), connection.Display.SyncRoot, connection.NotifyTextInputReceived)
 				: null;
 		}
 	}

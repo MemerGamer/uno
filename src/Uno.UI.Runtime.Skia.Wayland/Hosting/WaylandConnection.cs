@@ -41,7 +41,8 @@ internal sealed class WaylandConnection : IDisposable
 			Subcompositor = TryBind<WlSubcompositor>(WlSubcompositor.ProtocolName, 1);
 			Activation = TryBind<XdgActivationV1>(XdgActivationV1.ProtocolName, 1);
 			IconManager = TryBind<XdgToplevelIconManagerV1>(XdgToplevelIconManagerV1.ProtocolName, 1);
-			CursorShape = TryBind<WpCursorShapeManagerV1>(WpCursorShapeManagerV1.ProtocolName, 1);
+			CursorShape = Environment.GetEnvironmentVariable("UNO_WAYLAND_DISABLE_CURSOR_SHAPE") == "1"
+				? null : TryBind<WpCursorShapeManagerV1>(WpCursorShapeManagerV1.ProtocolName, 1);
 			Exporter = TryBind<ZxdgExporterV2>(ZxdgExporterV2.ProtocolName, 1);
 			TextInputManager = TryBind<ZwpTextInputManagerV3>(ZwpTextInputManagerV3.ProtocolName, 1);
 			// TODO: multiple seats; the first advertised one is used for now.
@@ -148,6 +149,11 @@ internal sealed class WaylandConnection : IDisposable
 
 	// Dispatch thread: the most recently activated toplevel, used as the requesting surface for activation tokens.
 	internal WlSurface? ActiveSurface { get; set; }
+
+	// Dispatch thread: raised when the input method preedits or commits text.
+	internal event EventHandler? TextInputReceived;
+
+	internal void NotifyTextInputReceived() => TextInputReceived?.Invoke(this, EventArgs.Empty);
 
 
 	internal static void PostToUI(Action action)

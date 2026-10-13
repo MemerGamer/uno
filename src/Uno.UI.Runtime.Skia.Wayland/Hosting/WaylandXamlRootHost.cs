@@ -70,6 +70,10 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		}
 		var input = (IWaylandInputConnection?)_input ?? NoInputConnection.Instance;
 		KeyboardSource = new WaylandKeyboardInputSource(input, WaylandConnection.PostToUI, keyboardFocusChanged);
+		lock (connection.Display.SyncRoot)
+		{
+			connection.TextInputReceived += KeyboardSource.OnTextInputReceived;
+		}
 		PointerSource = new WaylandPointerInputSource(input, WaylandConnection.PostToUI, () => KeyboardSource.Modifiers);
 		if (_input is not null)
 		{
@@ -304,6 +308,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		var display = _connection.Display;
 		display.Post(() =>
 		{
+			_connection.TextInputReceived -= KeyboardSource.OnTextInputReceived;
 			_seat?.Dispose();
 			DisposeCursor();
 		});

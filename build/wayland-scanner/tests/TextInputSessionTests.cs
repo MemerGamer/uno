@@ -6,6 +6,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Uno.UI.Xaml.Controls.Extensions;
 using Uno.WinUI.Runtime.Skia.Wayland;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
+using Uno.WinUI.Runtime.Skia.Wayland.Input;
 
 namespace Wayland.Scanner.Tests;
 
@@ -51,6 +52,29 @@ public sealed class TextInputSessionTests
 		public void Text(string text) => CommitString?.Invoke(this, new(text));
 		public void Delete(uint before, uint after) => DeleteSurroundingText?.Invoke(this, new(before, after));
 		public void Finish(uint? serial = null) => Done?.Invoke(this, new(serial ?? Serial));
+	}
+
+	[TestMethod]
+	public void InputMethodTextResetsPendingKeyboardCompose()
+	{
+		var context = WaylandXkb.ContextNew(0);
+		Assert.AreNotEqual((nint)0, context);
+		try
+		{
+			using var compose = new WaylandKeyboardCompose(context, "en_US.UTF-8");
+			var input = new Input();
+			_ = new WaylandImeTextBoxExtension(input, new object(), compose.Reset);
+			Assert.IsNull(compose.Feed(0xfe51, 0));
+			input.Preedit("a");
+			Assert.AreEqual((uint)'e', compose.Feed('e', 'e'));
+			Assert.IsNull(compose.Feed(0xfe51, 0));
+			input.Text("a");
+			Assert.AreEqual((uint)'e', compose.Feed('e', 'e'));
+		}
+		finally
+		{
+			WaylandXkb.ContextUnref(context);
+		}
 	}
 
 	private sealed class Host

@@ -176,7 +176,7 @@ internal class LinuxFileSaverExtension(FileSavePicker picker, IPortalParentWindo
 		}
 	}
 
-	private Array<Struct<string, Array<Struct<uint, string>>>> GetPortalFilters(IDictionary<string, IList<string>> filterDictionary)
+	private static Array<Struct<string, Array<Struct<uint, string>>>> GetPortalFilters(IDictionary<string, IList<string>> filterDictionary)
 	{
 		// Except from the API reference
 		// filters (a(sa(us)))

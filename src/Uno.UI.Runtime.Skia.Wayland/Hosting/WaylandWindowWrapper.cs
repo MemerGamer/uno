@@ -82,6 +82,8 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	private bool _configured;
 	private long _configureGeneration;
 	private long _presentedGeneration;
+	private WaylandDecorationLayout _presentedLayout;
+	private double _presentedScale;
 	private long _decorationsGeneration;
 	private uint? _configureSerial;
 	private long _iconGeneration;
@@ -306,14 +308,18 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	// Overlapped presenter, UI thread.
 	internal void Maximize() => Post(() => _toplevel.SetMaximized());
 
-	internal void Minimize()
+	// Returns whether the presenter state changed; OverlappedPresenter notifies AppWindow for its own calls.
+	internal bool Minimize()
 	{
 		// The compositor ignores the request when it does not support minimizing.
-		if ((_capabilities & WaylandWindowCapabilities.Minimize) != 0)
+		if ((_capabilities & WaylandWindowCapabilities.Minimize) == 0)
 		{
-			_minimizeRequested = true;
-			Post(() => _toplevel.SetMinimized());
+			return false;
 		}
+		var stateChanged = !_minimizeRequested;
+		_minimizeRequested = true;
+		Post(() => _toplevel.SetMinimized());
+		return stateChanged;
 	}
 
 	internal void Restore(bool activateWindow)
@@ -379,7 +385,13 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 	}
 
-	void IWaylandDecorationsOwner.Minimize() => WaylandConnection.PostToUI(Minimize);
+	void IWaylandDecorationsOwner.Minimize() => WaylandConnection.PostToUI(() =>
+	{
+		if (Minimize())
+		{
+			Window?.AppWindow.OnAppWindowChanged(AppWindowChangedEventArgs.PresenterChangedEventArgs);
+		}
+	});
 
 	void IWaylandDecorationsOwner.RequestClose() => WaylandConnection.PostToUI(RequestClose);
 
@@ -395,7 +407,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	// The output the window was last seen entering, or the first advertised one before it was mapped.
 	internal WaylandOutputInfo? OutputInfo => _outputInfo ?? _connection.DefaultOutputInfo;
 
-	// Dispatch thread handlers stage state; the matching presentation acknowledges the configure.
+	// Dispatch thread handlers stage state; geometry changes are acknowledged with their presentation.
 	private void OnToplevelConfigure(object? sender, XdgToplevel.ConfigureEventArgs args)
 	{
 		_pendingWidth = args.Width;
@@ -432,6 +444,12 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 		ApplyGeometry();
 		_configureSerial = args.Serial;
+		if (_presentedGeneration != 0 && _layout == _presentedLayout && EffectiveScale == _presentedScale)
+		{
+			// State-only changes need no new buffer; hidden surfaces may receive no frame callbacks.
+			_xdgSurface.AckConfigure(args.Serial);
+			_configureSerial = null;
+		}
 		_configured = true;
 		var activated = (_states & WaylandToplevelStates.Activated) != 0;
 		if (activated)
@@ -442,7 +460,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			_connection.ActiveSurface = null;
 		}
-		WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: configure serial={args.Serial} suggested={_pendingWidth}x{_pendingHeight} geometry={_geometryWidth}x{_geometryHeight} content={_layout.ContentWidth}x{_layout.ContentHeight} states={_states} decorations={(_serverSideDecorations ? "server" : "client")} -> pending presentation"));
+		WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: configure serial={args.Serial} suggested={_pendingWidth}x{_pendingHeight} geometry={_geometryWidth}x{_geometryHeight} content={_layout.ContentWidth}x{_layout.ContentHeight} states={_states} decorations={(_serverSideDecorations ? "server" : "client")} -> {(_configureSerial is null ? "acknowledged" : "pending presentation")}"));
 		WaylandConnection.PostToUI(() => ActivationState = activated ? CoreWindowActivationState.PointerActivated : CoreWindowActivationState.Deactivated);
 		Publish();
 	}
@@ -667,6 +685,8 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			_configureSerial = null;
 		}
 		_xdgSurface.SetWindowGeometry(0, _layout.GeometryY, _layout.ContentWidth, _layout.GeometryHeight);
+		_presentedLayout = _layout;
+		_presentedScale = EffectiveScale;
 		_presentedGeneration = generation;
 		return true;
 	}
@@ -708,10 +728,16 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			return;
 		}
+		var previousStates = _uiStates;
+		var wasMinimized = _minimizeRequested;
 		_uiStates = states;
 		if ((states & WaylandToplevelStates.Activated) != 0)
 		{
 			_minimizeRequested = false;
+		}
+		if (WaylandToplevelStateParser.HasPresenterChanged(previousStates, states, wasMinimized, _minimizeRequested))
+		{
+			Window?.AppWindow.OnAppWindowChanged(AppWindowChangedEventArgs.PresenterChangedEventArgs);
 		}
 		var scaleChanged = RasterizationScale != (float)scale;
 		RasterizationScale = (float)scale;

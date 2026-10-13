@@ -139,7 +139,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 
 	// Called once the drop handlers completed (or the drag was aborted). The offer stays alive until
 	// the data they requested has been received.
-	private void Complete(Session session, DataPackageOperation result)
+	private static void Complete(Session session, DataPackageOperation result)
 	{
 		if (session.Completed)
 		{

@@ -9,6 +9,23 @@ namespace Wayland.Scanner.Tests;
 public sealed class SelectionSerialTests
 {
 	[TestMethod]
+	public void CancelledDeferredSelectionIsNotPublishedOnFocus()
+	{
+		var state = new WaylandSelectionSerial();
+		var published = 0;
+		var cancelled = 0;
+		state.Request(() => published++, () => cancelled++);
+		state.CancelPendingSelection();
+		state.CancelPendingSelection();
+		Assert.AreEqual(1, cancelled);
+		state.Enter(11);
+		state.Update(12);
+		Assert.AreEqual(0, published);
+		state.Request(() => published++);
+		Assert.AreEqual(1, published);
+	}
+
+	[TestMethod]
 	public void SelectionRequiresCurrentKeyboardFocus()
 	{
 		var state = new WaylandSelectionSerial();

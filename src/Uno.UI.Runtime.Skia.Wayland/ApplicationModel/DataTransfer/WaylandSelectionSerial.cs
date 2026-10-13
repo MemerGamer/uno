@@ -12,6 +12,7 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 internal sealed class WaylandSelectionSerial
 {
 	private Action? _pendingSelection;
+	private Action? _cancelPendingSelection;
 
 	internal bool HasFocus { get; private set; }
 	internal uint Serial { get; private set; }
@@ -32,9 +33,10 @@ internal sealed class WaylandSelectionSerial
 		}
 	}
 
-	internal void Request(Action publish)
+	internal void Request(Action publish, Action? cancel = null)
 	{
 		_pendingSelection = publish;
+		_cancelPendingSelection = cancel;
 		PublishPendingSelection();
 	}
 
@@ -43,8 +45,17 @@ internal sealed class WaylandSelectionSerial
 		if (HasFocus && _pendingSelection is { } publish)
 		{
 			_pendingSelection = null;
+			_cancelPendingSelection = null;
 			publish();
 		}
+	}
+
+	internal void CancelPendingSelection()
+	{
+		var cancel = _cancelPendingSelection;
+		_pendingSelection = null;
+		_cancelPendingSelection = null;
+		cancel?.Invoke();
 	}
 
 	internal void Leave() => HasFocus = false;

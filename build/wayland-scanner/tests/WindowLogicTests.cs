@@ -20,6 +20,16 @@ public sealed class WindowLogicTests
 	}
 
 	[TestMethod]
+	public void PresenterChangesIncludeSameSizeAndMinimizedTransitions()
+	{
+		Assert.IsTrue(WaylandToplevelStateParser.HasPresenterChanged(WaylandToplevelStates.None, WaylandToplevelStates.Maximized, false, false));
+		Assert.IsTrue(WaylandToplevelStateParser.HasPresenterChanged(WaylandToplevelStates.Maximized, WaylandToplevelStates.Fullscreen, false, false));
+		Assert.IsTrue(WaylandToplevelStateParser.HasPresenterChanged(WaylandToplevelStates.None, WaylandToplevelStates.Activated, true, false));
+		Assert.IsTrue(WaylandToplevelStateParser.HasPresenterChanged(WaylandToplevelStates.None, WaylandToplevelStates.Maximized, true, true));
+		Assert.IsFalse(WaylandToplevelStateParser.HasPresenterChanged(WaylandToplevelStates.None, WaylandToplevelStates.Activated | WaylandToplevelStates.Resizing, false, false));
+	}
+
+	[TestMethod]
 	public void ToplevelStatesParseKnownValuesOnly()
 	{
 		Assert.AreEqual(WaylandToplevelStates.None, WaylandToplevelStateParser.ParseStates([]));

@@ -16,6 +16,7 @@ namespace Wayland.Sample;
 
 // Clipboard and drop checks driven by environment variables, reporting on stdout:
 //   UNO_SAMPLE_COPY=text|html|files|image  sets the clipboard once the window is up (files: UNO_SAMPLE_COPY_FILES, ':'-separated)
+//   UNO_SAMPLE_COPY_DELAYS_MS=N,...         copies at each delay instead of after 2 s; text copies after the first are numbered
 //   UNO_SAMPLE_PASTE=1                      prints the clipboard on start and on every ContentChanged
 //   UNO_SAMPLE_DROP_ACCEPT=copy|move|both   operation accepted on DragOver (default: copy)
 //   UNO_SAMPLE_DROP_DEFER_MS=N              DragOver decides only after an N ms deferral
@@ -69,23 +70,28 @@ internal static class DataTransferProbe
 		if (Environment.GetEnvironmentVariable("UNO_SAMPLE_COPY") is { Length: > 0 } copy)
 		{
 			// Leave time for the compositor to map and focus the window: only the focused client may set the selection.
-			var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-			timer.Tick += (_, _) =>
+			var delays = (Environment.GetEnvironmentVariable("UNO_SAMPLE_COPY_DELAYS_MS") ?? "2000").Split(',', StringSplitOptions.RemoveEmptyEntries);
+			for (var i = 0; i < delays.Length; i++)
 			{
-				timer.Stop();
-				_ = CopyAsync(copy);
-			};
-			timer.Start();
+				var index = i;
+				var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(int.Parse(delays[i], System.Globalization.CultureInfo.InvariantCulture)) };
+				timer.Tick += (_, _) =>
+				{
+					timer.Stop();
+					_ = CopyAsync(copy, index);
+				};
+				timer.Start();
+			}
 		}
 	}
 
-	private static async Task CopyAsync(string kind)
+	private static async Task CopyAsync(string kind, int index)
 	{
 		var package = new DataPackage();
 		switch (kind)
 		{
 			case "text":
-				package.SetText("Hello from Uno Wayland ✓");
+				package.SetText(index == 0 ? "Hello from Uno Wayland ✓" : $"Uno copy #{index + 1}");
 				break;
 			case "html":
 				package.SetText("bold text");
@@ -109,7 +115,7 @@ internal static class DataTransferProbe
 				break;
 		}
 		Clipboard.SetContent(package);
-		Console.WriteLine($"probe: copied {kind}");
+		Console.WriteLine($"probe: copied {kind} #{index + 1}, readback {await DescribeAsync(Clipboard.GetContent())}");
 	}
 
 	internal static async Task<string> DescribeAsync(DataPackageView? view)

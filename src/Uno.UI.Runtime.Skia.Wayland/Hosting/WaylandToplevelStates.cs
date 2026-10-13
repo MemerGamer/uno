@@ -38,6 +38,9 @@ internal enum WaylandWindowCapabilities : uint
 
 internal static class WaylandToplevelStateParser
 {
+	internal static bool HasPresenterChanged(WaylandToplevelStates previous, WaylandToplevelStates current, bool wasMinimized, bool isMinimized)
+		=> wasMinimized != isMinimized || ((previous ^ current) & (WaylandToplevelStates.Maximized | WaylandToplevelStates.Fullscreen)) != 0;
+
 	// Both events carry a wl_array of native-endian uint32 values; unknown values are ignored.
 	internal static WaylandToplevelStates ParseStates(ReadOnlySpan<byte> array)
 		=> (WaylandToplevelStates)Parse(array, (uint)WaylandToplevelStates.All);

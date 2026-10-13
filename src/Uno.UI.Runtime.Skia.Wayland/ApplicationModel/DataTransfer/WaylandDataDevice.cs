@@ -132,7 +132,9 @@ internal sealed class WaylandDataDevice
 	// Dispatch thread. A null source clears the selection.
 	internal void SetSelection(WlDataSource? source) => _device.SetSelection(source, _selectionSerial.Serial);
 
-	internal void RequestSelection(Action publish) => _selectionSerial.Request(publish);
+	internal void RequestSelection(Action publish, Action? cancel = null) => _selectionSerial.Request(publish, cancel);
+
+	internal void CancelPendingSelection() => _selectionSerial.CancelPendingSelection();
 
 	// UI thread.
 	internal void AddDropTarget(WaylandDragDropExtension target) => _dropTargets.Add(target);

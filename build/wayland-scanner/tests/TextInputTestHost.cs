@@ -108,6 +108,7 @@ namespace Uno.WinUI.Runtime.Skia.Wayland
 		public WaylandDisplay Display => null!;
 		public ZwpTextInputManagerV3? TextInputManager => null;
 		public WlSeat? Seat => null;
+		public void NotifyTextInputReceived() { }
 		public static Queue<Action> Pending { get; } = new();
 		public static void PostToUI(Action action) => Pending.Enqueue(action);
 		public static void Drain()

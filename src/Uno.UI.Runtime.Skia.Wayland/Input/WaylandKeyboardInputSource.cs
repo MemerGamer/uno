@@ -40,6 +40,15 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 		_activate = activate;
 	}
 
+	// Text from the input method ends a dead key or compose sequence started on the keyboard.
+	internal void OnTextInputReceived(object? sender, EventArgs args)
+	{
+		if (_focused)
+		{
+			_compose?.Reset();
+		}
+	}
+
 	public void Keymap(uint format, int fd, uint size)
 	{
 		StopRepeat();

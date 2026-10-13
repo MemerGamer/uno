@@ -94,6 +94,8 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 					if (_source == source)
 					{
 						_source = null;
+						// Unfocused clients get no selection events, but this one is newer than a still deferred copy.
+						_device.CancelPendingSelection();
 						lock (_gate)
 						{
 							if (_generation == generation)
@@ -108,6 +110,15 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 			}
 			_device.SetSelection(_source);
 			previous?.Destroy();
+		}, () =>
+		{
+			lock (_gate)
+			{
+				if (_generation == generation)
+				{
+					_content = null;
+				}
+			}
 		}));
 	}
 
