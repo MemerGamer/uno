@@ -61,11 +61,13 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 		int generation;
 		lock (_gate)
 		{
+			// Readable locally right away, as on WinUI, even while publishing waits for keyboard focus.
 			_content = view;
 			generation = ++_generation;
 		}
 		var mimeTypes = view is null ? [] : WaylandDataFormats.GetMimeTypes(view);
-		_device.Display.Post(() =>
+		// Wayland only accepts a selection from the focused client with a recent input serial.
+		_device.Display.Post(() => _device.RequestSelection(() =>
 		{
 			var previous = _source;
 			_sourceCancellation?.Cancel();
@@ -106,7 +108,7 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 			}
 			_device.SetSelection(_source);
 			previous?.Destroy();
-		});
+		}));
 	}
 
 	// Providers run on the UI dispatcher; pipe ownership stays with the worker.
