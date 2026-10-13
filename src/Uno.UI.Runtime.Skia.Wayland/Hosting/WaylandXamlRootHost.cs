@@ -180,6 +180,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	// configure or scale, so a frame rendered for stale geometry is never presented.
 	private bool Draw(SKSurface target, GRContext? gpuContext)
 	{
+		_readiness.BeginFrame();
 		RenderContent(gpuContext);
 		var canvas = target.Canvas;
 		var bounds = canvas.DeviceClipBounds;

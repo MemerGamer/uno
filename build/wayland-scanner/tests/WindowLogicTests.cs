@@ -78,17 +78,35 @@ public sealed class WindowLogicTests
 		var readiness = new WaylandFrameReadiness();
 		Assert.IsFalse(readiness.ConfigureUI(1, boundsChanged: false));
 		readiness.ConfigureRender(1);
+		readiness.BeginFrame();
 		Assert.IsTrue(readiness.CanPresent(800, 600, 800, 600));
 
 		Assert.IsTrue(readiness.ConfigureUI(2, boundsChanged: true));
 		readiness.ConfigureRender(2);
 		// The canvas already has the new size, but the recorded picture still has the old layout.
+		readiness.BeginFrame();
 		Assert.IsFalse(readiness.CanPresent(900, 700, 900, 700));
 		Assert.IsFalse(readiness.OnFrameRecorded(arrangedAtBounds: false));
+		readiness.BeginFrame();
 		Assert.IsFalse(readiness.CanPresent(900, 700, 900, 700));
 		Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+		readiness.BeginFrame();
 		Assert.IsTrue(readiness.CanPresent(900, 700, 900, 700));
 		Assert.IsFalse(readiness.OnFrameRecorded(arrangedAtBounds: true));
+	}
+
+	[TestMethod]
+	public void PictureTakenBeforeLayoutWasRecordedIsNotPresented()
+	{
+		var readiness = new WaylandFrameReadiness();
+		readiness.ConfigureUI(1, boundsChanged: true);
+		readiness.ConfigureRender(1);
+		readiness.BeginFrame();
+		// The UI records the new layout while the render thread still draws the older picture.
+		Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+		Assert.IsFalse(readiness.CanPresent(800, 600, 800, 600));
+		readiness.BeginFrame();
+		Assert.IsTrue(readiness.CanPresent(800, 600, 800, 600));
 	}
 
 	[TestMethod]
@@ -99,8 +117,10 @@ public sealed class WindowLogicTests
 		// A state-only configure must not release the resize whose layout was not recorded yet.
 		Assert.IsTrue(readiness.ConfigureUI(2, boundsChanged: false));
 		readiness.ConfigureRender(2);
+		readiness.BeginFrame();
 		Assert.IsFalse(readiness.CanPresent(800, 600, 800, 600));
 		Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+		readiness.BeginFrame();
 		Assert.IsTrue(readiness.CanPresent(800, 600, 800, 600));
 	}
 
@@ -112,9 +132,11 @@ public sealed class WindowLogicTests
 		readiness.ConfigureRender(1);
 		for (var i = 0; i < 2 * WaylandFrameReadiness.MaxStaleFrames; i++)
 		{
+			readiness.BeginFrame();
 			Assert.IsFalse(readiness.CanPresent(800, 600, 800, 600));
 		}
 		readiness.ConfigureRender(2);
+		readiness.BeginFrame();
 		Assert.IsTrue(readiness.CanPresent(800, 600, 800, 600));
 	}
 
@@ -130,13 +152,17 @@ public sealed class WindowLogicTests
 		Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: false));
 
 		readiness.ConfigureRender(1);
+		readiness.BeginFrame();
 		Assert.IsTrue(readiness.CanPresent(100, 100, 101, 101));
 		for (var i = 0; i < WaylandFrameReadiness.MaxStaleFrames; i++)
 		{
+			readiness.BeginFrame();
 			Assert.IsFalse(readiness.CanPresent(80, 80, 101, 101));
 		}
+		readiness.BeginFrame();
 		Assert.IsTrue(readiness.CanPresent(80, 80, 101, 101));
 		readiness.ConfigureRender(1);
+		readiness.BeginFrame();
 		Assert.IsFalse(readiness.CanPresent(80, 80, 101, 101));
 	}
 
