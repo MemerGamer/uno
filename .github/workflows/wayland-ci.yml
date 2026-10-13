@@ -275,9 +275,9 @@ jobs:
           path: source/build/samplesapp-desktop-skia
       - name: Build hot reload dependencies as Uno CI does
         run: |
-          dotnet build src/SourceGenerators/Uno.UI.Tasks/Uno.UI.Tasks.csproj -c Debug
-          dotnet build src/SourceGenerators/Uno.UI.SourceGenerators/Uno.UI.SourceGenerators.csproj -c Debug
-          dotnet build src/Uno.UI.RemoteControl.Host/Uno.UI.RemoteControl.Host.csproj -c Debug
+          dotnet build src/SourceGenerators/Uno.UI.Tasks/Uno.UI.Tasks.csproj -c Debug -p:UnoTargetFrameworkOverride=net10.0
+          dotnet build src/SourceGenerators/Uno.UI.SourceGenerators/Uno.UI.SourceGenerators.csproj -c Debug -p:UnoTargetFrameworkOverride=net10.0
+          dotnet build src/Uno.UI.RemoteControl.Host/Uno.UI.RemoteControl.Host.csproj -c Debug -p:UnoTargetFrameworkOverride=net10.0
       - name: Run Uno runtime harness
         env:
           USE_XVFB: ${{ matrix.use_xvfb }}
