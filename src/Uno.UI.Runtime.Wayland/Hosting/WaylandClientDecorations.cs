@@ -50,7 +50,7 @@ internal sealed class WaylandClientDecorations : IDisposable
 	private bool _activated;
 	private bool _maximized;
 	private bool _shown;
-	private bool _dirty;
+	private readonly WaylandDecorationRedrawState _redraw = new();
 	private int _frame;
 
 	private WlPointer? _pointer;
@@ -74,30 +74,43 @@ internal sealed class WaylandClientDecorations : IDisposable
 		_windowId = windowId;
 		_dark = dark;
 		_owner = owner;
-		_surface = connection.Compositor.CreateSurface();
-		_subsurface = connection.Subcompositor!.GetSubsurface(_surface, parent);
-		_subsurface.PlaceBelow(parent);
-		_viewport = connection.Viewporter?.GetViewport(_surface);
-		_scale = new WaylandRenderScale(_surface, _viewport);
-		_context = new WaylandSoftwareGraphicsContext(_surface, connection.Shm, connection.Display.Post, PrepareCommit);
+		IDrawingFactory? drawingFactory = null;
 		try
 		{
-			_drawingFactory = provider.CreateGraphics(_context) as IDrawingFactory<ISoftwareRenderTarget>
+			_surface = connection.Compositor.CreateSurface();
+			_subsurface = connection.Subcompositor!.GetSubsurface(_surface, parent);
+			_subsurface.PlaceBelow(parent);
+			_viewport = connection.Viewporter?.GetViewport(_surface);
+			_scale = new WaylandRenderScale(_surface, _viewport);
+			_context = new WaylandSoftwareGraphicsContext(_surface, connection.Shm, connection.Display.Post, PrepareCommit);
+			drawingFactory = provider.CreateGraphics(_context);
+			_drawingFactory = drawingFactory as IDrawingFactory<ISoftwareRenderTarget>
 				?? throw new NotSupportedException("The graphics backend cannot present software frames.");
+			_context.BufferAvailable += OnBufferAvailable;
+			if (connection.Seat is { } seat)
+			{
+				seat.Capabilities += OnSeatCapabilities;
+				UpdatePointer(connection.SeatCapabilities);
+			}
 		}
 		catch
 		{
-			_context.Dispose();
-			_viewport?.Dispose();
-			_subsurface.Dispose();
-			_surface.Dispose();
+			WaylandCleanup.Run(
+				() =>
+				{
+					if (connection.Seat is { } seat)
+					{
+						seat.Capabilities -= OnSeatCapabilities;
+					}
+				},
+				() => _cursor?.Dispose(),
+				() => _pointer?.Dispose(),
+				() => (drawingFactory as IDisposable)?.Dispose(),
+				() => _context?.Dispose(),
+				() => _viewport?.Dispose(),
+				() => _subsurface?.Dispose(),
+				() => _surface?.Dispose());
 			throw;
-		}
-		_context.BufferAvailable += OnBufferAvailable;
-		if (connection.Seat is { } seat)
-		{
-			seat.Capabilities += OnSeatCapabilities;
-			UpdatePointer(connection.SeatCapabilities);
 		}
 	}
 
@@ -118,7 +131,17 @@ internal sealed class WaylandClientDecorations : IDisposable
 		}
 	}
 
-	internal bool IsReady => !_dirty;
+	internal bool IsReady => !_redraw.Dirty;
+
+	internal bool HasPendingState => _redraw.PendingParentCommit;
+
+	internal void AdvancePendingState()
+	{
+		if (_redraw.ParentCommitted())
+		{
+			_connection.Display.Post(Redraw);
+		}
+	}
 
 	internal void Update(WaylandDecorationLayout layout, string title, bool activated, bool maximized, uint preferredScale, int integerScale)
 	{
@@ -158,15 +181,25 @@ internal sealed class WaylandClientDecorations : IDisposable
 
 	private void Redraw()
 	{
+		if (_disposed)
+		{
+			return;
+		}
+		if (!_redraw.BeginRedraw())
+		{
+			return;
+		}
 		if (!_layout.IsVisible)
 		{
-			_dirty = false;
+			_redraw.CompleteRedraw(committed: true);
+			_ = _redraw.ParentCommitted();
 			if (_shown)
 			{
 				// A null buffer unmaps the subsurface; the content commit applies it.
 				_shown = false;
 				_surface.Attach(null, 0, 0);
 				_surface.Commit();
+				_redraw.CompleteRedraw(committed: true);
 				_owner.RequestParentCommit();
 			}
 			return;
@@ -178,8 +211,8 @@ internal sealed class WaylandClientDecorations : IDisposable
 			Draw(session);
 		}
 		_context.Present();
-		_dirty = !_context.Committed;
-		if (!_dirty)
+		_redraw.CompleteRedraw(_context.Committed);
+		if (_context.Committed)
 		{
 			_shown = true;
 			_owner.RequestParentCommit();
@@ -198,7 +231,7 @@ internal sealed class WaylandClientDecorations : IDisposable
 
 	private void OnBufferAvailable(object? sender, EventArgs args)
 	{
-		if (_dirty && !_disposed)
+		if (_redraw.Dirty && !_disposed)
 		{
 			Redraw();
 		}
@@ -541,13 +574,14 @@ internal sealed class WaylandClientDecorations : IDisposable
 		{
 			seat.Capabilities -= OnSeatCapabilities;
 		}
-		UpdatePointer(0);
 		_context.BufferAvailable -= OnBufferAvailable;
-		(_drawingFactory as IDisposable)?.Dispose();
-		_context.Dispose();
-		_viewport?.Dispose();
-		_subsurface.Dispose();
-		_surface.Dispose();
+		WaylandCleanup.Run(
+			() => UpdatePointer(0),
+			() => (_drawingFactory as IDisposable)?.Dispose(),
+			() => _context.Dispose(),
+			() => _viewport?.Dispose(),
+			() => _subsurface.Dispose(),
+			() => _surface.Dispose());
 	}
 }
 

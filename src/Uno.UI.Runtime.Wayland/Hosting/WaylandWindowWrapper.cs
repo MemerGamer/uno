@@ -97,57 +97,97 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		var titleBar = window.AppWindow.TitleBar;
 		_extendsContent = titleBar.ExtendsContentIntoTitleBar;
 		var display = connection.Display;
-		// Create and subscribe inside one SyncRoot section so no event is dispatched before its handler exists.
-		lock (display.SyncRoot)
+		var hostConstructionStarted = false;
+		try
 		{
-			_surface = connection.Compositor.CreateSurface();
-			_surface.PreferredBufferScale += OnPreferredBufferScale;
-			_surface.Enter += OnSurfaceEnter;
-			_surface.Leave += OnSurfaceLeave;
-			connection.OutputRemoved += OnOutputRemoved;
-			_xdgSurface = connection.WmBase.GetXdgSurface(_surface);
-			_xdgSurface.Configure += OnXdgSurfaceConfigure;
-			_toplevel = _xdgSurface.GetToplevel();
-			_toplevel.Configure += OnToplevelConfigure;
-			_toplevel.Close += OnToplevelClose;
-			_toplevel.WmCapabilities += OnWmCapabilities;
-			_toplevel.SetAppId(WaylandConnection.AppId);
-			if (connection.Viewporter is { } viewporter)
+			// Create and subscribe inside one SyncRoot section so no event is dispatched before its handler exists.
+			lock (display.SyncRoot)
 			{
-				_viewport = viewporter.GetViewport(_surface);
-				if (connection.FractionalScale is { } fractional)
+				_surface = connection.Compositor.CreateSurface();
+				_surface.PreferredBufferScale += OnPreferredBufferScale;
+				_surface.Enter += OnSurfaceEnter;
+				_surface.Leave += OnSurfaceLeave;
+				connection.OutputRemoved += OnOutputRemoved;
+				_xdgSurface = connection.WmBase.GetXdgSurface(_surface);
+				_xdgSurface.Configure += OnXdgSurfaceConfigure;
+				_toplevel = _xdgSurface.GetToplevel();
+				_toplevel.Configure += OnToplevelConfigure;
+				_toplevel.Close += OnToplevelClose;
+				_toplevel.WmCapabilities += OnWmCapabilities;
+				_toplevel.SetAppId(WaylandConnection.AppId);
+				if (connection.Viewporter is { } viewporter)
 				{
-					_fractionalScale = fractional.GetFractionalScale(_surface);
-					_fractionalScale.PreferredScale += OnPreferredFractionalScale;
+					_viewport = viewporter.GetViewport(_surface);
+					if (connection.FractionalScale is { } fractional)
+					{
+						_fractionalScale = fractional.GetFractionalScale(_surface);
+						_fractionalScale.PreferredScale += OnPreferredFractionalScale;
+					}
+				}
+				if (connection.Decorations is { } decorations)
+				{
+					_decoration = decorations.GetToplevelDecoration(_toplevel);
+					_decoration.Configure += OnDecorationConfigure;
+					_ = RequestDecorationMode();
 				}
 			}
-			if (connection.Decorations is { } decorations)
+			// Activation follows the configure activated state rather than keyboard focus.
+			hostConstructionStarted = true;
+			_host = new WaylandXamlRootHost(connection, _id, window, root, _surface, _viewport, static _ => { }, PreparePresentation, DestroyProtocolObjects);
+			NonClientPointerSource = new WaylandNonClientPointerSource(connection, _toplevel, window, _id, _host, () => Scale, Post);
+			connection.AddWindow(this);
+			RasterizationScale = 1;
+			titleBar.ExtendsContentIntoTitleBarChanged += ExtendContentIntoTitleBar;
+			CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBarChanged += OnCoreTitleBarChanged;
+			// Publish a provisional size so content can load and trigger Show; configure replaces it.
+			// Posted because Uno subscribes to SizeChanged only after the factory returns this wrapper.
+			WaylandConnection.PostToUI(() =>
 			{
-				_decoration = decorations.GetToplevelDecoration(_toplevel);
-				_decoration.Configure += OnDecorationConfigure;
-				_ = RequestDecorationMode();
+				if (!_closed && !_configured)
+				{
+					ApplyConfigure(InitialWidth, InitialHeight, 0, 1, WaylandToplevelStates.None, 0);
+				}
+			});
+			UpdateWindowPropertiesFromPackage(package, window);
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace($"window{_id}: created (app_id={WaylandConnection.AppId}, viewport={_viewport is not null}, fractional={_fractionalScale is not null}, decoration={_decoration is not null}, subcompositor={connection.Subcompositor is not null}, seat={connection.Seat is not null})");
 			}
 		}
-		// Activation follows the configure activated state rather than keyboard focus.
-		_host = new WaylandXamlRootHost(connection, _id, window, root, _surface, _viewport, static _ => { }, PreparePresentation);
-		NonClientPointerSource = new WaylandNonClientPointerSource(connection, _toplevel, window, _id, _host, () => Scale, Post);
-		connection.AddWindow(this);
-		RasterizationScale = 1;
-		titleBar.ExtendsContentIntoTitleBarChanged += ExtendContentIntoTitleBar;
-		CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBarChanged += OnCoreTitleBarChanged;
-		// Publish a provisional size so content can load and trigger Show; configure replaces it.
-		// Posted because Uno subscribes to SizeChanged only after the factory returns this wrapper.
-		WaylandConnection.PostToUI(() =>
+		catch
 		{
-			if (!_configured)
+			_closed = true;
+			try
 			{
-				ApplyConfigure(InitialWidth, InitialHeight, 0, 1, WaylandToplevelStates.None, 0);
+				WaylandCleanup.Run(
+					() => titleBar.ExtendsContentIntoTitleBarChanged -= ExtendContentIntoTitleBar,
+					() => CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBarChanged -= OnCoreTitleBarChanged,
+					() => NonClientPointerSource?.Dispose());
 			}
-		});
-		UpdateWindowPropertiesFromPackage(package, window);
-		if (WaylandDiagnostics.IsEnabled)
-		{
-			WaylandDiagnostics.Trace($"window{_id}: created (app_id={WaylandConnection.AppId}, viewport={_viewport is not null}, fractional={_fractionalScale is not null}, decoration={_decoration is not null}, subcompositor={connection.Subcompositor is not null}, seat={connection.Seat is not null})");
+			catch (Exception cleanupError)
+			{
+				connection.TrackWindowTeardown(Task.FromException(cleanupError));
+			}
+			if (_host is not null)
+			{
+				connection.RemoveWindow(this, _host.Completion);
+				_host.Dispose(DestroyProtocolObjects);
+			}
+			else if (!hostConstructionStarted)
+			{
+				try
+				{
+					lock (display.SyncRoot)
+					{
+						DestroyProtocolObjects();
+					}
+				}
+				catch (Exception cleanupError)
+				{
+					connection.TrackWindowTeardown(Task.FromException(cleanupError));
+				}
+			}
+			throw;
 		}
 	}
 
@@ -701,7 +741,15 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 				return false;
 			}
 		}
-		return _presentation.Submit(generation, _layout, EffectiveScale, submit);
+		return _presentation.Submit(generation, _layout, EffectiveScale, () =>
+		{
+			var committed = submit();
+			if (committed)
+			{
+				_clientDecorations?.AdvancePendingState();
+			}
+			return committed;
+		});
 	}
 
 	private bool PreparePresentationCore(long generation)
@@ -710,16 +758,22 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			return false;
 		}
-		if (_presentation.Generation == generation)
-		{
-			return true;
-		}
 		if (_clientDecorations is { } decorations)
 		{
 			if (!decorations.IsReady)
 			{
+				if (decorations.HasPendingState)
+				{
+					// Apply the cached subsurface buffer so its predecessor can be released.
+					_surface.Commit();
+					decorations.AdvancePendingState();
+				}
 				return false;
 			}
+		}
+		if (_presentation.Generation == generation)
+		{
+			return true;
 		}
 		if (_configureSerial is { } serial)
 		{
@@ -829,29 +883,32 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBarChanged -= OnCoreTitleBarChanged;
 		NonClientPointerSource.Dispose();
 		_connection.RemoveWindow(this, _host.Completion);
-		_host.Dispose(() =>
+		_host.Dispose(DestroyProtocolObjects);
+	}
+
+	private void DestroyProtocolObjects()
+	{
+		_connection.OutputRemoved -= OnOutputRemoved;
+		foreach (var output in _enteredOutputs)
 		{
-			_connection.OutputRemoved -= OnOutputRemoved;
-			foreach (var output in _enteredOutputs)
-			{
-				output.Changed -= OnEnteredOutputChanged;
-			}
-			_enteredOutputs.Clear();
-			if (_connection.ActiveSurface == _surface)
-			{
-				_connection.ActiveSurface = null;
-			}
-			_clientDecorations?.Dispose();
-			_decoration?.Dispose();
-			_fractionalScale?.Dispose();
-			_viewport?.Dispose();
-			_toplevel.Dispose();
-			_xdgSurface.Dispose();
-			_surface.Dispose();
-			if (WaylandDiagnostics.IsEnabled)
-			{
-				WaylandDiagnostics.Trace($"window{_id}: destroyed");
-			}
-		});
+			output.Changed -= OnEnteredOutputChanged;
+		}
+		_enteredOutputs.Clear();
+		if (_connection.ActiveSurface == _surface)
+		{
+			_connection.ActiveSurface = null;
+		}
+		WaylandCleanup.Run(
+			() => _clientDecorations?.Dispose(),
+			() => _decoration?.Dispose(),
+			() => _fractionalScale?.Dispose(),
+			() => _viewport?.Dispose(),
+			() => _toplevel?.Dispose(),
+			() => _xdgSurface?.Dispose(),
+			() => _surface?.Dispose());
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"window{_id}: destroyed");
+		}
 	}
 }
