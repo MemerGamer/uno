@@ -40,6 +40,7 @@ public sealed class WaylandApplicationHost : SkiaHost, ISkiaApplicationHost, IDi
 	{
 		_appBuilder = appBuilder ?? throw new ArgumentNullException(nameof(appBuilder));
 		WaylandDiagnostics.InstallLoggerIfRequested();
+		WaylandHarfBuzz.PreloadWithDeepBind();
 
 		if (CoreDispatcher.DispatchOverride is null)
 		{
