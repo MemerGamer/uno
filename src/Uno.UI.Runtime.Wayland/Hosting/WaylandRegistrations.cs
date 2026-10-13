@@ -2,12 +2,15 @@
 
 using System;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Input;
 using Uno.ApplicationModel.Core;
+using Uno.ApplicationModel.DataTransfer;
 using Uno.Extensions.System;
 using Uno.Foundation.Extensibility;
 using Uno.UI.Hosting;
 using Uno.UI.Runtime.Extensions.System;
 using Uno.UI.Xaml.Controls;
+using Windows.ApplicationModel.DataTransfer.DragDrop.Core;
 using Windows.UI.Core;
 
 namespace Uno.UI.Runtime.Wayland;
@@ -30,7 +33,13 @@ internal static class WaylandRegistrations
 		ApiExtensibility.Register<IXamlRootHost>(typeof(IUnoCorePointerInputSource), host => ((WaylandXamlRootHost)host).PointerSource);
 		ApiExtensibility.Register<IXamlRootHost>(typeof(IUnoKeyboardInputSource), host => ((WaylandXamlRootHost)host).KeyboardSource);
 		ApiExtensibility.Register(typeof(ILauncherExtension), owner => new LinuxLauncherExtension(owner));
-		// TODO: application view, portal pickers/theme/text scale, clipboard, DnD, text input and OpenGL wrapper.
+		if (WaylandDataDevice.Create(connection) is { } dataDevice)
+		{
+			var clipboard = new WaylandClipboardExtension(dataDevice);
+			ApiExtensibility.Register(typeof(IClipboardExtension), _ => clipboard);
+			ApiExtensibility.Register<DragDropManager>(typeof(IDragDropExtension), manager => new WaylandDragDropExtension(manager, dataDevice));
+		}
+		// TODO: application view, portal pickers/theme/text scale, text input and OpenGL wrapper.
 	}
 }
 
