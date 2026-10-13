@@ -81,8 +81,8 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 				_input.InputSerial += (_, serial) => connection.InputSerial = serial;
 			}
 			var input = (IWaylandInputConnection?)_input ?? NoInputConnection.Instance;
-			KeyboardSource = new WaylandKeyboardInputSource(input, WaylandConnection.PostToUI, keyboardFocusChanged);
-			PointerSource = new WaylandPointerInputSource(input, WaylandConnection.PostToUI, () => KeyboardSource.Modifiers);
+			KeyboardSource = new WaylandKeyboardInputSource(input, _connection.PostToUI, keyboardFocusChanged);
+			PointerSource = new WaylandPointerInputSource(input, _connection.PostToUI, () => KeyboardSource.Modifiers);
 			if (_input is not null)
 			{
 				var seat = new WaylandSeat(connection.Seat!, _input, PointerSource, KeyboardSource);
@@ -229,7 +229,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 		{
 			this.Log().Warn($"The EGL context of window {_id} was lost; recreating its graphics.");
 		}
-		WaylandConnection.PostToUI(() =>
+		_connection.PostToUI(() =>
 		{
 			if (_disposed)
 			{

@@ -25,6 +25,7 @@ internal sealed class WaylandConnection : IDisposable
 	// Failed teardowns are kept so shutdown observes them.
 	private readonly List<Task> _retiringWindows = new();
 	private volatile bool _allWindowsClosed;
+	private volatile bool _uiCallbacksClosed;
 	// The launcher's startup token, consumed by the first activation (xdg-activation-v1 startup notification).
 	private string? _startupActivationToken = TakeStartupActivationToken();
 
@@ -174,8 +175,17 @@ internal sealed class WaylandConnection : IDisposable
 
 	internal void NotifyTextInputReceived() => TextInputReceived?.Invoke(this, EventArgs.Empty);
 
-	internal static void PostToUI(Action action)
-		=> NativeDispatcher.Main.Enqueue(action, NativeDispatcherPriority.High);
+	internal void PostToUI(Action action)
+		=> NativeDispatcher.Main.Enqueue(() =>
+		{
+			if (!_uiCallbacksClosed)
+			{
+				action();
+			}
+		}, NativeDispatcherPriority.High);
+
+	// UI thread: fence queued work before disconnecting a borrowed dispatcher.
+	internal void CloseUICallbacks() => _uiCallbacksClosed = true;
 
 	private static string? TakeStartupActivationToken()
 	{

@@ -23,6 +23,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 	private const uint ChangeCauseOther = 1;
 
 	private readonly IWaylandTextInput _textInput;
+	private readonly Action<Action> _postToUI;
 
 	// Dispatch thread: double-buffered state, applied at done.
 	private string? _pendingPreedit;
@@ -59,14 +60,15 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 	private WaylandTextInputText.SurroundingText? _surroundingText;
 	private (WaylandTextInputText.SurroundingText Surrounding, string Text, (int X, int Y, int Width, int Height)? Caret, (uint Hint, uint Purpose) Content)? _lastSentState;
 
-	internal WaylandImeTextBoxExtension(IWaylandTextInput textInput, object syncRoot, Action? onTextInput = null)
+	internal WaylandImeTextBoxExtension(IWaylandTextInput textInput, object syncRoot, Action<Action> postToUI, Action? onTextInput = null)
 	{
 		_stateLock = syncRoot;
+		_postToUI = postToUI;
 		lock (syncRoot)
 		{
 			_textInput = textInput;
-			_textInput.Enter += (_, e) => WaylandConnection.PostToUI(() => OnEnter(e.Surface));
-			_textInput.Leave += (_, e) => WaylandConnection.PostToUI(() => OnLeave(e.Surface));
+			_textInput.Enter += (_, e) => _postToUI(() => OnEnter(e.Surface));
+			_textInput.Leave += (_, e) => _postToUI(() => OnLeave(e.Surface));
 			_textInput.PreeditString += (_, e) =>
 			{
 				if (!string.IsNullOrEmpty(e.Text))
@@ -98,7 +100,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		lock (connection.Display.SyncRoot)
 		{
 			return connection.TextInputManager is { } manager && connection.Seat is { } seat
-				? new WaylandImeTextBoxExtension(new WaylandTextInput(manager.GetTextInput(seat)), connection.Display.SyncRoot, connection.NotifyTextInputReceived)
+				? new WaylandImeTextBoxExtension(new WaylandTextInput(manager.GetTextInput(seat)), connection.Display.SyncRoot, connection.PostToUI, connection.NotifyTextInputReceived)
 				: null;
 		}
 	}
@@ -300,6 +302,30 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		SendState(host, ChangeCauseOther);
 	}
 
+	// Resets the compositor's text-input state after a stale deletion. Unlike Disable, it keeps the session, so
+	// batches already accepted for this host still apply.
+	private void ResynchronizeState(IImeSessionHost host)
+	{
+		lock (_stateLock)
+		{
+			_committedStates.Clear();
+			ResetPending();
+		}
+		_deferState = _stateDirty = false;
+		_lastSentState = null;
+		_enabled = false;
+		_textInput.Disable();
+		CommitState();
+		_supportsSurrounding = CalculateSurrounding(host).IsSupported;
+		_enabled = true;
+		lock (_stateLock)
+		{
+			_sessionFirstSerial = unchecked(_commitSerial + 1);
+		}
+		_textInput.Enable();
+		SendState(host, ChangeCauseOther);
+	}
+
 	private void OnEnter(WlSurface surface)
 	{
 		_focusedSurface = surface;
@@ -340,7 +366,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 			if (_sessionHost is { } host && IsSerialInSession(args.Serial, _sessionFirstSerial, _commitSerial))
 			{
 				var state = _committedStates.GetStateOrCurrent(args.Serial, _session, host);
-				WaylandConnection.PostToUI(() => Apply(args.Serial, state.Session, state.Host, state.Surrounding, state.Text, state.Revision, preedit, preeditCursor, commit, deleteBefore, deleteAfter));
+				_postToUI(() => Apply(args.Serial, state.Session, state.Host, state.Surrounding, state.Text, state.Revision, preedit, preeditCursor, commit, deleteBefore, deleteAfter));
 			}
 		}
 	}
@@ -386,9 +412,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 				WaylandDiagnostics.Trace("text-input: stale deletion, resetting");
 				deleting = false;
 				OnPreeditChanged(null, 0);
-				Disable();
-				Enable();
-				session = _session;
+				ResynchronizeState(host);
 			}
 			_deferState = !reconcileDeletion && serial != _commitSerial;
 			if (deleting && _isComposing)

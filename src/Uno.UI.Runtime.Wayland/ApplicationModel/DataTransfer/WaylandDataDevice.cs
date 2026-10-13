@@ -41,14 +41,14 @@ internal sealed class WaylandDataDevice
 		_device.Motion += (_, e) =>
 		{
 			var position = new Point(e.X.ToDouble(), e.Y.ToDouble());
-			WaylandConnection.PostToUI(() => _dropTarget?.Motion(position));
+			_connection.PostToUI(() => _dropTarget?.Motion(position));
 		};
-		_device.Leave += (_, _) => WaylandConnection.PostToUI(() =>
+		_device.Leave += (_, _) => _connection.PostToUI(() =>
 		{
 			_dropTarget?.Leave();
 			_dropTarget = null;
 		});
-		_device.Drop += (_, _) => WaylandConnection.PostToUI(() =>
+		_device.Drop += (_, _) => _connection.PostToUI(() =>
 		{
 			_dropTarget?.Drop();
 			_dropTarget = null;
@@ -110,6 +110,8 @@ internal sealed class WaylandDataDevice
 
 	internal WaylandDisplay Display => _connection.Display;
 
+	internal void PostToUI(Action action) => _connection.PostToUI(action);
+
 	/// <summary>Raised on the dispatch thread when the selection changes while one of our surfaces has keyboard focus.</summary>
 	internal event EventHandler? SelectionChanged;
 
@@ -162,7 +164,7 @@ internal sealed class WaylandDataDevice
 		var surface = e.Surface;
 		var serial = e.Serial;
 		var position = new Point(e.X.ToDouble(), e.Y.ToDouble());
-		WaylandConnection.PostToUI(() =>
+		_connection.PostToUI(() =>
 		{
 			_dropTarget = offer is null ? null : _dropTargets.Find(target => target.Surface == surface);
 			if (_dropTarget is { } target)

@@ -105,9 +105,9 @@ internal static class WaylandDataFormats
 
 	private static async Task<byte[]?> GetPngAsync(RandomAccessStreamReference reference)
 	{
-		// References created from a stream hand out that same stream on every open, so it is rewound and left
-		// open for the package owner.
+		// A reference created from a stream hands out that stream on every open: rewind it and leave it open.
 		var stream = await reference.OpenReadAsync();
+		using var ownedStream = reference.OwnsOpenedStream ? stream : null;
 		stream.Seek(0);
 		using var buffer = new MemoryStream();
 		await stream.AsStreamForRead().CopyToAsync(buffer);

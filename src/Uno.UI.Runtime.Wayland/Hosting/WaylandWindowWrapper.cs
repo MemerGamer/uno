@@ -141,7 +141,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBarChanged += OnCoreTitleBarChanged;
 			// Publish a provisional size so content can load and trigger Show; configure replaces it.
 			// Posted because Uno subscribes to SizeChanged only after the factory returns this wrapper.
-			WaylandConnection.PostToUI(() =>
+			_connection.PostToUI(() =>
 			{
 				if (!_closed && !_configured)
 				{
@@ -438,7 +438,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 	}
 
-	void IWaylandDecorationsOwner.Minimize() => WaylandConnection.PostToUI(() =>
+	void IWaylandDecorationsOwner.Minimize() => _connection.PostToUI(() =>
 	{
 		if (Minimize())
 		{
@@ -446,7 +446,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 	});
 
-	void IWaylandDecorationsOwner.RequestClose() => WaylandConnection.PostToUI(RequestClose);
+	void IWaylandDecorationsOwner.RequestClose() => _connection.PostToUI(RequestClose);
 
 	// Runs on the dispatch thread unless the window is closed.
 	private void Post(Action action) => _connection.Display.Post(() =>
@@ -517,7 +517,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: configure serial={args.Serial} suggested={_pendingWidth}x{_pendingHeight} geometry={_geometryWidth}x{_geometryHeight} content={_layout.ContentWidth}x{_layout.ContentHeight} states={_states} decorations={(_serverSideDecorations ? "server" : "client")} -> {(_configureSerial is null ? "acknowledged" : "pending presentation")}"));
 		}
-		WaylandConnection.PostToUI(() => ActivationState = activated ? CoreWindowActivationState.PointerActivated : CoreWindowActivationState.Deactivated);
+		_connection.PostToUI(() => ActivationState = activated ? CoreWindowActivationState.PointerActivated : CoreWindowActivationState.Deactivated);
 		Publish();
 	}
 
@@ -604,7 +604,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		if (current != _outputInfo)
 		{
 			_outputInfo = current;
-			WaylandConnection.PostToUI(() => _displayInformation?.NotifyDpiChanged());
+			_connection.PostToUI(() => _displayInformation?.NotifyDpiChanged());
 		}
 		// Surfaces before v6 get no preferred_buffer_scale: derive it from the entered outputs instead.
 		if (_surface.Version < 6)
@@ -629,7 +629,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			WaylandDiagnostics.Trace($"window{_id}: close requested");
 		}
-		WaylandConnection.PostToUI(RequestClose);
+		_connection.PostToUI(RequestClose);
 	}
 
 	private double EffectiveScale => WaylandRenderScale.Compute(_viewport is not null, _preferredScale, _integerScale);
@@ -817,7 +817,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		var titleBarHeight = _layout.TitleBarHeight;
 		var states = _states;
 		var scale = EffectiveScale;
-		WaylandConnection.PostToUI(() => ApplyConfigure(width, height, titleBarHeight, scale, states, generation));
+		_connection.PostToUI(() => ApplyConfigure(width, height, titleBarHeight, scale, states, generation));
 		_host.Configure(width, height, _preferredScale, _integerScale, generation);
 	}
 
