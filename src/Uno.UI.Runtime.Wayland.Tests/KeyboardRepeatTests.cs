@@ -1,0 +1,123 @@
+#nullable enable
+
+using System.Collections.Concurrent;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Uno.UI.Runtime.Wayland.Input;
+using Windows.UI.Core;
+
+namespace Uno.UI.Runtime.Wayland.Tests;
+
+[TestClass]
+public sealed class KeyboardRepeatTests
+{
+	[TestMethod]
+	public void ServerAndDuplicatePressRepeatsKeepComposedText()
+	{
+		WithKeyboard((keyboard, _) =>
+		{
+			var text = new List<char?>();
+			keyboard.KeyDown += (_, args) => text.Add(GetText(args));
+			keyboard.RepeatInfo(0, 0);
+			ComposeAcuteE(keyboard);
+			keyboard.Key(18, 2);
+			keyboard.Key(18, 1);
+			CollectionAssert.AreEqual(new char?[] { 'é', 'é', 'é' }, text);
+			keyboard.Key(18, 0);
+			keyboard.Key(18, 2);
+			keyboard.Key(18, 1);
+			CollectionAssert.AreEqual(new char?[] { 'é', 'é', 'é', 'e' }, text);
+		});
+	}
+
+	[TestMethod]
+	public void PlainRepeatFollowsCurrentModifiers()
+	{
+		WithKeyboard((keyboard, _) =>
+		{
+			var text = new List<char?>();
+			keyboard.KeyDown += (_, args) => text.Add(GetText(args));
+			keyboard.RepeatInfo(0, 0);
+			keyboard.Key(30, 1); // a
+			keyboard.UpdateModifiers(1, 0, 0, 0); // Shift
+			keyboard.Key(30, 2);
+			CollectionAssert.AreEqual(new char?[] { 'a', 'A' }, text);
+		});
+	}
+
+	[TestMethod]
+	public void TimerRepeatKeepsComposedTextAndLeaveCancelsQueuedRepeat()
+	{
+		WithKeyboard((keyboard, connection) =>
+		{
+			var text = new List<char?>();
+			keyboard.KeyDown += (_, args) => text.Add(GetText(args));
+			keyboard.RepeatInfo(100, 1);
+			ComposeAcuteE(keyboard);
+			Assert.IsTrue(SpinWait.SpinUntil(() => !connection.Pending.IsEmpty, TimeSpan.FromSeconds(5)));
+			Assert.IsTrue(connection.Pending.TryDequeue(out var repeat));
+			var callback = repeat!;
+			callback();
+			CollectionAssert.AreEqual(new char?[] { 'é', 'é' }, text);
+			keyboard.Leave();
+			callback();
+			CollectionAssert.AreEqual(new char?[] { 'é', 'é' }, text);
+		});
+	}
+
+	private static char? GetText(KeyEventArgs args)
+		=> (char?)typeof(KeyEventArgs).GetProperty("UnicodeKey", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(args);
+
+	private static void ComposeAcuteE(WaylandKeyboardInputSource keyboard)
+	{
+		keyboard.Key(40, 1); // us(intl) apostrophe: dead_acute
+		keyboard.Key(40, 0);
+		keyboard.Key(18, 1); // e
+	}
+
+	private static void WithKeyboard(Action<WaylandKeyboardInputSource, InputConnection> test)
+	{
+		if (!OperatingSystem.IsLinux() || !NativeLibrary.TryLoad("libxkbcommon.so.0", out var library))
+		{
+			Assert.Inconclusive("libxkbcommon and its keymap/compose tables are required.");
+			return;
+		}
+		NativeLibrary.Free(library);
+		var connection = new InputConnection();
+		using var keyboard = new WaylandKeyboardInputSource(connection, action => action(), _ => { });
+		var path = Path.GetTempFileName();
+		try
+		{
+			File.WriteAllBytes(path, Encoding.UTF8.GetBytes("""
+				xkb_keymap {
+				  xkb_keycodes { include "evdev+aliases(qwerty)" };
+				  xkb_types { include "complete" };
+				  xkb_compatibility { include "complete" };
+				  xkb_symbols { include "pc+us(intl)+inet(evdev)" };
+				};
+				""" + "\0"));
+			using var handle = File.OpenHandle(path);
+			var fd = checked((int)handle.DangerousGetHandle());
+			handle.SetHandleAsInvalid(); // Keymap owns the protocol file descriptor.
+			keyboard.Keymap(1, fd, checked((uint)new FileInfo(path).Length));
+			keyboard.Enter([]);
+			test(keyboard, connection);
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
+	private sealed class InputConnection : IWaylandInputConnection
+	{
+		internal ConcurrentQueue<Action> Pending { get; } = new();
+		public void Post(Action action) => Pending.Enqueue(action);
+		public void SetCursor(uint serial, CoreCursor? cursor) { }
+		public IDisposable GetPointer(WaylandPointerInputSource sink) => throw new NotSupportedException();
+		public IDisposable GetKeyboard(WaylandKeyboardInputSource sink) => throw new NotSupportedException();
+		public IDisposable GetTouch(WaylandPointerInputSource sink) => throw new NotSupportedException();
+	}
+}

@@ -11,7 +11,7 @@
             <Button Click="CopyFiles" Content="Choose files and copy" />
             <Button Click="CopyImage" Content="Choose an image and copy" />
             <Button Click="Paste" Content="Read clipboard" />
-            <CheckBox x:Name="AcceptMove" Content="Accept move as well as copy" />
+            <ToggleSwitch x:Name="AcceptMove" Header="Accept move as well as copy" />
             <Border
                 Padding="24"
                 AllowDrop="True"

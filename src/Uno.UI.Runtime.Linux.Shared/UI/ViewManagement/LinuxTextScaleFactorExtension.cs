@@ -114,6 +114,13 @@ internal class LinuxTextScaleFactorExtension : ITextScaleFactorExtension
 				}
 			});
 		}
+		catch (DBusErrorReplyException e) when (e.ErrorName == "org.freedesktop.portal.Error.NotFound")
+		{
+			if (this.Log().IsEnabled(LogLevel.Debug))
+			{
+				this.Log().Debug("The Settings portal does not provide text-scaling-factor.");
+			}
+		}
 		catch (Exception e)
 		{
 			if (this.Log().IsEnabled(LogLevel.Error))

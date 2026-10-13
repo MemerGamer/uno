@@ -21,7 +21,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 	private readonly Action<Action> _dispatch;
 	private readonly Action<bool> _activate;
 	private readonly IWaylandInputConnection _connection;
-	private readonly Dictionary<uint, VirtualKey> _pressed = new();
+	private readonly Dictionary<uint, PressedKey> _pressed = new();
 	private WaylandKeyboardCompose? _compose;
 	private nint _context, _keymap, _state;
 	private Timer? _repeat;
@@ -138,7 +138,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 		_pressed.Clear();
 		foreach (var key in heldKeys)
 		{
-			_pressed[key] = _state == 0 || key > uint.MaxValue - 8 ? VirtualKey.None : LinuxKeyMap.FromKeysym(WaylandXkb.GetSym(_state, key + 8));
+			_pressed[key] = new(_state == 0 || key > uint.MaxValue - 8 ? VirtualKey.None : LinuxKeyMap.FromKeysym(WaylandXkb.GetSym(_state, key + 8)), null);
 		}
 		_dispatch(() => _activate(true));
 	}
@@ -148,7 +148,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 		_compose?.Reset();
 		foreach (var key in _pressed)
 		{
-			Emit(key.Key, key.Value, false, false);
+			Emit(key.Key, key.Value.VirtualKey, false, false);
 		}
 		_pressed.Clear();
 		Modifiers = VirtualKeyModifiers.None;
@@ -176,7 +176,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 		{
 			if (_rate == 0 && _pressed.TryGetValue(key, out var repeated))
 			{
-				Emit(key, repeated, true, true);
+				Emit(key, repeated.VirtualKey, true, true, repeated.ComposedText);
 			}
 			return;
 		}
@@ -192,19 +192,21 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			}
 			var sym = WaylandXkb.GetSym(_state, key + 8);
 			var vk = LinuxKeyMap.FromKeysym(sym);
-			var wasDown = _pressed.ContainsKey(key);
-			uint? text = WaylandXkb.GetUtf32(_state, key + 8);
+			var wasDown = _pressed.TryGetValue(key, out var pressed);
+			var keyText = WaylandXkb.GetUtf32(_state, key + 8);
+			var composed = wasDown ? pressed.ComposedText : null;
 			if (!wasDown && _compose is { } compose)
 			{
 				// Like keys taken by an input method, keys consumed by a dead-key or Compose sequence raise no key events.
-				text = compose.Feed(sym, text.Value);
-				if (text is null)
+				var fed = compose.Feed(sym, keyText);
+				if (fed is null)
 				{
 					return;
 				}
+				composed = fed != keyText ? fed : null;
 			}
-			_pressed[key] = vk;
-			Emit(key, vk, true, wasDown, text);
+			_pressed[key] = new(vk, composed);
+			Emit(key, vk, true, wasDown, composed ?? keyText);
 			if (_rate > 0 && WaylandXkb.Repeats(_keymap, key + 8) != 0)
 			{
 				StopRepeat();
@@ -214,18 +216,18 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 				{
 					if (!_disposed && _focused && generation == _generation && _pressed.TryGetValue(key, out var repeated))
 					{
-						Emit(key, repeated, true, true);
+						Emit(key, repeated.VirtualKey, true, true, repeated.ComposedText);
 					}
 				}), null, _delay, Math.Max(1, 1000 / _rate));
 			}
 		}
-		else if (_pressed.Remove(key, out var vk))
+		else if (_pressed.Remove(key, out var released))
 		{
 			if (key == _repeatKey)
 			{
 				StopRepeat();
 			}
-			Emit(key, vk, false, true);
+			Emit(key, released.VirtualKey, false, true);
 		}
 	}
 	private void Emit(uint key, VirtualKey vk, bool down, bool previous, uint? text = null)
@@ -291,4 +293,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 		_disposed = true;
 		ClearKeymap();
 	}
+
+	// Composed text is kept so repeats of a Compose sequence's final key repeat its result.
+	private readonly record struct PressedKey(VirtualKey VirtualKey, uint? ComposedText);
 }
