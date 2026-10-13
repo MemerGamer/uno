@@ -16,6 +16,8 @@
                 x:Name="Second"
                 Header="Second editor"
                 Text="Focus transfer during composition" />
+            <TextBox Header="Number editor" InputScope="Number" />
+            <TextBox Header="Email editor" InputScope="EmailSmtpAddress" />
             <RichEditBox
                 x:Name="RichEditor"
                 Height="140"

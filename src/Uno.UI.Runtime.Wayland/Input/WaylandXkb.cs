@@ -29,9 +29,8 @@ internal static partial class WaylandXkb
 	[LibraryImport(Library, EntryPoint = "xkb_compose_state_unref")] internal static partial void ComposeStateUnref(nint state);
 	[LibraryImport(Library, EntryPoint = "xkb_compose_state_feed")] internal static partial int ComposeFeed(nint state, uint keysym);
 	[LibraryImport(Library, EntryPoint = "xkb_compose_state_get_status")] internal static partial int ComposeStatus(nint state);
-	[LibraryImport(Library, EntryPoint = "xkb_compose_state_get_one_sym")] internal static partial uint ComposeGetSym(nint state);
+	[LibraryImport(Library, EntryPoint = "xkb_compose_state_get_utf8")] internal static partial int ComposeGetUtf8(nint state, [Out] byte[] buffer, nuint size);
 	[LibraryImport(Library, EntryPoint = "xkb_compose_state_reset")] internal static partial void ComposeReset(nint state);
-	[LibraryImport(Library, EntryPoint = "xkb_keysym_to_utf32")] internal static partial uint KeysymToUtf32(uint keysym);
 
 	internal static string ReadKeymap(int fd, uint size)
 	{
