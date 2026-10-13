@@ -20,6 +20,14 @@ public sealed class WindowLogicTests
 	}
 
 	[TestMethod]
+	public void CompositorFullscreenEntryAndExitChangePresenter()
+	{
+		Assert.IsTrue(WaylandToplevelStateParser.HasPresenterChanged(WaylandToplevelStates.None, WaylandToplevelStates.Fullscreen, false, false));
+		Assert.IsTrue(WaylandToplevelStateParser.HasPresenterChanged(WaylandToplevelStates.Fullscreen, WaylandToplevelStates.None, false, false));
+		Assert.IsFalse(WaylandToplevelStateParser.HasPresenterChanged(WaylandToplevelStates.Fullscreen, WaylandToplevelStates.Fullscreen | WaylandToplevelStates.Activated, false, false));
+	}
+
+	[TestMethod]
 	public void PresenterChangesIncludeSameSizeAndMinimizedTransitions()
 	{
 		Assert.IsTrue(WaylandToplevelStateParser.HasPresenterChanged(WaylandToplevelStates.None, WaylandToplevelStates.Maximized, false, false));

@@ -14,15 +14,15 @@ public sealed partial class DisplayTests
 	public void EglConfigPrefersNonblockingSwaps()
 	{
 		IntPtr[] configs = [new(1), new(2), new(3)];
-		Assert.AreEqual(configs[2], WaylandEglConfig.Select(configs, config => config == configs[0] ? 1 : config == configs[1] ? null : 0));
+		Assert.AreEqual(configs[2], WaylandEglConfig.Select(configs, config => config == configs[0] ? 1 : config == configs[1] ? null : 0, _ => 0, _ => 0));
 	}
 
 	[TestMethod]
 	public void EglConfigRejectsClampedOrUnknownSwapIntervals()
 	{
 		IntPtr[] configs = [new(1), new(2)];
-		Assert.ThrowsExactly<NotSupportedException>(() => WaylandEglConfig.Select(configs, config => config == configs[0] ? 1 : null));
-		Assert.ThrowsExactly<NotSupportedException>(() => WaylandEglConfig.Select([], _ => 0));
+		Assert.ThrowsExactly<NotSupportedException>(() => WaylandEglConfig.Select(configs, config => config == configs[0] ? 1 : null, _ => 0, _ => 0));
+		Assert.ThrowsExactly<NotSupportedException>(() => WaylandEglConfig.Select([], _ => 0, _ => 0, _ => 0));
 	}
 
 	[TestMethod]

@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using Uno.UI.Runtime.Wayland.Rendering;
 using Uno.UI.Runtime.Wayland.Native;
 using Uno.UI.Runtime.Wayland.Protocols;
 
@@ -22,6 +23,7 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 	private readonly Dictionary<nint, WaylandProxy> _proxies = new();
 	private readonly Dictionary<uint, WaylandGlobal> _globals = new();
 	private readonly ConcurrentQueue<(Action Command, Action? Rejected)> _commands = new();
+	private readonly WaylandPresentationCoordinator _presentation;
 	private nint _display;
 	private Thread? _thread;
 	private int _wakeRead = -1;
@@ -52,6 +54,11 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 	private WaylandDisplay(nint display)
 	{
 		_display = display;
+		_presentation = new(SyncRoot, (command, rejected) => TryPost(command, rejected), () =>
+		{
+			Monitor.PulseAll(SyncRoot);
+			WakeDispatch();
+		});
 		FileDescriptor = WaylandNative.wl_display_get_fd(display);
 	}
 
@@ -219,6 +226,15 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 		return false;
 	}
 
+	internal bool SubmitPresentation(Func<bool> submit)
+	{
+		if (IsDispatchThread)
+		{
+			throw new InvalidOperationException("Presentation must run outside dispatch callbacks.");
+		}
+		return _presentation.Submit(submit);
+	}
+
 	private void RejectCommands()
 	{
 		while (_commands.TryDequeue(out var command))
@@ -229,7 +245,7 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 
 	private void RunCommands()
 	{
-		while (_commands.TryDequeue(out var command))
+		while (!_presentation.IsActive && _commands.TryDequeue(out var command))
 		{
 			try
 			{
@@ -276,6 +292,7 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 				throw new InvalidOperationException("Stop or dispose the display outside its event callbacks.");
 			}
 			_stopping = true;
+			Monitor.PulseAll(SyncRoot);
 			WakeDispatch();
 		}
 		thread?.Join();
@@ -311,7 +328,17 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 					{
 						return;
 					}
+					if (_presentation.IsActive)
+					{
+						// EGL reads and dispatches its own queue; do not prepare a competing reader during submission.
+						Monitor.Wait(SyncRoot);
+						continue;
+					}
 					RunCommands();
+					if (_presentation.IsActive)
+					{
+						continue;
+					}
 					while (WaylandNative.wl_display_prepare_read(_display) != 0)
 					{
 						Check(WaylandNative.wl_display_dispatch_pending(_display));

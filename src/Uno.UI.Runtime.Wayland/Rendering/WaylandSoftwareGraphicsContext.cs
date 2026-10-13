@@ -69,7 +69,7 @@ internal sealed class WaylandSoftwareGraphicsContext : IWaylandGraphicsContext
 		}
 		_frameAcquired = false;
 		// A frame that cannot be committed stays in the target and is copied by a later present.
-		if (GetAvailableBuffer(target.Width, target.Height) is not { } buffer || !_prepareCommit(target.Width, target.Height))
+		if (GetAvailableBuffer(target.Width, target.Height) is not { } buffer)
 		{
 			return;
 		}
@@ -77,18 +77,21 @@ internal sealed class WaylandSoftwareGraphicsContext : IWaylandGraphicsContext
 		{
 			NativeMemory.Copy((void*)target.Pixels, (void*)buffer.Memory, (nuint)buffer.Length);
 		}
-		buffer.Busy = true;
-		_surface.Attach(buffer.Proxy, 0, 0);
-		if (_surface.Version >= 4)
+		Committed = _prepareCommit(target.Width, target.Height, () =>
 		{
-			_surface.DamageBuffer(0, 0, target.Width, target.Height);
-		}
-		else
-		{
-			_surface.Damage(0, 0, int.MaxValue, int.MaxValue);
-		}
-		_surface.Commit();
-		Committed = true;
+			buffer.Busy = true;
+			_surface.Attach(buffer.Proxy, 0, 0);
+			if (_surface.Version >= 4)
+			{
+				_surface.DamageBuffer(0, 0, target.Width, target.Height);
+			}
+			else
+			{
+				_surface.Damage(0, 0, int.MaxValue, int.MaxValue);
+			}
+			_surface.Commit();
+			return true;
+		});
 	}
 
 	private WaylandShmBuffer? GetAvailableBuffer(int width, int height)

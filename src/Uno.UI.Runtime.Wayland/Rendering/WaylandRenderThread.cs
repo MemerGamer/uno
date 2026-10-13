@@ -52,6 +52,10 @@ internal sealed class WaylandRenderThread : IDisposable
 				}
 			}
 		}
+		catch (Exception error)
+		{
+			_completion.TrySetException(error);
+		}
 		finally
 		{
 			lock (_gate)
@@ -60,6 +64,31 @@ internal sealed class WaylandRenderThread : IDisposable
 				_queue.Dispose();
 			}
 			_completion.TrySetResult();
+		}
+	}
+
+	internal void Complete(Action cleanup)
+	{
+		lock (_gate)
+		{
+			if (_completed)
+			{
+				return;
+			}
+			_queue.Add(() =>
+			{
+				try
+				{
+					cleanup();
+				}
+				catch (Exception error)
+				{
+					_completion.TrySetException(error);
+					throw;
+				}
+			});
+			_completed = true;
+			_queue.CompleteAdding();
 		}
 	}
 

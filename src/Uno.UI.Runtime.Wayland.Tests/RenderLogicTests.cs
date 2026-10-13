@@ -10,18 +10,28 @@ namespace Uno.UI.Runtime.Wayland.Tests;
 public sealed class RenderLogicTests
 {
 	[TestMethod]
+	public void EglConfigRejectsMultisamplingAndUnknownSampleCounts()
+	{
+		IntPtr[] configs = [new(1), new(2), new(3), new(4)];
+		Assert.AreEqual(configs[3], WaylandEglConfig.Select(configs, _ => 0,
+			config => config == configs[0] ? 1 : config == configs[2] ? null : 0,
+			config => config == configs[1] ? 4 : 0));
+		Assert.ThrowsExactly<NotSupportedException>(() => WaylandEglConfig.Select(configs, _ => 0, _ => 1, _ => 4));
+	}
+
+	[TestMethod]
 	public void EglConfigPrefersNonblockingSwaps()
 	{
 		IntPtr[] configs = [new(1), new(2), new(3)];
-		Assert.AreEqual(configs[2], WaylandEglConfig.Select(configs, config => config == configs[0] ? 1 : config == configs[1] ? null : 0));
+		Assert.AreEqual(configs[2], WaylandEglConfig.Select(configs, config => config == configs[0] ? 1 : config == configs[1] ? null : 0, _ => 0, _ => 0));
 	}
 
 	[TestMethod]
 	public void EglConfigRejectsClampedOrUnknownSwapIntervals()
 	{
 		IntPtr[] configs = [new(1), new(2)];
-		Assert.ThrowsExactly<NotSupportedException>(() => WaylandEglConfig.Select(configs, config => config == configs[0] ? 1 : null));
-		Assert.ThrowsExactly<NotSupportedException>(() => WaylandEglConfig.Select([], _ => 0));
+		Assert.ThrowsExactly<NotSupportedException>(() => WaylandEglConfig.Select(configs, config => config == configs[0] ? 1 : null, _ => 0, _ => 0));
+		Assert.ThrowsExactly<NotSupportedException>(() => WaylandEglConfig.Select([], _ => 0, _ => 0, _ => 0));
 	}
 
 	[TestMethod]

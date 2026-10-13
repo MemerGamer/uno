@@ -1,5 +1,6 @@
 #nullable enable
 
+using System;
 using Uno.UI.Composition.Drawing;
 
 namespace Uno.UI.Runtime.Wayland.Rendering;
@@ -28,4 +29,4 @@ internal interface IWaylandGpuTeardownContext
 /// <summary>
 /// Called with the pixel size of the frame about to be committed; false keeps the previous buffer on screen.
 /// </summary>
-internal delegate bool WaylandCommitGate(int width, int height);
+internal delegate bool WaylandCommitGate(int width, int height, Func<bool> submit);

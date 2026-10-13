@@ -25,6 +25,7 @@ internal sealed class WaylandEglGraphicsContext : IWaylandGraphicsContext, IGLDe
 	private const int EglBlueSize = 0x3022;
 	private const int EglAlphaSize = 0x3021;
 	private const int EglStencilSize = 0x3026;
+	private const int EglSampleBuffers = 0x3032;
 	private const int EglSamples = 0x3031;
 	private const int EglMinSwapInterval = 0x303B;
 	private const int EglContextClientVersion = 0x3098;
@@ -44,6 +45,9 @@ internal sealed class WaylandEglGraphicsContext : IWaylandGraphicsContext, IGLDe
 	private int _windowHeight = 1;
 	private bool _contentsPreserved;
 	private bool _frameAcquired;
+	private bool _surfaceless = true;
+	private bool _windowBound;
+	private bool _swapIntervalSet;
 	private bool _disposed;
 	private EglRenderTarget? _target;
 
@@ -59,7 +63,9 @@ internal sealed class WaylandEglGraphicsContext : IWaylandGraphicsContext, IGLDe
 			var configs = new IntPtr[count];
 			Require(WaylandRenderNative.eglChooseConfig(_display, attributes, configs, configs.Length, out count) != 0, "eglChooseConfig");
 			var config = WaylandEglConfig.Select(configs.AsSpan(0, count), candidate =>
-				WaylandRenderNative.eglGetConfigAttrib(_display, candidate, EglMinSwapInterval, out var interval) != 0 ? interval : null);
+				WaylandRenderNative.eglGetConfigAttrib(_display, candidate, EglMinSwapInterval, out var interval) != 0 ? interval : null,
+				candidate => WaylandRenderNative.eglGetConfigAttrib(_display, candidate, EglSampleBuffers, out var buffers) != 0 ? buffers : null,
+				candidate => WaylandRenderNative.eglGetConfigAttrib(_display, candidate, EglSamples, out var samples) != 0 ? samples : null);
 			Require(WaylandRenderNative.eglGetConfigAttrib(_display, config, EglSamples, out _samples) != 0, "EGL_SAMPLES");
 			Require(WaylandRenderNative.eglGetConfigAttrib(_display, config, EglStencilSize, out _stencil) != 0, "EGL_STENCIL_SIZE");
 			_window = WaylandRenderNative.wl_egl_window_create(surface.Handle, _windowWidth, _windowHeight);
@@ -68,10 +74,6 @@ internal sealed class WaylandEglGraphicsContext : IWaylandGraphicsContext, IGLDe
 			Require(_context != IntPtr.Zero, "eglCreateContext");
 			_eglSurface = WaylandRenderNative.eglCreateWindowSurface(_display, config, _window, [EglNone]);
 			Require(_eglSurface != IntPtr.Zero, "eglCreateWindowSurface");
-			MakeCurrent();
-			// Frame callbacks pace presentation; a swap interval would make eglSwapBuffers block while the surface is hidden.
-			Require(WaylandRenderNative.eglSwapInterval(_display, 0) != 0, "eglSwapInterval");
-			_ = WaylandRenderNative.eglMakeCurrent(_display, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
 		}
 		catch
 		{
@@ -105,8 +107,13 @@ internal sealed class WaylandEglGraphicsContext : IWaylandGraphicsContext, IGLDe
 			_windowWidth = width;
 			_windowHeight = height;
 		}
-		MakeCurrent();
+		MakeCurrent(window: false);
 		var retained = _retained.TryResize(width, height, out _contentsPreserved);
+		if (!retained)
+		{
+			// Without a retained framebuffer the frame is drawn straight into the window's back buffer.
+			MakeCurrent(window: true);
+		}
 		var id = retained ? _retained.FramebufferId : DefaultFramebuffer;
 		if (_target is null || _target.Width != width || _target.Height != height || _target.FramebufferId != id)
 		{
@@ -125,30 +132,58 @@ internal sealed class WaylandEglGraphicsContext : IWaylandGraphicsContext, IGLDe
 			return;
 		}
 		_frameAcquired = false;
-		// eglSwapBuffers commits the surface, so a frame is only swapped once the surface may take a buffer.
-		if (_prepareCommit(_windowWidth, _windowHeight))
+		try
 		{
-			_retained.BlitToDefault();
-			if (WaylandRenderNative.eglSwapBuffers(_display, _eglSurface) != 0)
+			Committed = _prepareCommit(_windowWidth, _windowHeight, () =>
 			{
-				Committed = true;
-			}
-			else
-			{
+				MakeCurrent(window: true);
+				_retained.BlitToDefault();
+				if (WaylandRenderNative.eglSwapBuffers(_display, _eglSurface) != 0)
+				{
+					return true;
+				}
 				OnFailure("eglSwapBuffers");
-			}
+				return false;
+			});
 		}
-		_ = WaylandRenderNative.eglMakeCurrent(_display, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+		finally
+		{
+			_ = WaylandRenderNative.eglMakeCurrent(_display, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+			_windowBound = false;
+		}
 	}
 
 	public bool TryMakeCurrentForTeardown()
 		=> !IsLost && _eglSurface != IntPtr.Zero && WaylandRenderNative.eglMakeCurrent(_display, _eglSurface, _eglSurface, _context) != 0;
 
-	private void MakeCurrent()
+	// Binding the window surface makes Mesa take a back buffer, and a resize only applies to the next one: a frame
+	// that is drawn but not committed would then hold an old-size buffer for the next commit. So the window is bound
+	// only to blit and swap, and drawing into the retained framebuffer runs surfaceless when EGL supports it.
+	private void MakeCurrent(bool window)
 	{
+		if (_windowBound && window)
+		{
+			return;
+		}
+		if (!window && _surfaceless)
+		{
+			if (WaylandRenderNative.eglMakeCurrent(_display, IntPtr.Zero, IntPtr.Zero, _context) != 0)
+			{
+				_windowBound = false;
+				return;
+			}
+			_surfaceless = false;
+		}
 		if (WaylandRenderNative.eglMakeCurrent(_display, _eglSurface, _eglSurface, _context) == 0)
 		{
 			throw new InvalidOperationException(OnFailure("eglMakeCurrent"));
+		}
+		_windowBound = true;
+		if (!_swapIntervalSet)
+		{
+			// Frame callbacks pace presentation; a swap interval would make eglSwapBuffers block while the surface is hidden.
+			Require(WaylandRenderNative.eglSwapInterval(_display, 0) != 0, "eglSwapInterval");
+			_swapIntervalSet = true;
 		}
 	}
 
@@ -186,31 +221,37 @@ internal sealed class WaylandEglGraphicsContext : IWaylandGraphicsContext, IGLDe
 			return;
 		}
 		_disposed = true;
-		if (_display != IntPtr.Zero)
+		try
 		{
 			// The GL objects belong to this context, so they have to go while it is still current.
-			if (_context != IntPtr.Zero && TryMakeCurrentForTeardown())
+			if (_display != IntPtr.Zero && _context != IntPtr.Zero && TryMakeCurrentForTeardown())
 			{
 				_retained.Dispose();
 			}
-			_ = WaylandRenderNative.eglMakeCurrent(_display, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
-			if (_eglSurface != IntPtr.Zero)
-			{
-				_ = WaylandRenderNative.eglDestroySurface(_display, _eglSurface);
-			}
-			if (_context != IntPtr.Zero)
-			{
-				_ = WaylandRenderNative.eglDestroyContext(_display, _context);
-			}
 		}
-		if (_window != IntPtr.Zero)
+		finally
 		{
-			WaylandRenderNative.wl_egl_window_destroy(_window);
-		}
-		if (_display != IntPtr.Zero)
-		{
-			WaylandEglDisplay.Release(_display);
-			_display = IntPtr.Zero;
+			if (_display != IntPtr.Zero)
+			{
+				_ = WaylandRenderNative.eglMakeCurrent(_display, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+				if (_eglSurface != IntPtr.Zero)
+				{
+					_ = WaylandRenderNative.eglDestroySurface(_display, _eglSurface);
+				}
+				if (_context != IntPtr.Zero)
+				{
+					_ = WaylandRenderNative.eglDestroyContext(_display, _context);
+				}
+			}
+			if (_window != IntPtr.Zero)
+			{
+				WaylandRenderNative.wl_egl_window_destroy(_window);
+			}
+			if (_display != IntPtr.Zero)
+			{
+				WaylandEglDisplay.Release(_display);
+				_display = IntPtr.Zero;
+			}
 		}
 	}
 

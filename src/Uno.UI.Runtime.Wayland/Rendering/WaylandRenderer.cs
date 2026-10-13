@@ -104,9 +104,10 @@ internal sealed class WaylandRenderer : IDisposable
 		{
 			return false;
 		}
-		Scale.Apply(_width, _height);
 		return true;
 	}
+
+	internal void ApplyScale() => Scale.Apply(_width, _height);
 
 	private bool Render() => Draw(commit: true);
 
@@ -145,11 +146,20 @@ internal sealed class WaylandRenderer : IDisposable
 		{
 			software.BufferAvailable -= OnBufferAvailable;
 		}
-		// The backend factory owns GPU resources bound to the context, so it goes first, with the context current.
-		// A lost context has no resources left to release.
-		_ = (_context as IWaylandGpuTeardownContext)?.TryMakeCurrentForTeardown();
-		(_drawingFactory as IDisposable)?.Dispose();
-		_context.Dispose();
+		try
+		{
+			// The backend factory owns GPU resources bound to the context, so it goes first, with the context current.
+			// A context that cannot be made current is abandoned so the backend issues no GL calls into it.
+			if (_context is IWaylandGpuTeardownContext gpu && !gpu.TryMakeCurrentForTeardown())
+			{
+				(_drawingFactory as IGpuDrawingFactory)?.AbandonContext();
+			}
+			(_drawingFactory as IDisposable)?.Dispose();
+		}
+		finally
+		{
+			_context.Dispose();
+		}
 	}
 
 	public void Dispose()

@@ -187,10 +187,13 @@ internal sealed class WaylandClientDecorations : IDisposable
 	}
 
 	// The scale and viewport change in the same commit as the buffer they describe.
-	private bool PrepareCommit(int width, int height)
+	private bool PrepareCommit(int width, int height, Func<bool> submit)
 	{
-		_ = _scale.Apply(_layout.SurfaceWidth, _layout.SurfaceHeight);
-		return true;
+		lock (_connection.Display.SyncRoot)
+		{
+			_ = _scale.Apply(_layout.SurfaceWidth, _layout.SurfaceHeight);
+			return submit();
+		}
 	}
 
 	private void OnBufferAvailable(object? sender, EventArgs args)

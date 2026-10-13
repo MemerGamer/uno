@@ -79,10 +79,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	private int _integerScale = 1;
 	private bool _configured;
 	private long _configureGeneration;
-	private long _presentedGeneration;
-	private WaylandDecorationLayout _presentedLayout;
-	private double _presentedScale;
-	private long _decorationsGeneration;
+	private readonly WaylandPresentationState _presentation = new();
 	private uint? _configureSerial;
 	private long _iconGeneration;
 	// Most recently entered last; the last one is the window's current output.
@@ -460,7 +457,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 		ApplyGeometry();
 		_configureSerial = args.Serial;
-		if (_presentedGeneration != 0 && _layout == _presentedLayout && EffectiveScale == _presentedScale)
+		if (_presentation.Generation != 0 && _layout == _presentation.Layout && EffectiveScale == _presentation.Scale)
 		{
 			// State-only changes need no new buffer; hidden surfaces may receive no frame callbacks.
 			_xdgSurface.AckConfigure(args.Serial);
@@ -695,12 +692,16 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	// Render thread, immediately before committing a buffer rendered for the generation.
 	// Acknowledges the configure and applies its geometry and decorations with that commit.
-	private bool PreparePresentation(long generation)
+	private bool PreparePresentation(long generation, Func<bool> submit)
 	{
 		lock (_connection.Display.SyncRoot)
 		{
-			return PreparePresentationCore(generation);
+			if (!PreparePresentationCore(generation))
+			{
+				return false;
+			}
 		}
+		return _presentation.Submit(generation, _layout, EffectiveScale, submit);
 	}
 
 	private bool PreparePresentationCore(long generation)
@@ -709,17 +710,12 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			return false;
 		}
-		if (_presentedGeneration == generation)
+		if (_presentation.Generation == generation)
 		{
 			return true;
 		}
 		if (_clientDecorations is { } decorations)
 		{
-			if (_decorationsGeneration != generation)
-			{
-				_decorationsGeneration = generation;
-				decorations.Update(_layout, _dispatchTitle, (_states & WaylandToplevelStates.Activated) != 0, (_states & WaylandToplevelStates.Maximized) != 0, _preferredScale, _integerScale);
-			}
 			if (!decorations.IsReady)
 			{
 				return false;
@@ -731,9 +727,6 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			_configureSerial = null;
 		}
 		_xdgSurface.SetWindowGeometry(0, _layout.GeometryY, _layout.ContentWidth, _layout.GeometryHeight);
-		_presentedLayout = _layout;
-		_presentedScale = EffectiveScale;
-		_presentedGeneration = generation;
 		return true;
 	}
 
@@ -761,6 +754,10 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	private void Publish()
 	{
 		var generation = ++_configureGeneration;
+		if (_clientDecorations is { } decorations)
+		{
+			decorations.Update(_layout, _dispatchTitle, (_states & WaylandToplevelStates.Activated) != 0, (_states & WaylandToplevelStates.Maximized) != 0, _preferredScale, _integerScale);
+		}
 		var width = _layout.ContentWidth;
 		var height = _layout.ContentHeight;
 		var titleBarHeight = _layout.TitleBarHeight;

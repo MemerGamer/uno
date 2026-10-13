@@ -46,4 +46,21 @@ public sealed class RenderThreadTests
 		Assert.IsTrue(cleaned);
 		Assert.AreEqual(1, errors);
 	}
+
+	[TestMethod]
+	public async Task FailedCleanupFaultsCompletion()
+	{
+		var errors = 0;
+		using var thread = new WaylandRenderThread("test cleanup", _ => errors++);
+		thread.Complete(() => throw new InvalidOperationException("cleanup failure"));
+		try
+		{
+			await thread.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+			Assert.Fail("Cleanup failure was swallowed.");
+		}
+		catch (InvalidOperationException error)
+		{
+			Assert.AreEqual("cleanup failure", error.Message);
+		}
+	}
 }

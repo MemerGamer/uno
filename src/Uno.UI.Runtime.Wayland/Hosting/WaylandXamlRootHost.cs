@@ -27,7 +27,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 	private readonly WaylandProtocolInputConnection? _input;
 	private readonly WaylandSeat? _seat;
 	private readonly WaylandFrameReadiness _readiness = new();
-	private readonly Func<long, bool> _preparePresentation;
+	private readonly Func<long, Func<bool>, bool> _preparePresentation;
 	private volatile bool _disposed;
 
 	// Render thread state.
@@ -40,7 +40,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 	private WaylandCursor? _cursor;
 	private WlPointer? _cursorPointer;
 
-	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, bool> preparePresentation)
+	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, Func<bool>, bool> preparePresentation)
 	{
 		_connection = connection;
 		_id = id;
@@ -137,7 +137,13 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 
 	private IWaylandGraphicsContext? CreateContext(GraphicsContextKind kind)
 	{
-		bool PrepareCommit(int width, int height) => _renderer?.PrepareCommit(width, height) ?? false;
+		bool PrepareCommit(int width, int height, Func<bool> submit)
+			=> _connection.Display.SubmitPresentation(() =>
+				(_renderer?.PrepareCommit(width, height) ?? false) && _preparePresentation(_readiness.RenderGeneration, () =>
+				{
+					_renderer!.ApplyScale();
+					return submit();
+				}));
 		switch (kind)
 		{
 			case GraphicsContextKind.OpenGLES:
@@ -284,10 +290,6 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 			}
 			return false;
 		}
-		if (!_preparePresentation(_readiness.RenderGeneration))
-		{
-			return false;
-		}
 		if (WaylandDiagnostics.IsEnabled)
 		{
 			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: present frame {frameWidth}x{frameHeight} generation {_readiness.RenderGeneration}"));
@@ -353,7 +355,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 			_seat?.Dispose();
 			DisposeCursor();
 		}
-		_renderThread.Post(() =>
+		_renderThread.Complete(() =>
 		{
 			try
 			{
@@ -362,10 +364,20 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 			}
 			finally
 			{
-				lock (display.SyncRoot)
+				var destroyed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+				display.TryPost(() =>
 				{
-					destroyProtocolObjects();
-				}
+					try
+					{
+						destroyProtocolObjects();
+						destroyed.TrySetResult();
+					}
+					catch (Exception error)
+					{
+						destroyed.TrySetException(error);
+					}
+				}, () => destroyed.TrySetException(new InvalidOperationException("Wayland dispatch stopped before window destruction.")));
+				destroyed.Task.GetAwaiter().GetResult();
 			}
 		});
 		_renderThread.Dispose();
