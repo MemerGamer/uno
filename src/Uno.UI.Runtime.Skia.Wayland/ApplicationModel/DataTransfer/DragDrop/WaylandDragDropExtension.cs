@@ -22,10 +22,13 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 internal sealed class WaylandDragDropExtension : IDragDropExtension
 {
 	private static readonly long _fakePointerId = Pointer.CreateUniqueIdForUnknownPointer();
+	private static readonly TimeSpan _acceptancePollInterval = TimeSpan.FromMilliseconds(100);
 
 	private readonly DragDropManager _manager;
 	private readonly WaylandDataDevice _device;
 	private Session? _session;
+	// Wayland sends motion only while the pointer moves, so a DragOver deferral that completes later is polled.
+	private Timer? _acceptancePoll;
 
 	public WaylandDragDropExtension(DragDropManager manager, WaylandDataDevice device)
 	{
@@ -59,6 +62,8 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		info.RegisterCompletedCallback(result => Complete(session, result));
 		CoreDragDropManager.DragStarted(info);
 		Motion(position);
+		StopAcceptancePoll();
+		_acceptancePoll = new Timer(_ => WaylandConnection.PostToUI(PollAcceptance), null, _acceptancePollInterval, _acceptancePollInterval);
 	}
 
 	internal void Motion(Point position)
@@ -68,14 +73,34 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 			return;
 		}
 		session.Position = position;
-		var accepted = CoreDragDropManager.ProcessMoved(new DragEventSource(position));
+		UpdateAcceptance(session, CoreDragDropManager.ProcessMoved(new DragEventSource(position)));
+	}
+
+	private void PollAcceptance()
+	{
+		if (_session is { } session)
+		{
+			// An already processed frame id only reads the operation accepted by the latest DragOver.
+			UpdateAcceptance(session, CoreDragDropManager.ProcessMoved(new DragEventSource(session.Position, frameId: 0)));
+		}
+	}
+
+	private void UpdateAcceptance(Session session, DataPackageOperation accepted)
+	{
 		if (accepted != session.Accepted)
 		{
 			session.Accepted = accepted;
-			var actions = WaylandDataFormats.ToDndActions(accepted);
-			var preferred = (actions & WaylandDataFormats.DndActionCopy) != 0 ? WaylandDataFormats.DndActionCopy : actions;
-			session.Offer.Accept(session.Serial, accepted != DataPackageOperation.None && session.Offer.MimeTypes is [var mime, ..] ? mime : null, actions, preferred);
+			// A single action is offered, so the action the compositor selects is the one the target accepted.
+			var sourceActions = session.Offer.Version >= 3 ? session.Offer.SourceActions : WaylandDataFormats.DndActionCopy;
+			var action = WaylandDropNegotiation.ChooseAction(WaylandDataFormats.ToDndActions(accepted), sourceActions);
+			session.Offer.Accept(session.Serial, action != 0 && session.Offer.MimeTypes is [var mime, ..] ? mime : null, action, action);
 		}
+	}
+
+	private void StopAcceptancePoll()
+	{
+		_acceptancePoll?.Dispose();
+		_acceptancePoll = null;
 	}
 
 	internal void Leave()
@@ -83,6 +108,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		if (_session is not null)
 		{
 			_session = null;
+			StopAcceptancePoll();
 			CoreDragDropManager.ProcessAborted(_fakePointerId);
 		}
 	}
@@ -94,7 +120,14 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 			return;
 		}
 		_session = null;
+		StopAcceptancePoll();
 		session.Dropped = true;
+		session.DropAction = session.Offer.MarkDropped();
+		if (session.DropAction == 0)
+		{
+			CoreDragDropManager.ProcessAborted(_fakePointerId);
+			return;
+		}
 		var accepted = CoreDragDropManager.ProcessDropped(new DragEventSource(session.Position));
 
 		if (this.Log().IsEnabled(LogLevel.Trace))
@@ -107,13 +140,14 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 	// the data they requested has been received.
 	private void Complete(Session session, DataPackageOperation result)
 	{
-		// wl_data_offer.finish is only valid once an action was negotiated during the drag.
-		var succeeded = session.Dropped && result != DataPackageOperation.None && session.Accepted is { } accepted && accepted != DataPackageOperation.None;
-		_ = session.Offer.WhenReadsCompleted().ContinueWith(_ =>
+		// wl_data_offer.finish is only valid once an action was negotiated, and lets the source delete moved data,
+		// so it is sent only when the drop handlers performed the selected action.
+		var succeeded = session.Dropped && session.DropAction != 0 && (WaylandDataFormats.ToDndActions(result) & session.DropAction) != 0;
+		_ = session.Offer.WhenReadsCompleted().ContinueWith(reads =>
 		{
-			if (succeeded)
+			if (succeeded && reads.Status == TaskStatus.RanToCompletion && reads.Result)
 			{
-				session.Offer.FinishAndDestroy();
+				session.Offer.FinishAndDestroy(session.DropAction);
 			}
 			else
 			{
@@ -131,6 +165,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		if (root == XamlRoot)
 		{
 			XamlRootMap.Unregistered -= OnXamlRootUnregistered;
+			StopAcceptancePoll();
 			_device.RemoveDropTarget(this);
 		}
 	}
@@ -143,15 +178,16 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		// Null until the first motion was answered, so the first answer is always sent.
 		public DataPackageOperation? Accepted { get; set; }
 		public bool Dropped { get; set; }
+		public uint DropAction { get; set; }
 	}
 
-	private readonly struct DragEventSource(Point location) : IDragEventSource
+	private readonly struct DragEventSource(Point location, uint? frameId = null) : IDragEventSource
 	{
 		private static long _nextFrameId;
 
 		public long Id => _fakePointerId;
 
-		public uint FrameId { get; } = (uint)Interlocked.Increment(ref _nextFrameId);
+		public uint FrameId { get; } = frameId ?? (uint)Interlocked.Increment(ref _nextFrameId);
 
 		public (Point location, DragDropModifiers modifier) GetState() => (location, DragDropModifiers.None);
 

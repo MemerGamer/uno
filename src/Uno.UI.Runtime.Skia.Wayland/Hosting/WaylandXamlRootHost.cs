@@ -62,8 +62,8 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		if (connection.Seat is { } wlSeat)
 		{
 			_input = new WaylandProtocolInputConnection(wlSeat, s => s == surface, connection.Display.Post, SetCursor);
-			_input.PointerReleasing += DisposeCursor;
-			_input.InputSerial += serial => connection.InputSerial = serial;
+			_input.PointerReleasing += (_, _) => DisposeCursor();
+			_input.InputSerial += (_, serial) => connection.InputSerial = serial;
 		}
 		var input = (IWaylandInputConnection?)_input ?? NoInputConnection.Instance;
 		KeyboardSource = new WaylandKeyboardInputSource(input, WaylandConnection.PostToUI, keyboardFocusChanged);

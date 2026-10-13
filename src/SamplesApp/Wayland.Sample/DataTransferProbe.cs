@@ -17,21 +17,40 @@ namespace Wayland.Sample;
 // Clipboard and drop checks driven by environment variables, reporting on stdout:
 //   UNO_SAMPLE_COPY=text|html|files|image  sets the clipboard once the window is up (files: UNO_SAMPLE_COPY_FILES, ':'-separated)
 //   UNO_SAMPLE_PASTE=1                      prints the clipboard on start and on every ContentChanged
+//   UNO_SAMPLE_DROP_ACCEPT=copy|move|both   operation accepted on DragOver (default: copy)
+//   UNO_SAMPLE_DROP_DEFER_MS=N              DragOver decides only after an N ms deferral
 // The window content always accepts drops and prints what was dropped.
 internal static class DataTransferProbe
 {
 	internal static void Attach(UIElement root)
 	{
 		root.AllowDrop = true;
-		root.DragOver += (_, e) =>
+		var accept = Environment.GetEnvironmentVariable("UNO_SAMPLE_DROP_ACCEPT") switch
 		{
-			e.AcceptedOperation = DataPackageOperation.Copy;
-			Console.WriteLine($"probe: drag over {e.GetPosition(root)} formats=[{string.Join(", ", e.DataView.AvailableFormats)}]");
+			"move" => DataPackageOperation.Move,
+			"both" => DataPackageOperation.Copy | DataPackageOperation.Move,
+			_ => DataPackageOperation.Copy,
+		};
+		var deferMilliseconds = int.TryParse(Environment.GetEnvironmentVariable("UNO_SAMPLE_DROP_DEFER_MS"), out var ms) ? ms : 0;
+		root.DragOver += async (_, e) =>
+		{
+			Console.WriteLine($"probe: drag over {e.GetPosition(root)} allowed={e.AllowedOperations} formats=[{string.Join(", ", e.DataView.AvailableFormats)}]");
+			if (deferMilliseconds > 0)
+			{
+				var deferral = e.GetDeferral();
+				await Task.Delay(deferMilliseconds);
+				e.AcceptedOperation = accept;
+				deferral.Complete();
+			}
+			else
+			{
+				e.AcceptedOperation = accept;
+			}
 		};
 		root.Drop += async (_, e) =>
 		{
 			var deferral = e.GetDeferral();
-			Console.WriteLine($"probe: drop {await DescribeAsync(e.DataView)}");
+			Console.WriteLine($"probe: drop accepted={e.AcceptedOperation} allowed={e.AllowedOperations} {await DescribeAsync(e.DataView)}");
 			deferral.Complete();
 		};
 
