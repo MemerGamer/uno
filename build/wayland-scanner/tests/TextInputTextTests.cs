@@ -30,13 +30,12 @@ public sealed class TextInputTextTests
 	}
 
 	[TestMethod]
-	public void OversizedSelectionCollapsesToTheCursor()
+	public void OversizedSelectionDoesNotFabricateAnAnchor()
 	{
 		var text = new string('x', 50);
 		var surrounding = WaylandTextInputText.GetSurroundingText(text, cursor: 40, anchor: 0, maxBytes: 10);
-		Assert.AreEqual(10, surrounding.Text.Length);
-		Assert.AreEqual(surrounding.Cursor, surrounding.Anchor);
-		Assert.AreEqual(40, surrounding.Start + surrounding.Cursor);
+		Assert.IsFalse(surrounding.IsSupported);
+		Assert.AreEqual(((0, 0), (0, 0)), WaylandTextInputText.GetDeletionRanges(surrounding, 1, 1));
 	}
 
 	[TestMethod]
