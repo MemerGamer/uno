@@ -1,6 +1,8 @@
 # uno-wl-inject script for src/SamplesApp/Wayland.Sample, whose window the test compositor places at 0,0
 # without decorations: copy kwinrulesrc into the compositor's XDG_CONFIG_HOME; kxkbrc there sets [Layout] LayoutList=hu.
-# Run as: uno-wl-inject < wayland-sample.cmds (one long-lived client keeps the fake pointer device alive).
+# Use the private compositor socket name, or set UNO_WL_INJECT_SOCKET.
+# wayland-0/wayland-1 require --allow-session; no session display is selected by default.
+# Run as: uno-wl-inject --socket uno-test-0 < wayland-sample.cmds (one long-lived client keeps the fake pointer device alive).
 # Expected app output: two "Button: clicked", ScrollViewer offsets, TextBox text "x" + 'b' repeats + "ő".
 
 # Hover and click the button (Canvas 40,60 160x48) twice.
