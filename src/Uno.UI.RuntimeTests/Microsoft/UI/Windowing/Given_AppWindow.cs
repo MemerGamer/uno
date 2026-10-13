@@ -27,7 +27,7 @@ public class Given_AppWindow
 			Assert.Inconclusive();
 		}
 
-		AssertPositioningAndSizingSupport();
+		AssertSizingSupport();
 
 		var appWindow = TestServices.WindowHelper.CurrentTestWindow.AppWindow;
 		AppWindowChangedEventArgs args = null;
@@ -55,7 +55,7 @@ public class Given_AppWindow
 	[TestMethod]
 	public async Task When_Move()
 	{
-		AssertPositioningAndSizingSupport();
+		AssertPositioningSupport();
 
 		var appWindow = TestServices.WindowHelper.CurrentTestWindow.AppWindow;
 		AppWindowChangedEventArgs args = null;
@@ -83,7 +83,7 @@ public class Given_AppWindow
 	[TestMethod]
 	public async Task When_Resize_Before_Activate()
 	{
-		AssertPositioningAndSizingSupport();
+		AssertSizingSupport();
 
 		var newWindow = new Window();
 		var appWindow = newWindow.AppWindow;
@@ -119,7 +119,7 @@ public class Given_AppWindow
 	[TestMethod]
 	public async Task When_Move_Before_Activate()
 	{
-		AssertPositioningAndSizingSupport();
+		AssertPositioningSupport();
 
 		var newWindow = new Window();
 		var appWindow = newWindow.AppWindow;
@@ -153,12 +153,84 @@ public class Given_AppWindow
 	}
 
 	[TestMethod]
+	public async Task When_Resize_Twice_Before_Activate()
+	{
+		AssertSizingSupport();
+
+		var newWindow = new Window();
+		var appWindow = newWindow.AppWindow;
+		var resized = false;
+		var activated = false;
+		var requestedSize = new SizeInt32(720, 560);
+		void OnChanged(AppWindow sender, AppWindowChangedEventArgs args)
+		{
+			resized |= args.DidSizeChange && sender.Size.Equals(requestedSize);
+		}
+		appWindow.Changed += OnChanged;
+		try
+		{
+			appWindow.Resize(new SizeInt32(640, 480));
+			appWindow.Resize(requestedSize);
+			await TestServices.WindowHelper.WaitFor(() => resized);
+			Assert.AreEqual(requestedSize, appWindow.Size);
+			Assert.IsFalse(appWindow.IsVisible);
+
+			newWindow.Activated += (s, e) => activated = true;
+			newWindow.Activate();
+			await TestServices.WindowHelper.WaitFor(() => activated);
+			Assert.AreEqual(requestedSize, appWindow.Size);
+		}
+		finally
+		{
+			appWindow.Changed -= OnChanged;
+			await TestServices.WindowHelper.WaitForIdle();
+			await TestServices.RunOnUIThread(() => newWindow.Close());
+		}
+	}
+
+	[TestMethod]
+	[CombinatorialData]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWayland)]
+	public async Task When_Move_Is_Unsupported(bool activateWindow)
+	{
+		var newWindow = new Window();
+		var appWindow = newWindow.AppWindow;
+		var positionChanged = false;
+		var activated = false;
+		void OnChanged(AppWindow sender, AppWindowChangedEventArgs args)
+		{
+			positionChanged |= args.DidPositionChange;
+		}
+		appWindow.Changed += OnChanged;
+		try
+		{
+			if (activateWindow)
+			{
+				newWindow.Activated += (s, e) => activated = true;
+				newWindow.Activate();
+				await TestServices.WindowHelper.WaitFor(() => activated);
+			}
+
+			appWindow.Move(new PointInt32(40, 40));
+			await TestServices.WindowHelper.WaitForIdle();
+			Assert.AreEqual(new PointInt32(0, 0), appWindow.Position);
+			Assert.IsFalse(positionChanged);
+		}
+		finally
+		{
+			appWindow.Changed -= OnChanged;
+			await TestServices.WindowHelper.WaitForIdle();
+			await TestServices.RunOnUIThread(() => newWindow.Close());
+		}
+	}
+
+	[TestMethod]
 	[CombinatorialData]
 	[GitHubWorkItem("https://github.com/unoplatform/uno/issues/21435")]
 	[PlatformCondition(ConditionMode.Exclude, RuntimeTestPlatforms.SkiaX11 | RuntimeTestPlatforms.NativeWinUI)] // Skia/X11: Fail in CI (#21194)
 	public async Task When_Change_Window_State_Before_Activate(OverlappedPresenterState state)
 	{
-		AssertPositioningAndSizingSupport();
+		AssertSizingSupport();
 		var newWindow = new Window();
 		var appWindow = newWindow.AppWindow;
 		var activated = false;
@@ -189,7 +261,7 @@ public class Given_AppWindow
 	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWin32)]
 	public async Task When_Maximized_With_Extended_TitleBar_Client_Is_Inset_From_Window()
 	{
-		AssertPositioningAndSizingSupport();
+		AssertSizingSupport();
 
 		var newWindow = new Window();
 		newWindow.ExtendsContentIntoTitleBar = true;
@@ -228,7 +300,16 @@ public class Given_AppWindow
 		}
 	}
 
-	private void AssertPositioningAndSizingSupport()
+	private void AssertPositioningSupport()
+	{
+		AssertSizingSupport();
+		if (RuntimeTestsPlatformHelper.CurrentPlatform == RuntimeTestPlatforms.SkiaWayland)
+		{
+			Assert.Inconclusive("xdg-shell does not support positioning toplevel windows.");
+		}
+	}
+
+	private void AssertSizingSupport()
 	{
 		if (!OperatingSystem.IsLinux() &&
 			!OperatingSystem.IsWindows() &&

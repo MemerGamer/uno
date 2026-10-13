@@ -22,6 +22,7 @@ namespace Uno.UI.Runtime.Wayland;
 // One wl_surface + xdg_surface + xdg_toplevel per Uno Window, sharing the host connection.
 // Window state follows xdg-shell: the compositor's configure is authoritative for size, maximized,
 // fullscreen and activation; requests made here are hints that come back through configure.
+// xdg-shell hides global positions; inherited screen conversions use Position (0, 0) and rasterization scale.
 internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDecorationsOwner
 {
 	private const WaylandToplevelStates ConstrainedStates = WaylandToplevelStates.Maximized | WaylandToplevelStates.Fullscreen | WaylandToplevelStates.Tiled;
@@ -137,6 +138,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			NonClientPointerSource = new WaylandNonClientPointerSource(connection, _toplevel, window, _id, _host, () => Scale, Post);
 			connection.AddWindow(this);
 			RasterizationScale = 1;
+			// The deferred bounds notification must not raise AppWindow.Changed for the initial size.
+			var initialSize = new SizeInt32(InitialWidth, InitialHeight);
+			SetSizes(initialSize, initialSize);
 			titleBar.ExtendsContentIntoTitleBarChanged += ExtendContentIntoTitleBar;
 			CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBarChanged += OnCoreTitleBarChanged;
 			// Publish a provisional size so content can load and trigger Show; configure replaces it.
@@ -310,7 +314,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			_floatingWidth = width;
 			_floatingHeight = height;
 			// Maximized, fullscreen and tiled sizes are compositor constraints; floating sizes are hints.
-			if (_configured && (_states & ConstrainedStates) == 0)
+			if ((_states & ConstrainedStates) == 0)
 			{
 				_geometryWidth = width;
 				_geometryHeight = height;
@@ -318,19 +322,6 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 				Publish();
 			}
 		});
-	}
-
-	// xdg-shell hides window positions from clients, so there is no mapping to screen coordinates.
-	public override bool TryConvertLocalToScreen(Point localPoint, out PointInt32 screenPoint)
-	{
-		screenPoint = default;
-		return false;
-	}
-
-	public override bool TryConvertScreenToLocal(PointInt32 screenPoint, out Point localPoint)
-	{
-		localPoint = default;
-		return false;
 	}
 
 	public override void ExtendContentIntoTitleBar(bool extend)
@@ -818,7 +809,11 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		var states = _states;
 		var scale = EffectiveScale;
 		_connection.PostToUI(() => ApplyConfigure(width, height, titleBarHeight, scale, states, generation));
-		_host.Configure(width, height, _preferredScale, _integerScale, generation);
+		// Pre-activation resizes update managed bounds, but buffers must wait for the first configure.
+		if (_configured)
+		{
+			_host.Configure(width, height, _preferredScale, _integerScale, generation);
+		}
 	}
 
 	// UI thread.
