@@ -302,6 +302,30 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 		SendState(host, ChangeCauseOther);
 	}
 
+	// Resets the compositor's text-input state after a stale deletion. Unlike Disable, it keeps the session, so
+	// batches already accepted for this host still apply.
+	private void ResynchronizeState(IImeSessionHost host)
+	{
+		lock (_stateLock)
+		{
+			_committedStates.Clear();
+			ResetPending();
+		}
+		_deferState = _stateDirty = false;
+		_lastSentState = null;
+		_enabled = false;
+		_textInput.Disable();
+		CommitState();
+		_supportsSurrounding = CalculateSurrounding(host).IsSupported;
+		_enabled = true;
+		lock (_stateLock)
+		{
+			_sessionFirstSerial = unchecked(_commitSerial + 1);
+		}
+		_textInput.Enable();
+		SendState(host, ChangeCauseOther);
+	}
+
 	private void OnEnter(WlSurface surface)
 	{
 		_focusedSurface = surface;
@@ -388,9 +412,7 @@ internal sealed class WaylandImeTextBoxExtension : IImeTextBoxExtension
 				WaylandDiagnostics.Trace("text-input: stale deletion, resetting");
 				deleting = false;
 				OnPreeditChanged(null, 0);
-				Disable();
-				Enable();
-				session = _session;
+				ResynchronizeState(host);
 			}
 			_deferState = !reconcileDeletion && serial != _commitSerial;
 			if (deleting && _isComposing)
