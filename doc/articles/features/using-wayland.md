@@ -49,6 +49,14 @@ For more information, see [Rendering Backend Selection](xref:Uno.Skia.Desktop#re
 
 The host loads the following libraries at runtime: `libwayland-client.so.0`, `libwayland-cursor.so.0`, `libxkbcommon.so.0`, and, for OpenGL ES rendering, `libwayland-egl.so.1` and `libEGL.so.1`. Install these dependencies using your distribution's package manager. An EGL implementation (such as Mesa) is needed for accelerated rendering.
 
+To use the system HarfBuzz library for text shaping, configure `UseSystemHarfBuzz(true)`:
+
+```csharp
+    .UseWayland(b => b.UseSystemHarfBuzz(true))
+```
+
+This option requires `libharfbuzz.so.0` to be installed and available to the dynamic linker. With the default `UseSystemHarfBuzz(false)`, the app uses the HarfBuzzSharp native library supplied by its desktop head.
+
 ### Supported protocols
 
 | Protocol | Required | Used for |
@@ -56,7 +64,7 @@ The host loads the following libraries at runtime: `libwayland-client.so.0`, `li
 | `wl_compositor`, `wl_shm`, `xdg_wm_base` | Yes | Windows and software rendering |
 | `wl_seat` | No | Pointer, keyboard and touch input |
 | `wl_output` | No | Output information, integer scaling and changes as windows move between outputs |
-| `wp_viewporter`, `wp_fractional_scale_v1` | No | Fractional scaling. Without them, the integer scale from `wl_surface.preferred_buffer_scale` is used. |
+| `wp_viewporter`, `wp_fractional_scale_v1` | No | Fractional scaling. Without both protocols, surfaces at version 6 or later use the integer scale from `wl_surface.preferred_buffer_scale`; older surfaces use the largest `wl_output.scale` among the outputs entered by the window. |
 | `zxdg_decoration_manager_v1` | No | Negotiating server-side decorations; client-side decorations are used otherwise |
 | `wl_subcompositor` | No | Client-side decoration surfaces |
 | `wl_data_device_manager` | No | Clipboard and incoming drag and drop |
@@ -83,6 +91,28 @@ Keyboard input supports XKB layouts, dead keys and compose sequences. Compositor
 Open, save and folder pickers use the XDG Desktop Portal over the session D-Bus. Install `xdg-desktop-portal` and a backend appropriate to your desktop, and run the app in a session with a working D-Bus connection. When the compositor supports `xdg-foreign-v2`, the picker is parented to the exported Wayland window for the duration of the request. Without it, the portal can show an unparented dialog.
 
 System theme and text scale use the desktop settings portal. Window activation and icons use the compositor's optional activation and toplevel-icon protocols.
+
+### Diagnostics and environment variables
+
+Set these diagnostic switches before starting the app:
+
+| Variable | Value | Effect |
+|----------|-------|--------|
+| `UNO_WAYLAND_DISABLE_CURSOR_SHAPE` | `1` | Disables the cursor-shape protocol to exercise the XCursor theme fallback. |
+| `UNO_WAYLAND_FORCE_CSD` | `1` | Forces client-side decorations to exercise Uno Platform's window frame. |
+
+These are the only `UNO_WAYLAND_*` variables read by the runtime. The SamplesApp desktop head also reads `UNO_WAYLAND_RENDERER` (`OpenGLES` or `Software`) to select a backend and `UNO_WAYLAND_LIFECYCLE_SMOKE=1` to run its window lifecycle smoke check. Other apps select a backend through the host builder.
+
+The runtime also reads the following session settings:
+
+| Variable | Used for |
+|----------|----------|
+| `WAYLAND_DISPLAY` | Host selection and the Wayland display connection. |
+| `XCURSOR_THEME` | Cursor theme when the cursor-shape protocol is unavailable or disabled. |
+| `LC_ALL`, `LC_CTYPE`, `LANG` | Compose locale, using the first nonempty value in this order, or `C` when none is set. |
+| `XDG_ACTIVATION_TOKEN` | Startup activation; the token is consumed and cleared after reading. |
+
+Enable Debug logging for the `Uno.UI.Runtime.Wayland.WaylandDiagnostics` category to trace window lifecycle and protocol activity.
 
 ### Limitations
 
