@@ -11,6 +11,7 @@ using Uno.UI.Hosting;
 using Uno.UI.Runtime.Skia.Extensions.System;
 using Uno.UI.Xaml.Controls;
 using Windows.UI.Core;
+using Windows.UI.ViewManagement;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland;
 
@@ -27,12 +28,13 @@ internal static class WaylandRegistrations
 		}
 		_registered = true;
 		ApiExtensibility.Register(typeof(ICoreApplicationExtension), _ => coreApplication);
+		ApiExtensibility.Register(typeof(IApplicationViewExtension), owner => new WaylandApplicationViewExtension(owner, connection));
 		ApiExtensibility.Register(typeof(INativeWindowFactoryExtension), _ => new WaylandNativeWindowFactoryExtension(connection));
 		ApiExtensibility.Register(typeof(Windows.Graphics.Display.IDisplayInformationExtension), owner => new WaylandDisplayInformationExtension(owner, connection));
 		ApiExtensibility.Register<IXamlRootHost>(typeof(IUnoCorePointerInputSource), host => ((WaylandXamlRootHost)host).PointerSource);
 		ApiExtensibility.Register<IXamlRootHost>(typeof(IUnoKeyboardInputSource), host => ((WaylandXamlRootHost)host).KeyboardSource);
 		ApiExtensibility.Register(typeof(ILauncherExtension), owner => new LinuxLauncherExtension(owner));
-		// TODO: application view, portal pickers/theme/text scale, clipboard, DnD, text input and OpenGL wrapper.
+		// TODO: portal pickers/theme/text scale, clipboard, DnD, text input and OpenGL wrapper.
 	}
 }
 

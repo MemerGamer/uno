@@ -45,9 +45,12 @@ public sealed class App : Application
 		panel.Children.Add(new Border { Width = 240, Height = 80, Background = new SolidColorBrush(Colors.Orange), CornerRadius = new CornerRadius(12), HorizontalAlignment = HorizontalAlignment.Center });
 		panel.Children.Add(counter);
 		panel.Children.Add(button);
+		panel.Children.Add(WindowScenario.CreateControls(window));
 		window.Content = new Grid { Background = new SolidColorBrush(Colors.SteelBlue), Children = { panel } };
+		window.Activated += (_, e) => Console.WriteLine($"main: activated {e.WindowActivationState}");
 		window.Activate();
 		Console.WriteLine("OnLaunched: window activated");
+		WindowScenario.RunIfRequested(window);
 	}
 
 	public App()
