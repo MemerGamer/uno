@@ -18,7 +18,7 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 // selection, and only announces selection changes to it, so ContentChanged is raised while a window is focused.
 internal sealed class WaylandClipboardExtension : IClipboardExtension
 {
-	// A reader that stops consuming data for this long is abandoned.
+	// Data production and writing each have a bounded deadline.
 	private static readonly TimeSpan _writeTimeout = TimeSpan.FromSeconds(5);
 
 	private readonly WaylandDataDevice _device;
@@ -28,12 +28,13 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 	private int _generation;
 	// Dispatch thread.
 	private WlDataSource? _source;
+	private CancellationTokenSource? _sourceCancellation;
 	private volatile bool _isMonitoringEnabled;
 
 	internal WaylandClipboardExtension(WaylandDataDevice device)
 	{
 		_device = device;
-		device.SelectionChanged += () =>
+		device.SelectionChanged += (_, _) =>
 		{
 			if (_isMonitoringEnabled)
 			{
@@ -60,13 +61,18 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 		int generation;
 		lock (_gate)
 		{
+			// Readable locally right away, as on WinUI, even while publishing waits for keyboard focus.
 			_content = view;
 			generation = ++_generation;
 		}
 		var mimeTypes = view is null ? [] : WaylandDataFormats.GetMimeTypes(view);
-		_device.Display.Post(() =>
+		// Wayland only accepts a selection from the focused client with a recent input serial.
+		_device.Display.Post(() => _device.RequestSelection(() =>
 		{
 			var previous = _source;
+			_sourceCancellation?.Cancel();
+			_sourceCancellation?.Dispose();
+			_sourceCancellation = null;
 			_source = null;
 			if (view is not null)
 			{
@@ -76,10 +82,14 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 					source.Offer(mimeType);
 				}
 				// Each format is produced once per content, however many clients paste it.
+				var cancellation = new CancellationTokenSource();
+				_sourceCancellation = cancellation;
+				var token = cancellation.Token;
 				var data = new Dictionary<string, Task<byte[]?>>();
-				source.Send += (_, e) => Send(view, data, e.MimeType, e.Fd);
+				source.Send += (_, e) => Send(view, data, e.MimeType, e.Fd, token);
 				source.Cancelled += (_, _) =>
 				{
+					cancellation.Cancel();
 					// Another client (or a newer SetContent) took the selection.
 					if (_source == source)
 					{
@@ -98,27 +108,53 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 			}
 			_device.SetSelection(_source);
 			previous?.Destroy();
-		});
+		}));
 	}
 
-	// Dispatch thread. The data is produced and written on a worker; the descriptor is ours to close.
-	private void Send(DataPackageView view, Dictionary<string, Task<byte[]?>> cache, string mimeType, int fd)
+	// Providers run on the UI dispatcher; pipe ownership stays with the worker.
+	private void Send(DataPackageView view, Dictionary<string, Task<byte[]?>> cache, string mimeType, int fd, CancellationToken cancellationToken)
 	{
 		if (!cache.TryGetValue(mimeType, out var data))
 		{
-			cache[mimeType] = data = Task.Run(() => GetBytesAsync(view, mimeType));
-		}
-		_ = data.ContinueWith(
-			task =>
+			var completion = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
+			cache[mimeType] = data = completion.Task;
+			try
 			{
-				if (!WaylandPipe.WriteAll(fd, task.Result ?? [], _writeTimeout) && this.Log().IsEnabled(LogLevel.Debug))
+				WaylandConnection.PostToUI(async () =>
 				{
-					this.Log().Debug($"The clipboard reader stopped receiving {mimeType}.");
-				}
-			},
-			CancellationToken.None,
-			TaskContinuationOptions.None,
-			TaskScheduler.Default);
+					if (cancellationToken.IsCancellationRequested)
+					{
+						completion.TrySetCanceled(cancellationToken);
+						return;
+					}
+					completion.TrySetResult(await GetBytesAsync(view, mimeType));
+				});
+			}
+			catch (Exception error)
+			{
+				completion.TrySetException(error);
+			}
+		}
+		_ = SendAsync(fd, data, mimeType, cancellationToken);
+	}
+
+	private async Task SendAsync(int fd, Task<byte[]?> data, string mimeType, CancellationToken cancellationToken)
+	{
+		try
+		{
+			if (!await WaylandDataTransfer.SendAsync(fd, data, _writeTimeout, cancellationToken)
+				&& this.Log().IsEnabled(LogLevel.Debug))
+			{
+				this.Log().Debug($"The clipboard reader stopped receiving {mimeType}.");
+			}
+		}
+		catch (Exception error)
+		{
+			if (this.Log().IsEnabled(LogLevel.Debug))
+			{
+				this.Log().Debug($"Clipboard transfer failed for {mimeType}: {error.Message}");
+			}
+		}
 	}
 
 	private async Task<byte[]?> GetBytesAsync(DataPackageView view, string mimeType)

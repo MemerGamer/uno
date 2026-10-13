@@ -15,7 +15,7 @@ internal static class WaylandTextInputText
 
 	// A window of the text around the selection: Start is its UTF-16 index in the full text,
 	// Cursor and Anchor are UTF-8 byte offsets inside Text.
-	internal readonly record struct SurroundingText(string Text, int Start, int Cursor, int Anchor);
+	internal readonly record struct SurroundingText(string Text, int Start, int Cursor, int Anchor, bool IsSupported = true);
 
 	internal static SurroundingText GetSurroundingText(string text, int cursor, int anchor, int maxBytes = MaxSurroundingTextBytes)
 	{
@@ -31,9 +31,7 @@ internal static class WaylandTextInputText
 		var bytes = Encoding.UTF8.GetByteCount(text.AsSpan(start, end - start));
 		if (bytes > maxBytes)
 		{
-			// The selection alone does not fit: collapse it to the cursor.
-			start = end = anchor = cursor;
-			bytes = 0;
+			return new(string.Empty, 0, 0, 0, IsSupported: false);
 		}
 
 		// Grow around the selection one code point at a time, alternating sides, while it fits.
@@ -70,7 +68,7 @@ internal static class WaylandTextInputText
 	}
 
 	internal static int CharIndexToByteOffset(string text, int index)
-		=> Encoding.UTF8.GetByteCount(text.AsSpan(0, Math.Clamp(index, 0, text.Length)));
+		=> Encoding.UTF8.GetByteCount(text.AsSpan(0, ClampToCodePoint(text, index)));
 
 	// Offsets beyond the text clamp to its end; an offset inside a UTF-8 sequence maps to the start of its code point.
 	internal static int ByteOffsetToCharIndex(string text, int byteOffset)
@@ -95,6 +93,10 @@ internal static class WaylandTextInputText
 	// to UTF-16 ranges of the full text.
 	internal static ((int Start, int Length) Before, (int Start, int Length) After) GetDeletionRanges(SurroundingText surrounding, uint beforeLength, uint afterLength)
 	{
+		if (!surrounding.IsSupported)
+		{
+			return ((0, 0), (0, 0));
+		}
 		var text = surrounding.Text;
 		var selectionStart = Math.Min(surrounding.Cursor, surrounding.Anchor);
 		var selectionEnd = Math.Max(surrounding.Cursor, surrounding.Anchor);

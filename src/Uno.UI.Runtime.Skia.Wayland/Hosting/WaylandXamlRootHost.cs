@@ -65,7 +65,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		if (connection.Seat is { } wlSeat)
 		{
 			_input = new WaylandProtocolInputConnection(wlSeat, s => s == surface, connection.Display.Post, SetCursor);
-			_input.PointerReleasing += OnPointerReleasing;
+			_input.PointerReleasing += (_, _) => DisposeCursor();
 			_input.InputSerial += (_, serial) => connection.InputSerial = serial;
 		}
 		var input = (IWaylandInputConnection?)_input ?? NoInputConnection.Instance;
@@ -85,6 +85,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 
 	internal WlSurface Surface { get; }
 	internal WaylandPointerInputSource PointerSource { get; }
+	internal WaylandProtocolInputConnection? Input => _input;
 	internal WaylandKeyboardInputSource KeyboardSource { get; }
 	// Written on the UI thread, read by the dispatch thread for cursor scaling.
 	internal double Scale { get; set; } = 1;
@@ -277,8 +278,6 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		}
 		_cursor.Set(serial, cursor, Scale);
 	}
-
-	private void OnPointerReleasing(object? sender, EventArgs args) => DisposeCursor();
 
 	private void DisposeCursor()
 	{

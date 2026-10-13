@@ -32,6 +32,9 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 	public event EventHandler? PointerReleasing;
 	// Raised on the dispatch thread with the serial of each keyboard enter, key and pointer button event.
 	public event EventHandler<uint>? InputSerial;
+	// Raised on the dispatch thread for buttons on this window's surface, before the pointer source posts them
+	// to the UI thread.
+	public event EventHandler<WlPointer.ButtonEventArgs>? PointerButton;
 
 	public IDisposable GetPointer(WaylandPointerInputSource sink)
 	{
@@ -48,7 +51,7 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		};
 		EventHandler<WlPointer.LeaveEventArgs> leave = (_, e) => { if (focused) { Trace($"input: pointer leave"); sink.Leave(); } focused = false; };
 		EventHandler<WlPointer.MotionEventArgs> motion = (_, e) => { if (focused) { Trace($"input: pointer motion {e.SurfaceX.ToDouble():0.##},{e.SurfaceY.ToDouble():0.##}"); sink.Motion(e.Time, e.SurfaceX.ToDouble(), e.SurfaceY.ToDouble()); } };
-		EventHandler<WlPointer.ButtonEventArgs> button = (_, e) => { if (focused) { Trace($"input: pointer button 0x{e.Button:x} state={e.State}"); InputSerial?.Invoke(this, e.Serial); sink.Button(e.Time, e.Button, e.State); } };
+		EventHandler<WlPointer.ButtonEventArgs> button = (_, e) => { if (focused) { Trace($"input: pointer button 0x{e.Button:x} state={e.State}"); PointerButton?.Invoke(this, e); sink.Button(e.Time, e.Button, e.State); } };
 		EventHandler<WlPointer.AxisEventArgs> axis = (_, e) => { if (focused) { Trace($"input: pointer axis {e.Axis} value={e.Value.ToDouble():0.##}"); sink.Axis(e.Time, e.Axis, e.Value.ToDouble()); if (proxy.Version < 5) { sink.Frame(); } } };
 		EventHandler<WlPointer.AxisDiscreteEventArgs> discrete = (_, e) => { if (focused) { sink.AxisDiscrete(e.Axis, e.Discrete); } };
 		EventHandler<WlPointer.AxisValue120EventArgs> value120 = (_, e) => { if (focused) { Trace($"input: pointer axis {e.Axis} value120={e.Value120}"); sink.AxisValue120(e.Axis, e.Value120); } };
@@ -63,6 +66,9 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		proxy.AxisValue120 += value120;
 		proxy.AxisStop += stop;
 		proxy.Frame += frame;
+		EventHandler<WlPointer.ButtonEventArgs> buttonSerial = (_, e) => InputSerial?.Invoke(this, e.Serial);
+		proxy.Button += buttonSerial;
+		binding.Remove.Add(() => proxy.Button -= buttonSerial);
 		binding.Remove.Add(() =>
 		{
 			PointerReleasing?.Invoke(this, EventArgs.Empty);
@@ -89,9 +95,9 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 			WaylandDiagnostics.Trace($"input: keymap format={e.Format} size={e.Size}");
 			sink.Keymap(e.Format, e.Fd, e.Size);
 		};
-		EventHandler<WlKeyboard.EnterEventArgs> enter = (_, e) => { if (_ownsSurface(e.Surface)) { Trace($"input: keyboard enter"); InputSerial?.Invoke(this, e.Serial); sink.Enter(MemoryMarshal.Cast<byte, uint>(e.Keys.AsSpan())); } };
+		EventHandler<WlKeyboard.EnterEventArgs> enter = (_, e) => { if (_ownsSurface(e.Surface)) { Trace($"input: keyboard enter"); sink.Enter(MemoryMarshal.Cast<byte, uint>(e.Keys.AsSpan())); } };
 		EventHandler<WlKeyboard.LeaveEventArgs> leave = (_, e) => { if (_ownsSurface(e.Surface)) { Trace($"input: keyboard leave"); sink.Leave(); } };
-		EventHandler<WlKeyboard.KeyEventArgs> key = (_, e) => { Trace($"input: key {e.Key} state={e.State}"); InputSerial?.Invoke(this, e.Serial); sink.Key(e.Key, e.State); };
+		EventHandler<WlKeyboard.KeyEventArgs> key = (_, e) => { Trace($"input: key {e.Key} state={e.State}"); sink.Key(e.Key, e.State); };
 		EventHandler<WlKeyboard.ModifiersEventArgs> modifiers = (_, e) => { Trace($"input: modifiers depressed=0x{e.ModsDepressed:x} locked=0x{e.ModsLocked:x} group={e.Group}"); sink.UpdateModifiers(e.ModsDepressed, e.ModsLatched, e.ModsLocked, e.Group); };
 		EventHandler<WlKeyboard.RepeatInfoEventArgs> repeat = (_, e) => { Trace($"input: repeat rate={e.Rate} delay={e.Delay}"); sink.RepeatInfo(e.Rate, e.Delay); };
 		proxy.Keymap += keymap;
@@ -100,6 +106,15 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		proxy.Key += key;
 		proxy.Modifiers += modifiers;
 		proxy.RepeatInfo += repeat;
+		EventHandler<WlKeyboard.EnterEventArgs> enterSerial = (_, e) => InputSerial?.Invoke(this, e.Serial);
+		EventHandler<WlKeyboard.KeyEventArgs> keySerial = (_, e) => InputSerial?.Invoke(this, e.Serial);
+		proxy.Enter += enterSerial;
+		proxy.Key += keySerial;
+		binding.Remove.Add(() =>
+		{
+			proxy.Enter -= enterSerial;
+			proxy.Key -= keySerial;
+		});
 		binding.Remove.Add(() =>
 		{
 			proxy.Keymap -= keymap;

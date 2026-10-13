@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using Windows.Foundation;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
+using Uno.WinUI.Runtime.Skia.Wayland.Native;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland;
 
@@ -16,6 +17,9 @@ internal sealed class WaylandDataDevice
 	private readonly WaylandConnection _connection;
 	private readonly WlDataDeviceManager _manager;
 	private readonly WlDataDevice _device;
+	private readonly WaylandSelectionSerial _selectionSerial = new();
+	private WlKeyboard? _keyboard;
+	private WlPointer? _pointer;
 
 	// Dispatch thread: offers announced by data_offer and not yet claimed by selection or enter.
 	private readonly Dictionary<WlDataOffer, WaylandDataOffer> _newOffers = new();
@@ -31,6 +35,8 @@ internal sealed class WaylandDataDevice
 		_connection = connection;
 		_manager = manager;
 		_device = manager.GetDataDevice(seat);
+		seat.Capabilities += (_, e) => UpdateSeat(seat, e.Capabilities);
+		UpdateSeat(seat, connection.SeatCapabilities);
 		_device.DataOffer += (_, e) => _newOffers[e.Id] = new WaylandDataOffer(e.Id);
 		_device.Selection += OnSelection;
 		_device.Enter += OnEnter;
@@ -49,6 +55,43 @@ internal sealed class WaylandDataDevice
 			_dropTarget?.Drop();
 			_dropTarget = null;
 		});
+	}
+
+	private void UpdateSeat(WlSeat seat, uint capabilities)
+	{
+		if ((capabilities & (uint)WlSeat.CapabilityValues.Keyboard) == 0)
+		{
+			_selectionSerial.Leave();
+			_keyboard?.Dispose();
+			_keyboard = null;
+		}
+		else if (_keyboard is null)
+		{
+			_keyboard = seat.GetKeyboard();
+			_keyboard.Keymap += (_, e) =>
+			{
+				_ = Posix.close(e.Fd);
+			};
+			_keyboard.Enter += (_, e) =>
+			{
+				_selectionSerial.Enter(e.Serial);
+			};
+			_keyboard.Key += (_, e) =>
+			{
+				_selectionSerial.Update(e.Serial);
+			};
+			_keyboard.Leave += (_, _) => _selectionSerial.Leave();
+		}
+		if ((capabilities & (uint)WlSeat.CapabilityValues.Pointer) == 0)
+		{
+			_pointer?.Dispose();
+			_pointer = null;
+		}
+		else if (_pointer is null)
+		{
+			_pointer = seat.GetPointer();
+			_pointer.Button += (_, e) => _selectionSerial.Update(e.Serial);
+		}
 	}
 
 	/// <summary>Creates the data device when the compositor has a seat and wl_data_device_manager.</summary>
@@ -70,7 +113,7 @@ internal sealed class WaylandDataDevice
 	internal WaylandDisplay Display => _connection.Display;
 
 	/// <summary>Raised on the dispatch thread when the selection changes while one of our surfaces has keyboard focus.</summary>
-	internal event Action? SelectionChanged;
+	internal event EventHandler? SelectionChanged;
 
 	internal WaylandDataOffer? Selection
 	{
@@ -87,19 +130,29 @@ internal sealed class WaylandDataDevice
 	internal WlDataSource CreateSource() => _manager.CreateDataSource();
 
 	// Dispatch thread. A null source clears the selection.
-	internal void SetSelection(WlDataSource? source) => _device.SetSelection(source, _connection.InputSerial);
+	internal void SetSelection(WlDataSource? source) => _device.SetSelection(source, _selectionSerial.Serial);
+
+	internal void RequestSelection(Action publish) => _selectionSerial.Request(publish);
 
 	// UI thread.
 	internal void AddDropTarget(WaylandDragDropExtension target) => _dropTargets.Add(target);
 
 	// UI thread.
-	internal void RemoveDropTarget(WaylandDragDropExtension target) => _dropTargets.Remove(target);
+	internal void RemoveDropTarget(WaylandDragDropExtension target)
+	{
+		_dropTargets.Remove(target);
+		if (_dropTarget == target)
+		{
+			_dropTarget = null;
+		}
+		target.Leave();
+	}
 
 	private void OnSelection(object? sender, WlDataDevice.SelectionEventArgs e)
 	{
 		_selection?.Destroy();
 		_selection = e.Id is { } id ? Claim(id) : null;
-		SelectionChanged?.Invoke();
+		SelectionChanged?.Invoke(this, EventArgs.Empty);
 	}
 
 	private void OnEnter(object? sender, WlDataDevice.EnterEventArgs e)
