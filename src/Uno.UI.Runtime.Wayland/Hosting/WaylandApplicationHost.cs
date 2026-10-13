@@ -8,6 +8,7 @@ using Uno.Foundation.Logging;
 using Uno.Helpers;
 using Uno.UI.Dispatching;
 using Uno.UI.Hosting;
+using Uno.UI.Runtime.Linux;
 using Uno.UI.Runtime.Wayland.Protocols;
 using Windows.UI.Core;
 
@@ -39,7 +40,7 @@ public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, 
 	internal WaylandApplicationHost(Func<Application> appBuilder, bool useSystemHarfBuzz)
 	{
 		_appBuilder = appBuilder ?? throw new ArgumentNullException(nameof(appBuilder));
-		WaylandHarfBuzz.Isolate(useSystemHarfBuzz);
+		LinuxHarfBuzz.Isolate(useSystemHarfBuzz);
 
 		if (CoreDispatcher.DispatchOverride is null)
 		{
