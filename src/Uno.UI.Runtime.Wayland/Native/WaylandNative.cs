@@ -84,5 +84,6 @@ internal static unsafe partial class Posix
 	[LibraryImport("libc", SetLastError = true)] internal static partial int pipe2(int* fds, int flags);
 	[LibraryImport("libc", SetLastError = true)] internal static partial nint write(int fd, byte* buffer, nuint count);
 	[LibraryImport("libc", SetLastError = true)] internal static partial nint read(int fd, byte* buffer, nuint count);
+	[LibraryImport("libc", SetLastError = true)] internal static partial int fcntl(int fd, int command, int value);
 	[LibraryImport("libc")] internal static partial int close(int fd);
 }
