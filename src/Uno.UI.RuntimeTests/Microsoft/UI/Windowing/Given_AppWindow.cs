@@ -6,6 +6,7 @@ using Combinatorial.MSTest;
 using AwesomeAssertions;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Private.Infrastructure;
 using Windows.Graphics;
 
@@ -85,7 +86,7 @@ public class Given_AppWindow
 	{
 		AssertSizingSupport();
 
-		var newWindow = new Window();
+		var newWindow = new Window { Content = new Grid() };
 		var appWindow = newWindow.AppWindow;
 		AppWindowChangedEventArgs args = null;
 		void OnChanged(AppWindow s, AppWindowChangedEventArgs e)
@@ -94,7 +95,6 @@ public class Given_AppWindow
 		}
 		appWindow.Changed += OnChanged;
 		var originalSize = appWindow.Size;
-		var activated = false;
 		try
 		{
 			var adjustedSize = new SizeInt32() { Width = originalSize.Width + 10, Height = originalSize.Height + 10 };
@@ -103,14 +103,13 @@ public class Given_AppWindow
 			Assert.IsTrue(args.DidSizeChange);
 			Assert.AreEqual(appWindow.Size, adjustedSize);
 
-			newWindow.Activated += (s, e) => activated = true;
-			newWindow.Activate();
-			await TestServices.WindowHelper.WaitFor(() => activated);
+			await ActivateAndWaitForBounds(newWindow);
 
 			Assert.AreEqual(appWindow.Size, adjustedSize);
 		}
 		finally
 		{
+			appWindow.Changed -= OnChanged;
 			await TestServices.WindowHelper.WaitForIdle();
 			await TestServices.RunOnUIThread(() => newWindow.Close());
 		}
@@ -153,14 +152,18 @@ public class Given_AppWindow
 	}
 
 	[TestMethod]
-	public async Task When_Resize_Twice_Before_Activate()
+	[CombinatorialData]
+	public async Task When_Resize_Twice_Before_Activate(bool extendContentIntoTitleBar)
 	{
 		AssertSizingSupport();
 
-		var newWindow = new Window();
+		var newWindow = new Window
+		{
+			Content = new Grid(),
+			ExtendsContentIntoTitleBar = extendContentIntoTitleBar
+		};
 		var appWindow = newWindow.AppWindow;
 		var resized = false;
-		var activated = false;
 		var requestedSize = new SizeInt32(720, 560);
 		void OnChanged(AppWindow sender, AppWindowChangedEventArgs args)
 		{
@@ -175,14 +178,40 @@ public class Given_AppWindow
 			Assert.AreEqual(requestedSize, appWindow.Size);
 			Assert.IsFalse(appWindow.IsVisible);
 
-			newWindow.Activated += (s, e) => activated = true;
-			newWindow.Activate();
-			await TestServices.WindowHelper.WaitFor(() => activated);
+			await ActivateAndWaitForBounds(newWindow);
 			Assert.AreEqual(requestedSize, appWindow.Size);
 		}
 		finally
 		{
 			appWindow.Changed -= OnChanged;
+			await TestServices.WindowHelper.WaitForIdle();
+			await TestServices.RunOnUIThread(() => newWindow.Close());
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWayland)]
+	public async Task When_Resize_Before_Activate_Then_Maximize()
+	{
+		AssertSizingSupport();
+
+		var newWindow = new Window { Content = new Grid() };
+		var appWindow = newWindow.AppWindow;
+		var requestedSize = new SizeInt32(320, 240);
+		try
+		{
+			appWindow.Resize(requestedSize);
+			await TestServices.WindowHelper.WaitFor(() => appWindow.Size.Equals(requestedSize));
+			var presenter = (OverlappedPresenter)appWindow.Presenter;
+			presenter.Maximize();
+			await ActivateAndWaitForBounds(newWindow);
+
+			Assert.AreEqual(OverlappedPresenterState.Maximized, presenter.State);
+			// A nonzero maximized configure overrides the floating size requested before mapping.
+			Assert.AreNotEqual(requestedSize, appWindow.Size);
+		}
+		finally
+		{
 			await TestServices.WindowHelper.WaitForIdle();
 			await TestServices.RunOnUIThread(() => newWindow.Close());
 		}
@@ -234,6 +263,7 @@ public class Given_AppWindow
 		var newWindow = new Window();
 		var appWindow = newWindow.AppWindow;
 		var activated = false;
+		var stateAtActivation = OverlappedPresenterState.Restored;
 		try
 		{
 			var overlappedPresenter = (OverlappedPresenter)appWindow.Presenter;
@@ -244,9 +274,17 @@ public class Given_AppWindow
 				_ => () => overlappedPresenter.Restore()
 			};
 			act.Should().NotThrow();
-			newWindow.Activated += (s, e) => activated = true;
+			newWindow.Activated += (s, e) =>
+			{
+				if (!activated && e.WindowActivationState != WindowActivationState.Deactivated)
+				{
+					stateAtActivation = overlappedPresenter.State;
+					activated = true;
+				}
+			};
 			newWindow.Activate();
-			await TestServices.WindowHelper.WaitFor(() => activated);
+			await TestServices.WindowHelper.WaitFor(() => activated, timeoutMS: 5000);
+			Assert.AreEqual(state, stateAtActivation);
 			Assert.AreEqual(state, overlappedPresenter.State);
 		}
 		finally
@@ -297,6 +335,51 @@ public class Given_AppWindow
 		{
 			await TestServices.WindowHelper.WaitForIdle();
 			await TestServices.RunOnUIThread(() => newWindow.Close());
+		}
+	}
+
+	private static async Task ActivateAndWaitForBounds(Window window)
+	{
+		var appWindow = window.AppWindow;
+		var activated = false;
+		var sizeAtActivation = default(SizeInt32);
+		var clientSizeAtActivation = default(SizeInt32);
+		var isWayland = RuntimeTestsPlatformHelper.CurrentPlatform == RuntimeTestPlatforms.SkiaWayland;
+		void OnActivated(object sender, WindowActivatedEventArgs args)
+		{
+			if (activated || args.WindowActivationState == WindowActivationState.Deactivated ||
+				(isWayland && args.WindowActivationState != WindowActivationState.PointerActivated))
+			{
+				return;
+			}
+			// Wayland native activation follows managed configure application, even if the size is unchanged.
+			sizeAtActivation = appWindow.Size;
+			clientSizeAtActivation = appWindow.ClientSize;
+			activated = true;
+		}
+		window.Activated += OnActivated;
+		try
+		{
+			window.Activate();
+			await TestServices.WindowHelper.WaitFor(() => activated, timeoutMS: 5000, message: "Native activation after managed bounds application");
+			var content = (FrameworkElement)window.Content;
+			await TestServices.WindowHelper.WaitForLoaded(content, timeoutMS: 5000);
+			if (isWayland)
+			{
+				await TestServices.WindowHelper.WaitFor(() =>
+					content.XamlRoot is { } root &&
+					Math.Abs(root.Size.Width * root.RasterizationScale - appWindow.ClientSize.Width) <= 1 &&
+					Math.Abs(root.Size.Height * root.RasterizationScale - appWindow.ClientSize.Height) <= 1,
+					timeoutMS: 5000, message: "XamlRoot bounds matching AppWindow.ClientSize");
+				Assert.AreEqual(sizeAtActivation, appWindow.Size);
+				Assert.AreEqual(clientSizeAtActivation, appWindow.ClientSize);
+			}
+			Assert.IsTrue(appWindow.ClientSize.Width > 0 && appWindow.ClientSize.Height > 0);
+			Assert.IsTrue(appWindow.ClientSize.Width <= appWindow.Size.Width && appWindow.ClientSize.Height <= appWindow.Size.Height);
+		}
+		finally
+		{
+			window.Activated -= OnActivated;
 		}
 	}
 

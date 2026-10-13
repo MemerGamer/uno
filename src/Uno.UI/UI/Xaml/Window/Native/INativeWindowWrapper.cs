@@ -23,6 +23,11 @@ internal interface INativeWindowWrapper : INativeAppWindow
 
 	CoreWindowActivationState ActivationState { get; }
 
+	/// <summary>
+	/// Gets whether the native window's state and bounds are ready for managed activation.
+	/// </summary>
+	bool IsReadyForActivation { get; }
+
 	bool WasShown { get; set; }
 
 	/// <summary>

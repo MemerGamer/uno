@@ -45,6 +45,8 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	// UI thread state.
 	private WaylandToplevelStates _uiStates;
+	private bool _hasAppliedConfigure;
+	private bool _activationRequested;
 	private volatile bool _minimizeRequested;
 	// Written on the dispatch thread, also read by Minimize on the UI thread.
 	private volatile WaylandWindowCapabilities _capabilities = WaylandWindowCapabilities.All;
@@ -93,6 +95,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		_connection = connection;
 		_id = Interlocked.Increment(ref _nextId);
 		OwnerWindow = window;
+		ActivationState = CoreWindowActivationState.Deactivated;
 		_darkDecorations = Application.Current?.RequestedTheme == ApplicationTheme.Dark;
 		var package = Windows.ApplicationModel.Package.Current;
 		var titleBar = window.AppWindow.TitleBar;
@@ -201,6 +204,8 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	public override object NativeWindow => _surface;
 
+	public override bool IsReadyForActivation => _hasAppliedConfigure;
+
 	public override string Title
 	{
 		get => _title;
@@ -287,7 +292,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	}
 
 	internal protected override void Activate()
-		=> Post(() =>
+	{
+		_activationRequested = true;
+		Post(() =>
 		{
 			if (_minimizeRequested || (_states & WaylandToplevelStates.Activated) == 0)
 			{
@@ -298,6 +305,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 				_connection.Activate(_surface, () => !_closed);
 			}
 		});
+	}
 
 	public override void Resize(SizeInt32 size)
 	{
@@ -508,8 +516,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: configure serial={args.Serial} suggested={_pendingWidth}x{_pendingHeight} geometry={_geometryWidth}x{_geometryHeight} content={_layout.ContentWidth}x{_layout.ContentHeight} states={_states} decorations={(_serverSideDecorations ? "server" : "client")} -> {(_configureSerial is null ? "acknowledged" : "pending presentation")}"));
 		}
-		_connection.PostToUI(() => ActivationState = activated ? CoreWindowActivationState.PointerActivated : CoreWindowActivationState.Deactivated);
-		Publish();
+		Publish(notifyActivation: true);
 	}
 
 	private void OnPreferredFractionalScale(object? sender, WpFractionalScaleV1.PreferredScaleEventArgs args)
@@ -796,7 +803,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 	}
 
-	private void Publish()
+	private void Publish(bool notifyActivation = false)
 	{
 		var generation = ++_configureGeneration;
 		if (_clientDecorations is { } decorations)
@@ -808,7 +815,19 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		var titleBarHeight = _layout.TitleBarHeight;
 		var states = _states;
 		var scale = EffectiveScale;
-		_connection.PostToUI(() => ApplyConfigure(width, height, titleBarHeight, scale, states, generation));
+		_connection.PostToUI(() =>
+		{
+			ApplyConfigure(width, height, titleBarHeight, scale, states, generation);
+			if (notifyActivation && !_closed)
+			{
+				// Even an unchanged size must be applied before activation observers inspect the window.
+				var initialActivation = !_hasAppliedConfigure && _activationRequested;
+				_hasAppliedConfigure = true;
+				ActivationState = (states & WaylandToplevelStates.Activated) != 0
+					? CoreWindowActivationState.PointerActivated
+					: initialActivation ? CoreWindowActivationState.CodeActivated : CoreWindowActivationState.Deactivated;
+			}
+		});
 		// Pre-activation resizes update managed bounds, but buffers must wait for the first configure.
 		if (_configured)
 		{
