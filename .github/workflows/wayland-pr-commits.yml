@@ -104,15 +104,15 @@ jobs:
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y \
             weston xvfb fluxbox libwayland-client0 libwayland-cursor0 libwayland-egl1 \
             libxkbcommon0 libegl1 libgl1-mesa-dri vlc libvlc-dev libgtk-3-dev libwebkit2gtk-4.1-dev
-      - name: Strict Release build and available tests at this commit
+      - name: Strict Release build of the changed desktop projects and Wayland tests
         run: bash ../ci-tools/build/wayland-ci/build-tests.sh commit net10.0
-      - name: Upload this commit's TRX
+      - name: Upload this commit's TRX (absent for commits without Wayland tests)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wayland-commit-${{ matrix.sha }}
           path: source/artifacts/wayland-unit-tests/**/*.trx
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 14
 
   style:
@@ -153,7 +153,7 @@ jobs:
         env:
           BASE_SHA: ${{ needs.range.outputs.base }}
         run: bash ../ci-tools/build/wayland-ci/commit-style.sh "$BASE_SHA"
-      - name: Changed documentation and XAML
+      - name: Uno doc validations and XAML Styler, triggered by changed paths
         if: always()
         env:
           BASE_SHA: ${{ needs.range.outputs.base }}

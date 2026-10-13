@@ -10,7 +10,7 @@ source SHA separately from helpers at the workflow revision.
 | Workflow | Source | Checks / output |
 | --- | --- | --- |
 | `wayland-ci.yml` | Pushes / PRs targeting `wayland/**`, or dispatch `ref` | Strict Release Wayland build, unit test TRX; port also runs Weston and Xvfb, uploads NUnit XML / logs, and compares failures |
-| `wayland-pr-commits.yml` | Dispatch `base..head` (exclusive base) | Independent strict Release build / tests for every commit, commitsar 0.20.2, changed-doc markdownlint 0.38.0 / cspell 8.3.2, changed-XAML Styler drift patch |
+| `wayland-pr-commits.yml` | Dispatch `base..head` (exclusive base) | Independent strict Release build per commit (Wayland + the desktop projects its paths feed) and Wayland tests, commitsar 0.20.2, Uno's `doc/` cspell 8.3.2 / markdownlint 0.38.0, `src/SamplesApp` XAML Styler drift patch |
 | `wayland-packages.yml` | `uno-wayland-6.7.135-wayland.N` tag, or dispatch `ref` / `version` | Eight net10.0 host packages, eight-line `SHA256SUMS`, artifact and draft GitHub prerelease |
 
 Host / port detection uses project paths, not branch names. The host currently
@@ -18,10 +18,22 @@ sets `NetCurrent=net10.0`; CI follows that property (net9.0 is also supported).
 Its tests live in `build/wayland-scanner/tests`; CI additionally runs
 `Uno.UI.Runtime.Skia.Wayland.Tests` if present. Port builds use
 `UnoTargetFrameworkOverride=net10.0` and `NetUnitTests=net10.0`.
-The first five commits in the default PR range predate the Wayland project:
-they build X11 and run `Uno.UI.UnitTests`. Commits with Wayland but without its
-test project also use `Uno.UI.UnitTests`. No later source is injected into them.
+Per-commit jobs build the Wayland line when the commit has it and run its tests
+when the test project exists. Changed paths select further strict builds:
+`Uno.UI.Runtime.X11` for X11 / `Linux.Shared` and for any other `src/` project
+(shared Uno.UI, WinRT and Skia layers are proven through that desktop consumer,
+and a same-named `src/<Name>/<Name>.csproj` is built too), and the SamplesApp
+desktop head for `src/SamplesApp` / `Uno.UI.RuntimeTests`. `Uno.UI.UnitTests`
+is not run: Uno's CI runs it on Windows only, and on Linux it fails on missing
+`libHarfBuzzSharp` regardless of the commit. No later source is injected.
 The matrix covers at most 256 commits and runs two concurrently.
+
+The style job mirrors Uno's own scopes rather than linting every changed file:
+commit messages via commitsar; when a change matches Uno's doc-change detection
+(`doc/`, any `*.md`, `doc/*.yml`), cspell `doc/**/*.md doc/**/toc.yml` and
+markdownlint `doc/**/*.md`; when `src/SamplesApp` XAML, its `Settings.XamlStyler`
+or `.config/dotnet-tools.json` change, `dotnet xstyler -d src/SamplesApp -r` with
+a drift patch. Root files such as `THIRD-PARTY-NOTICES.md` are outside both scopes.
 
 The runtime jobs use Uno's desktop SamplesApp head and invoke
 `build/test-scripts/linux-skia-runtime-tests.sh false true` (Weston) and

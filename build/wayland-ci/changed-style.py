@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Run Uno's pinned doc tools and XamlStyler on changed, surviving files."""
+"""Run Uno's doc validations and XAML Styler check with Uno CI's exact scope."""
 from pathlib import Path
+import re
 import subprocess
 import sys
 
+sys.stdout.reconfigure(line_buffering=True)
 base = sys.argv[1]
-raw = subprocess.check_output(['git', 'diff', '--name-only', '-z', '--diff-filter=ACMR',
-                               base, 'HEAD', '--'])
-paths = [Path(name.decode()) for name in raw.split(b'\0') if name]
-paths = [path for path in paths if path.is_file()]
-markdown = [str(path) for path in paths if path.suffix.lower() == '.md']
-spelling = [str(path) for path in paths if path.suffix.lower() == '.md'
-            or (str(path).startswith('doc/') and path.name == 'toc.yml')]
-xaml = [str(path) for path in paths if path.suffix.lower() == '.xaml']
+changed = subprocess.check_output(['git', 'diff', '--name-only', base, 'HEAD', '--'],
+                                  text=True).splitlines()
+# build/ci/setup/.azure-devops-setup-doc-validations.yml's DocChangesDetected.
+doc_pattern = re.compile(r'^(doc/|README|README\.md|README\.rst|.*\.md$|.*\.mdx$|.*\.markdown$'
+                         r'|doc/.*\.yml$|doc/.*\.yaml$)')
+docs = [path for path in changed if doc_pattern.match(path)]
+# .github/workflows/xaml-style-check.yml's pull_request paths.
+xaml_pattern = re.compile(r'^(src/SamplesApp/.*\.xaml|src/SamplesApp/Settings\.XamlStyler'
+                          r'|\.config/dotnet-tools\.json|\.github/workflows/xaml-style-check\.yml)$')
+xaml = [path for path in changed if xaml_pattern.match(path)]
 failed = False
 
 
@@ -23,28 +27,26 @@ def run(args):
     return result.returncode == 0
 
 
-if markdown or spelling:
+if docs:
+    print('Documentation-related changes detected:\n' + '\n'.join(docs))
+    # Uno validates the whole doc tree, not only changed files.
     if run(['npm', 'install', '--global', 'markdownlint-cli@0.38.0', 'cspell@8.3.2']):
-        if markdown:
-            run(['markdownlint', '-c', 'build/.markdownlint.json', '--', *markdown])
-        if spelling:
-            run(['cspell', '--config', 'build/cSpell.json', '--no-progress', '--', *spelling])
+        run(['cspell', '--config', './build/cSpell.json', 'doc/**/*.md', 'doc/**/toc.yml',
+             '--no-progress'])
+        run(['markdownlint', '-c', 'build/.markdownlint.json', 'doc/**/*.md'])
 else:
-    print('No changed documentation.')
+    print('No documentation changes detected; skipping doc validations.')
 if xaml:
-    if run(['dotnet', 'tool', 'restore']):
-        for path in xaml:
-            # Formatting followed by a drift diff matches xaml-style-check.yml.
-            args = ['dotnet', 'xstyler', '-f', path]
-            if path.startswith('src/SamplesApp/'):
-                args += ['-c', 'src/SamplesApp/Settings.XamlStyler']
-            run(args)
-        patch = subprocess.check_output(['git', 'diff', '--', *xaml])
-        if patch:
+    print('SamplesApp XAML changes detected:\n' + '\n'.join(xaml))
+    if run(['dotnet', 'tool', 'restore']) and run(['dotnet', 'xstyler', '-d', 'src/SamplesApp', '-r']):
+        if subprocess.check_output(['git', 'status', '--porcelain', '--', 'src/SamplesApp']):
+            patch = subprocess.check_output(['git', 'diff', '--', 'src/SamplesApp'])
             Path('artifacts').mkdir(exist_ok=True)
             Path('artifacts/xaml-style.patch').write_bytes(patch)
-            print('XAML Styler drift detected; see the patch artifact.')
+            print('::warning::XAML Styler drift detected; see the patch artifact.')
             failed = True
+        else:
+            print('No drift detected.')
 else:
-    print('No changed XAML.')
+    print('No SamplesApp XAML changes; skipping XAML Styler.')
 sys.exit(int(failed))
