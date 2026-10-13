@@ -86,7 +86,7 @@ public sealed class App : Application
 			Place(canvas, portals, 400, 140);
 		}
 		Place(canvas, WindowScenario.CreateControls(window), 40, 440);
-		window.Content = canvas;
+		window.Content = TitleBarSample.Wrap(window, canvas);
 		// The canvas has a background, so it is hit-testable as a drop target.
 		DataTransferProbe.Attach(canvas);
 		window.Activated += (_, e) => Console.WriteLine($"main: activated {e.WindowActivationState}");
