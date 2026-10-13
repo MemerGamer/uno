@@ -70,7 +70,7 @@ public sealed class KeyboardRepeatTests
 	[TestMethod]
 	public void RepeatKeepsTheDeliveryModeOfThePress()
 	{
-		WithKeyboard((keyboard, _) =>
+		WithKeyboard((keyboard, connection) =>
 		{
 			var events = new List<string>();
 			keyboard.KeyDown += (_, args) => events.Add($"down {args.VirtualKey}");
@@ -85,6 +85,7 @@ public sealed class KeyboardRepeatTests
 			keyboard.Key(36, 0);
 			keyboard.UpdateModifiers(0, 0, 0, 0);
 			CollectionAssert.AreEqual(Array.Empty<string>(), events);
+			CollectionAssert.AreEqual(new[] { "j\u0301", "j\u0301" }, connection.Committed);
 
 			// A key event press keeps raising key events, even once Control is released.
 			keyboard.UpdateModifiers(4, 0, 0, 0);
@@ -94,7 +95,68 @@ public sealed class KeyboardRepeatTests
 			keyboard.Key(36, 1);
 			keyboard.Key(36, 0);
 			CollectionAssert.AreEqual(new[] { "down J", "down J", "down J", "up J" }, events);
+			CollectionAssert.AreEqual(new[] { "j\u0301", "j\u0301" }, connection.Committed);
 		});
+	}
+
+	[TestMethod]
+	public void TimerStringRepeatSuppressesShortcutsAndLeaveHasNoKeyUp()
+	{
+		WithKeyboard((keyboard, connection) =>
+		{
+			var events = new List<string>();
+			keyboard.KeyDown += (_, args) => events.Add($"down {args.VirtualKey}");
+			keyboard.KeyUp += (_, args) => events.Add($"up {args.VirtualKey}");
+			keyboard.RepeatInfo(100, 1);
+			ComposeAcute(keyboard, 36);
+			var repeat = TakeRepeat(connection);
+			repeat();
+			keyboard.UpdateModifiers(4, 0, 0, 0);
+			repeat();
+			keyboard.UpdateModifiers(0, 0, 0, 0);
+			repeat();
+			keyboard.Leave();
+			repeat();
+			keyboard.Key(36, 0);
+			CollectionAssert.AreEqual(new[] { "j\u0301", "j\u0301", "j\u0301" }, connection.Committed);
+			CollectionAssert.AreEqual(Array.Empty<string>(), events);
+		});
+	}
+
+	[TestMethod]
+	public void TimerKeyRepeatFollowsModifiersAndLeavePairsKeyUp()
+	{
+		WithKeyboard((keyboard, connection) =>
+		{
+			var text = new List<char?>();
+			var events = new List<string>();
+			keyboard.KeyDown += (_, args) =>
+			{
+				text.Add(GetText(args));
+				events.Add($"down {args.VirtualKey}");
+			};
+			keyboard.KeyUp += (_, args) => events.Add($"up {args.VirtualKey}");
+			keyboard.RepeatInfo(100, 1);
+			keyboard.Key(30, 1);
+			var repeat = TakeRepeat(connection);
+			keyboard.UpdateModifiers(1, 0, 0, 0);
+			repeat();
+			keyboard.UpdateModifiers(4, 0, 0, 0);
+			repeat();
+			keyboard.Leave();
+			repeat();
+			keyboard.Key(30, 0);
+			CollectionAssert.AreEqual(new char?[] { 'a', 'A', null }, text);
+			CollectionAssert.AreEqual(new[] { "down A", "down A", "down A", "up A" }, events);
+			Assert.AreEqual(0, connection.Committed.Count);
+		});
+	}
+
+	private static Action TakeRepeat(InputConnection connection)
+	{
+		Assert.IsTrue(SpinWait.SpinUntil(() => !connection.Pending.IsEmpty, TimeSpan.FromSeconds(5)));
+		Assert.IsTrue(connection.Pending.TryDequeue(out var repeat));
+		return repeat!;
 	}
 
 	private static char? GetText(KeyEventArgs args)
@@ -119,7 +181,7 @@ public sealed class KeyboardRepeatTests
 		}
 		NativeLibrary.Free(library);
 		var connection = new InputConnection();
-		using var keyboard = new WaylandKeyboardInputSource(connection, action => action(), _ => { });
+		using var keyboard = new WaylandKeyboardInputSource(connection, action => action(), _ => { }, connection.Committed.Add);
 		var path = Path.GetTempFileName();
 		try
 		{
@@ -147,6 +209,7 @@ public sealed class KeyboardRepeatTests
 	private sealed class InputConnection : IWaylandInputConnection
 	{
 		internal ConcurrentQueue<Action> Pending { get; } = new();
+		internal List<string> Committed { get; } = new();
 		public void Post(Action action) => Pending.Enqueue(action);
 		public void SetCursor(uint serial, CoreCursor? cursor) { }
 		public IDisposable GetPointer(WaylandPointerInputSource sink) => throw new NotSupportedException();
