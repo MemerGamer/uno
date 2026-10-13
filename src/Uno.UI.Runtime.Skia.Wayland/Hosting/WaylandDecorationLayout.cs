@@ -43,6 +43,8 @@ internal readonly record struct WaylandDecorationLayout(int ContentWidth, int Co
 		(WaylandCaptionButtons.Minimize, WaylandDecorationPart.Minimize),
 	];
 
+	internal static int FitTitleBar(int geometryHeight, int titleBarHeight) => Math.Min(titleBarHeight, Math.Max(geometryHeight - 1, 0));
+
 	internal bool IsVisible => TitleBarHeight > 0 || ResizeMargin > 0;
 
 	// Decoration surface rectangle relative to the content surface origin.
@@ -106,13 +108,13 @@ internal readonly record struct WaylandDecorationLayout(int ContentWidth, int Co
 			var bottom = gy >= height;
 			if (top || bottom)
 			{
-				left |= gx < CornerSize;
-				right |= gx >= width - CornerSize;
+				left |= gx < Math.Min(CornerSize, width / 2.0);
+				right |= !left && gx >= width - Math.Min(CornerSize, width / 2.0);
 			}
 			if (left || right)
 			{
-				top |= gy < CornerSize;
-				bottom |= gy >= height - CornerSize;
+				top |= gy < Math.Min(CornerSize, height / 2.0);
+				bottom |= !top && gy >= height - Math.Min(CornerSize, height / 2.0);
 			}
 			edges |= top ? 1u : 0;
 			edges |= bottom ? 2u : 0;

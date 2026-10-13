@@ -191,6 +191,10 @@ internal sealed class WaylandConnection : IDisposable
 		{
 			token.SetSurface(active);
 		}
+		if (InputSerial != 0 && Seat is { } seat)
+		{
+			token.SetSerial(InputSerial, seat);
+		}
 		token.Commit();
 	}
 

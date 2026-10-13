@@ -18,7 +18,7 @@ public sealed unsafe class WaylandDisplay : IDisposable
 
 	private readonly Dictionary<nint, WaylandProxy> _proxies = new();
 	private readonly Dictionary<uint, WaylandGlobal> _globals = new();
-	private readonly ConcurrentQueue<Action> _commands = new();
+	private readonly ConcurrentQueue<(Action Command, Action? Rejected)> _commands = new();
 	private nint _display;
 	private Thread? _thread;
 	private int _wakeRead = -1;
@@ -197,13 +197,29 @@ public sealed unsafe class WaylandDisplay : IDisposable
 	/// Runs <paramref name="command"/> on the dispatch thread before its next read, under <see cref="SyncRoot"/>.
 	/// A failing command stops the loop like a failing event handler.
 	/// </summary>
-	public void Post(Action command)
+	public void Post(Action command) => _ = TryPost(command);
+
+	internal bool TryPost(Action command, Action? rejected = null)
 	{
 		ArgumentNullException.ThrowIfNull(command);
-		_commands.Enqueue(command);
 		lock (SyncRoot)
 		{
-			WakeDispatch();
+			if (!_stopping && !_disposing && _display != 0 && DispatchError is null)
+			{
+				_commands.Enqueue((command, rejected));
+				WakeDispatch();
+				return true;
+			}
+		}
+		rejected?.Invoke();
+		return false;
+	}
+
+	private void RejectCommands()
+	{
+		while (_commands.TryDequeue(out var command))
+		{
+			command.Rejected?.Invoke();
 		}
 	}
 
@@ -213,7 +229,7 @@ public sealed unsafe class WaylandDisplay : IDisposable
 		{
 			try
 			{
-				command();
+				command.Command();
 			}
 			catch (Exception error)
 			{
@@ -272,6 +288,7 @@ public sealed unsafe class WaylandDisplay : IDisposable
 				_wakeRead = _wakeWrite = -1;
 			}
 			_thread = null;
+			RejectCommands();
 		}
 	}
 
@@ -345,6 +362,10 @@ public sealed unsafe class WaylandDisplay : IDisposable
 			{
 				WaylandNative.wl_display_cancel_read(_display);
 			}
+			lock (SyncRoot)
+			{
+				RejectCommands();
+			}
 		}
 	}
 
@@ -367,7 +388,7 @@ public sealed unsafe class WaylandDisplay : IDisposable
 		if (_wakeWrite >= 0)
 		{
 			byte value = 1;
-			Posix.write(_wakeWrite, &value, 1);
+			_ = Posix.write(_wakeWrite, &value, 1);
 		}
 	}
 	internal void Register(WaylandProxy proxy)

@@ -73,6 +73,111 @@ public sealed class WindowLogicTests
 	}
 
 	[TestMethod]
+	public void ResizeWaitsForFrameRecordedAfterLayout()
+	{
+		var readiness = new WaylandFrameReadiness();
+		Assert.IsFalse(readiness.ConfigureUI(1, boundsChanged: false));
+		readiness.ConfigureRender(1);
+		Assert.IsTrue(readiness.CanPresent(800, 600, 800, 600));
+
+		Assert.IsTrue(readiness.ConfigureUI(2, boundsChanged: true));
+		readiness.ConfigureRender(2);
+		// The canvas already has the new size, but the recorded picture still has the old layout.
+		Assert.IsFalse(readiness.CanPresent(900, 700, 900, 700));
+		Assert.IsFalse(readiness.OnFrameRecorded(arrangedAtBounds: false));
+		Assert.IsFalse(readiness.CanPresent(900, 700, 900, 700));
+		Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+		Assert.IsTrue(readiness.CanPresent(900, 700, 900, 700));
+		Assert.IsFalse(readiness.OnFrameRecorded(arrangedAtBounds: true));
+	}
+
+	[TestMethod]
+	public void ConfigureDuringLayoutWaitKeepsWaiting()
+	{
+		var readiness = new WaylandFrameReadiness();
+		Assert.IsTrue(readiness.ConfigureUI(1, boundsChanged: true));
+		// A state-only configure must not release the resize whose layout was not recorded yet.
+		Assert.IsTrue(readiness.ConfigureUI(2, boundsChanged: false));
+		readiness.ConfigureRender(2);
+		Assert.IsFalse(readiness.CanPresent(800, 600, 800, 600));
+		Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+		Assert.IsTrue(readiness.CanPresent(800, 600, 800, 600));
+	}
+
+	[TestMethod]
+	public void SupersededGenerationNeverPresents()
+	{
+		var readiness = new WaylandFrameReadiness();
+		readiness.ConfigureUI(2, boundsChanged: false);
+		readiness.ConfigureRender(1);
+		for (var i = 0; i < 2 * WaylandFrameReadiness.MaxStaleFrames; i++)
+		{
+			Assert.IsFalse(readiness.CanPresent(800, 600, 800, 600));
+		}
+		readiness.ConfigureRender(2);
+		Assert.IsTrue(readiness.CanPresent(800, 600, 800, 600));
+	}
+
+	[TestMethod]
+	public void WaitsHaveSafetyValves()
+	{
+		var readiness = new WaylandFrameReadiness();
+		readiness.ConfigureUI(1, boundsChanged: true);
+		for (var i = 0; i < WaylandFrameReadiness.MaxStaleFrames; i++)
+		{
+			Assert.IsFalse(readiness.OnFrameRecorded(arrangedAtBounds: false));
+		}
+		Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: false));
+
+		readiness.ConfigureRender(1);
+		Assert.IsTrue(readiness.CanPresent(100, 100, 101, 101));
+		for (var i = 0; i < WaylandFrameReadiness.MaxStaleFrames; i++)
+		{
+			Assert.IsFalse(readiness.CanPresent(80, 80, 101, 101));
+		}
+		Assert.IsTrue(readiness.CanPresent(80, 80, 101, 101));
+		readiness.ConfigureRender(1);
+		Assert.IsFalse(readiness.CanPresent(80, 80, 101, 101));
+	}
+
+	[TestMethod]
+	public void TinyDecorationEdgesAreValid()
+	{
+		uint[] validEdges = [Top, Bottom, Left, Right, Top | Left, Top | Right, Bottom | Left, Bottom | Right];
+		for (var width = 1; width <= 33; width++)
+		{
+			for (var height = 1; height <= 33; height++)
+			{
+				var layout = new WaylandDecorationLayout(width, height, 0, 8, WaylandCaptionButtons.None);
+				for (var x = 0; x < layout.SurfaceWidth; x++)
+				{
+					for (var y = 0; y < layout.SurfaceHeight; y++)
+					{
+						var hit = layout.HitTest(x, y);
+						if (hit.Part == WaylandDecorationPart.ResizeEdge)
+						{
+							CollectionAssert.Contains(validEdges, hit.Edges);
+						}
+					}
+				}
+			}
+		}
+		Assert.AreEqual((WaylandDecorationPart.ResizeEdge, Top | Right), new WaylandDecorationLayout(20, 20, 0, 8, WaylandCaptionButtons.None).HitTest(18, 2));
+	}
+
+	[TestMethod]
+	public void TitleBarFitsConstrainedGeometry()
+	{
+		for (var height = 1; height <= 64; height++)
+		{
+			var titleBar = WaylandDecorationLayout.FitTitleBar(height, 32);
+			var layout = new WaylandDecorationLayout(20, height - titleBar, titleBar, 0, WaylandCaptionButtons.Close);
+			Assert.AreEqual(height, layout.GeometryHeight);
+			Assert.IsTrue(layout.ContentHeight >= 1);
+		}
+	}
+
+	[TestMethod]
 	public void MaximizedLayoutHasNoResizeBorder()
 	{
 		var layout = new WaylandDecorationLayout(800, 600, 32, 0, WaylandCaptionButtons.Close);

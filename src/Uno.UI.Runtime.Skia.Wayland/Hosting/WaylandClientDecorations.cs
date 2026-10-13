@@ -82,6 +82,8 @@ internal sealed class WaylandClientDecorations : IDisposable
 		}
 	}
 
+	internal bool IsReady => !_dirty;
+
 	internal void Update(WaylandDecorationLayout layout, string title, bool activated, bool maximized, uint preferredScale, int integerScale)
 	{
 		if (_disposed)
@@ -122,6 +124,7 @@ internal sealed class WaylandClientDecorations : IDisposable
 	{
 		if (!_layout.IsVisible)
 		{
+			_dirty = false;
 			if (_shown)
 			{
 				// A null buffer unmaps the subsurface; the content commit applies it.
@@ -377,6 +380,7 @@ internal sealed class WaylandClientDecorations : IDisposable
 		{
 			return;
 		}
+		_connection.InputSerial = args.Serial;
 		var (part, edges) = _layout.HitTest(_pointerX, _pointerY);
 		var pressed = args.State == 1;
 		if (!pressed)
