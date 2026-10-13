@@ -56,8 +56,8 @@ public sealed unsafe class ZxdgDecorationManagerV1 : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@toplevel));
 			}
 			args.Object(1, @toplevel);
-			var handle = base.MarshalRequest(1, "zxdg_toplevel_decoration_v1", Math.Min(Version, ZxdgToplevelDecorationV1.MaximumVersion), 1, false, args);
-			return new ZxdgToplevelDecorationV1(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "zxdg_toplevel_decoration_v1", Math.Min(Version, ZxdgToplevelDecorationV1.MaximumVersion), 1, false, args);
+			return new ZxdgToplevelDecorationV1(Display, proxyHandle);
 		}
 	}
 }

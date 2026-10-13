@@ -58,8 +58,8 @@ public sealed unsafe class WlSeat : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(0, "wl_pointer", Math.Min(Version, WlPointer.MaximumVersion), 1, false, args);
-			return new WlPointer(Display, handle);
+			var proxyHandle = base.MarshalRequest(0, "wl_pointer", Math.Min(Version, WlPointer.MaximumVersion), 1, false, args);
+			return new WlPointer(Display, proxyHandle);
 		}
 	}
 	public WlKeyboard GetKeyboard()
@@ -67,8 +67,8 @@ public sealed unsafe class WlSeat : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(1, "wl_keyboard", Math.Min(Version, WlKeyboard.MaximumVersion), 1, false, args);
-			return new WlKeyboard(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "wl_keyboard", Math.Min(Version, WlKeyboard.MaximumVersion), 1, false, args);
+			return new WlKeyboard(Display, proxyHandle);
 		}
 	}
 	public WlTouch GetTouch()
@@ -76,8 +76,8 @@ public sealed unsafe class WlSeat : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(2, "wl_touch", Math.Min(Version, WlTouch.MaximumVersion), 1, false, args);
-			return new WlTouch(Display, handle);
+			var proxyHandle = base.MarshalRequest(2, "wl_touch", Math.Min(Version, WlTouch.MaximumVersion), 1, false, args);
+			return new WlTouch(Display, proxyHandle);
 		}
 	}
 	public void Release()

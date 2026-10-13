@@ -60,8 +60,8 @@ public sealed unsafe class WpFractionalScaleManagerV1 : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@surface));
 			}
 			args.Object(1, @surface);
-			var handle = base.MarshalRequest(1, "wp_fractional_scale_v1", Math.Min(Version, WpFractionalScaleV1.MaximumVersion), 1, false, args);
-			return new WpFractionalScaleV1(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "wp_fractional_scale_v1", Math.Min(Version, WpFractionalScaleV1.MaximumVersion), 1, false, args);
+			return new WpFractionalScaleV1(Display, proxyHandle);
 		}
 	}
 }

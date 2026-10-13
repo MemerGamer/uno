@@ -60,8 +60,8 @@ public sealed unsafe class WpViewporter : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@surface));
 			}
 			args.Object(1, @surface);
-			var handle = base.MarshalRequest(1, "wp_viewport", Math.Min(Version, WpViewport.MaximumVersion), 1, false, args);
-			return new WpViewport(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "wp_viewport", Math.Min(Version, WpViewport.MaximumVersion), 1, false, args);
+			return new WpViewport(Display, proxyHandle);
 		}
 	}
 }

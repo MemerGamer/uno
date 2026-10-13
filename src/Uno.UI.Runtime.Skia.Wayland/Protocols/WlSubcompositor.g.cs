@@ -71,8 +71,8 @@ public sealed unsafe class WlSubcompositor : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@parent));
 			}
 			args.Object(2, @parent);
-			var handle = base.MarshalRequest(1, "wl_subsurface", Math.Min(Version, WlSubsurface.MaximumVersion), 1, false, args);
-			return new WlSubsurface(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "wl_subsurface", Math.Min(Version, WlSubsurface.MaximumVersion), 1, false, args);
+			return new WlSubsurface(Display, proxyHandle);
 		}
 	}
 }

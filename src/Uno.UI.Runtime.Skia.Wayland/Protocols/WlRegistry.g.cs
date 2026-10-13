@@ -52,8 +52,8 @@ public sealed unsafe class WlRegistry : WaylandProxy
 			args.Uint(0, @name);
 			args.String(1, @interface);
 			args.Uint(2, version);
-			var handle = base.MarshalRequest(0, @interface, version, 1, false, args);
-			return ProtocolCatalog.Create(@interface, Display, handle);
+			var proxyHandle = base.MarshalRequest(0, @interface, version, 1, false, args);
+			return ProtocolCatalog.Create(@interface, Display, proxyHandle);
 		}
 	}
 	private static readonly nint* Listener = CreateListener();

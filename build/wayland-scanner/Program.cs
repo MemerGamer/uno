@@ -18,6 +18,8 @@ public static class Program
 		return 0;
 	}
 
+	private static readonly HashSet<string> _proxyMembers = new(StringComparer.Ordinal) { "Display", "Handle", "Version", "InterfaceName", "Dispose" };
+
 	public static string Name(string value) => string.Concat(value.Split('_', '-').Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
 	private static string Attr(XElement node, string name, string fallback = "") => (string?)node.Attribute(name) ?? fallback;
 	private static int Since(XElement node) => int.Parse(Attr(node, "since", "1"), CultureInfo.InvariantCulture);
@@ -192,10 +194,10 @@ public static class Program
 			}
 			var resultInterface = newId is null ? "null" : dynamic ? "@interface" : Quote(Attr(newId, "interface"));
 			var version = newId is null ? "Version" : dynamic ? "version" : $"Math.Min(Version, {Type(newId)}.MaximumVersion)";
-			builder.AppendLine($"\t\t{(newId is null ? "" : "var handle = ")}base.MarshalRequest({opcode}, {resultInterface}, {version}, {Since(request)}, {(Attr(request, "type") == "destructor" ? "true" : "false")}, args);");
+			builder.AppendLine($"\t\t{(newId is null ? "" : "var proxyHandle = ")}base.MarshalRequest({opcode}, {resultInterface}, {version}, {Since(request)}, {(Attr(request, "type") == "destructor" ? "true" : "false")}, args);");
 			if (newId is not null)
 			{
-				builder.AppendLine(dynamic ? "\t\treturn ProtocolCatalog.Create(@interface, Display, handle);" : $"\t\treturn new {Type(newId)}(Display, handle);");
+				builder.AppendLine(dynamic ? "\t\treturn ProtocolCatalog.Create(@interface, Display, proxyHandle);" : $"\t\treturn new {Type(newId)}(Display, proxyHandle);");
 			}
 			builder.AppendLine("\t\t}\n\t}");
 			var requestText = builder.ToString(requestStart, builder.Length - requestStart);
@@ -222,6 +224,8 @@ public static class Program
 		{
 			var evt = events[opcode];
 			var eventName = Name(Attr(evt, "name"));
+			// Events named like a WaylandProxy member (xdg_exported.handle) get a suffix to avoid hiding it.
+			var eventMember = _proxyMembers.Contains(eventName) ? eventName + "Event" : eventName;
 			var args = evt.Elements("arg").ToArray();
 			builder.AppendLine($"\tpublic sealed class {eventName}EventArgs : EventArgs\n\t{{");
 			foreach (var arg in args)
@@ -233,7 +237,7 @@ public static class Program
 			{
 				builder.AppendLine($"\t\t\t{Name(Attr(args[i], "name"))} = arg{i};");
 			}
-			builder.AppendLine($"\t\t}}\n\t}}\n\tpublic event EventHandler<{eventName}EventArgs>? {eventName};");
+			builder.AppendLine($"\t\t}}\n\t}}\n\tpublic event EventHandler<{eventName}EventArgs>? {eventMember};");
 			builder.AppendLine($"\t[UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]\n\tprivate static void On{opcode}(nint data, nint proxy{string.Concat(args.Select((arg, i) => ", " + NativeType(arg) + " arg" + i))})\n\t{{\n\t\tvar target = Target<{name}>(data);\n\t\ttry\n\t\t{{");
 			var values = args.Select((arg, i) => Attr(arg, "type") switch
 			{
@@ -246,9 +250,9 @@ public static class Program
 			});
 			foreach (var pair in args.Select((arg, i) => (arg, i)).Where(pair => Attr(pair.arg, "type") == "fd"))
 			{
-				builder.AppendLine($"\t\t\tif (target.{eventName} is null)\n\t\t\t{{\n\t\t\t\tPosix.close(arg{pair.i});\n\t\t\t\treturn;\n\t\t\t}}");
+				builder.AppendLine($"\t\t\tif (target.{eventMember} is null)\n\t\t\t{{\n\t\t\t\tPosix.close(arg{pair.i});\n\t\t\t\treturn;\n\t\t\t}}");
 			}
-			builder.AppendLine($"\t\t\tvar args = new {eventName}EventArgs({string.Join(", ", values)});\n\t\t\ttarget.{eventName}?.Invoke(target, args);\n\t\t}}\n\t\tcatch (Exception error)\n\t\t{{\n\t\t\ttarget.Display.CaptureCallbackError(error);\n\t\t}}");
+			builder.AppendLine($"\t\t\tvar args = new {eventName}EventArgs({string.Join(", ", values)});\n\t\t\ttarget.{eventMember}?.Invoke(target, args);\n\t\t}}\n\t\tcatch (Exception error)\n\t\t{{\n\t\t\ttarget.Display.CaptureCallbackError(error);\n\t\t}}");
 			if (Attr(evt, "type") == "destructor")
 			{
 				builder.AppendLine("\t\tfinally\n\t\t{\n\t\t\ttarget.DisposeLocal();\n\t\t}");

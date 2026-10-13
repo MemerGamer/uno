@@ -91,8 +91,8 @@ public sealed unsafe class WlSurface : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(3, "wl_callback", Math.Min(Version, WlCallback.MaximumVersion), 1, false, args);
-			return new WlCallback(Display, handle);
+			var proxyHandle = base.MarshalRequest(3, "wl_callback", Math.Min(Version, WlCallback.MaximumVersion), 1, false, args);
+			return new WlCallback(Display, proxyHandle);
 		}
 	}
 	public void SetOpaqueRegion(WlRegion? @region)
@@ -174,8 +174,8 @@ public sealed unsafe class WlSurface : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(11, "wl_callback", Math.Min(Version, WlCallback.MaximumVersion), 7, false, args);
-			return new WlCallback(Display, handle);
+			var proxyHandle = base.MarshalRequest(11, "wl_callback", Math.Min(Version, WlCallback.MaximumVersion), 7, false, args);
+			return new WlCallback(Display, proxyHandle);
 		}
 	}
 	private static readonly nint* Listener = CreateListener();

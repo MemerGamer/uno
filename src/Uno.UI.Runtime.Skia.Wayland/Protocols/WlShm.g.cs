@@ -206,8 +206,8 @@ public sealed unsafe class WlShm : WaylandProxy
 			using var args = new RequestArguments(3);
 			args.Int(1, @fd);
 			args.Int(2, @size);
-			var handle = base.MarshalRequest(0, "wl_shm_pool", Math.Min(Version, WlShmPool.MaximumVersion), 1, false, args);
-			return new WlShmPool(Display, handle);
+			var proxyHandle = base.MarshalRequest(0, "wl_shm_pool", Math.Min(Version, WlShmPool.MaximumVersion), 1, false, args);
+			return new WlShmPool(Display, proxyHandle);
 		}
 	}
 	public void Release()

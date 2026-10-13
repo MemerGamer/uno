@@ -46,8 +46,8 @@ public sealed unsafe class WlCompositor : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(0, "wl_surface", Math.Min(Version, WlSurface.MaximumVersion), 1, false, args);
-			return new WlSurface(Display, handle);
+			var proxyHandle = base.MarshalRequest(0, "wl_surface", Math.Min(Version, WlSurface.MaximumVersion), 1, false, args);
+			return new WlSurface(Display, proxyHandle);
 		}
 	}
 	public WlRegion CreateRegion()
@@ -55,8 +55,8 @@ public sealed unsafe class WlCompositor : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(1, "wl_region", Math.Min(Version, WlRegion.MaximumVersion), 1, false, args);
-			return new WlRegion(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "wl_region", Math.Min(Version, WlRegion.MaximumVersion), 1, false, args);
+			return new WlRegion(Display, proxyHandle);
 		}
 	}
 	public void Release()
