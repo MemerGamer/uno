@@ -20,6 +20,7 @@ internal sealed class SkiaDrawingFactory :
 	IDrawingFactory<ISoftwareRenderTarget>,
 	IDrawingFactory<IMetalRenderTarget>,
 	IDrawingFactory<IVulkanRenderTarget>,
+	IGpuDrawingFactory,
 	System.IDisposable
 {
 	private const long WebGlResourceCacheBytes = 256 * 1024 * 1024;
@@ -235,6 +236,13 @@ internal sealed class SkiaDrawingFactory :
 		// Straight into whatever framebuffer the host handed over; retention (so the damage region survives the
 		// host's present) is the host's business, not the backend's.
 		return new SkiaPresentSession(_glSurface.Canvas, this);
+	}
+
+	public void AbandonContext()
+	{
+		_glContext?.AbandonContext(releaseResources: false);
+		_vulkanContext?.AbandonContext(releaseResources: false);
+		_metalContext?.AbandonContext(releaseResources: false);
 	}
 
 	public void Dispose()
