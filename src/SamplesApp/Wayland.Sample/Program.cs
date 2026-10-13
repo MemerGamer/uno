@@ -80,6 +80,8 @@ public sealed class App : Application
 			timer.Start();
 		}
 		window.Content = canvas;
+		// The canvas has a background, so it is hit-testable as a drop target.
+		DataTransferProbe.Attach(canvas);
 		window.Activate();
 		var display = Windows.Graphics.Display.DisplayInformation.GetForCurrentView();
 		void ReportDisplay() => Console.WriteLine($"DisplayInformation: {display.ScreenWidthInRawPixels}x{display.ScreenHeightInRawPixels} scale {display.RawPixelsPerViewPixel} dpi {display.LogicalDpi} diagonal {display.DiagonalSizeInInches?.ToString() ?? "n/a"}");
