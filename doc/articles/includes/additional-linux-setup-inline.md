@@ -4,7 +4,7 @@
 
     ```bash
     sudo apt update
-    sudo apt install mesa-utils libgl1-mesa-glx ttf-mscorefonts-installer dbus libfontconfig1 libxrandr2 libxi-dev
+    sudo apt install mesa-utils libgl1-mesa-glx ttf-mscorefonts-installer dbus libfontconfig1 libxrandr2 libxi-dev libwayland-client0 libwayland-cursor0 libwayland-egl1 libxkbcommon0
     ```
 
 ## [**ArchLinux 5.8.14 or later / Manjaro**](#tab/archlinux2004)
@@ -18,7 +18,7 @@
 - Install the necessary dependencies
 
     ```bash
-    sudo pacman -S dotnet-targeting-pack dotnet-sdk dotnet-host dotnet-runtime python ninja gn aspnet-runtime dbus libxrandr libxi
+    sudo pacman -S dotnet-targeting-pack dotnet-sdk dotnet-host dotnet-runtime python ninja gn aspnet-runtime dbus libxrandr libxi wayland libxkbcommon
     ```
 
 ---

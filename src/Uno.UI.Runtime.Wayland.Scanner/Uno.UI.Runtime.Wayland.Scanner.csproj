@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<!--
+		Generates the Wayland protocol bindings of Uno.UI.Runtime.Wayland from the vendored protocol XMLs.
+		The output is checked in; regenerate it after adding or updating a protocol XML (see Program.cs).
+	-->
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<TargetFramework>$(NetPrevious)</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<IsPackable>false</IsPackable>
+	</PropertyGroup>
+</Project>
