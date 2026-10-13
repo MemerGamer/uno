@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<!-- Minimal code-only Uno app forcing the native Wayland host, for runtime smoke tests under a nested compositor. -->
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<TargetFramework>$(NetCurrent)</TargetFramework>
+		<Nullable>enable</Nullable>
+		<IsUnoHead>true</IsUnoHead>
+		<IsPackable>false</IsPackable>
+		<RollForward>Major</RollForward>
+	</PropertyGroup>
+	<ItemGroup>
+		<PackageReference Include="SkiaSharp" />
+		<PackageReference Include="SkiaSharp.NativeAssets.Linux" />
+		<PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" />
+	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\..\Uno.Foundation\Uno.Foundation.Skia.csproj" />
+		<ProjectReference Include="..\..\Uno.UI.Composition\Uno.UI.Composition.Skia.csproj" />
+		<ProjectReference Include="..\..\Uno.UI.Dispatching\Uno.UI.Dispatching.Skia.csproj" />
+		<ProjectReference Include="..\..\Uno.UWP\Uno.Skia.csproj" />
+		<ProjectReference Include="..\..\Uno.UI\Uno.UI.Skia.csproj" />
+		<ProjectReference Include="..\..\Uno.UI.Runtime.Skia.Wayland\Uno.UI.Runtime.Skia.Wayland.csproj" />
+	</ItemGroup>
+</Project>
