@@ -26,6 +26,7 @@
 		<Compile Include="../../../src/Uno.UI/UI/Xaml/Controls/TextBox/Extensions/*Ime*.skia.cs" Link="Input/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandDecorationLayout.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandToplevelStates.cs" Link="Hosting/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandNonClientRegions.cs" Link="Hosting/%(Filename)%(Extension)" />
+		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandPointerPress.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandXkb.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandKeyboardCompose.cs" Link="Input/%(Filename)%(Extension)" />
 		<None Include="../protocols/*.xml" Link="protocols/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
 	</ItemGroup>
 </Project>

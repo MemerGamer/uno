@@ -110,7 +110,10 @@ internal sealed partial class WaylandNativeOpenGLWrapper : INativeOpenGLWrapper
 		var context = eglGetCurrentContext();
 		var draw = eglGetCurrentSurface(EglDraw);
 		var read = eglGetCurrentSurface(EglRead);
-		_ = WaylandRenderNative.eglBindAPI(_api);
+		if (WaylandRenderNative.eglBindAPI(_api) == 0)
+		{
+			throw new InvalidOperationException("eglBindAPI failed.");
+		}
 		if (WaylandRenderNative.eglMakeCurrent(_display, _pbuffer, _pbuffer, _context) == 0)
 		{
 			_ = WaylandRenderNative.eglBindAPI(api);
@@ -118,15 +121,22 @@ internal sealed partial class WaylandNativeOpenGLWrapper : INativeOpenGLWrapper
 		}
 		return Disposable.Create(() =>
 		{
-			if (display == IntPtr.Zero)
+			// OpenGL and OpenGL ES share the thread's current context: release ours under its own API,
+			// or bind the previous API before restoring its context.
+			bool restored;
+			if (context == IntPtr.Zero)
 			{
-				_ = WaylandRenderNative.eglMakeCurrent(_display, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+				restored = WaylandRenderNative.eglMakeCurrent(_display, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero) != 0;
+				restored &= WaylandRenderNative.eglBindAPI(api) != 0;
 			}
 			else
 			{
-				_ = WaylandRenderNative.eglMakeCurrent(display, draw, read, context);
+				restored = WaylandRenderNative.eglBindAPI(api) != 0 && WaylandRenderNative.eglMakeCurrent(display, draw, read, context) != 0;
 			}
-			_ = WaylandRenderNative.eglBindAPI(api);
+			if (!restored && this.Log().IsEnabled(LogLevel.Error))
+			{
+				this.Log().Error("Failed to restore the previous EGL context.");
+			}
 		});
 	}
 

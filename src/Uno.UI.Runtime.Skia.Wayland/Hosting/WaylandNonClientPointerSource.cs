@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Uno.UI.UI.Input.Internal;
+using Uno.WinUI.Runtime.Skia.Wayland.Input;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 using Windows.Foundation;
 using Windows.Graphics;
@@ -19,7 +20,7 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 // testing, so presses are resolved after XAML routed them: one left unhandled in a caption region starts
 // xdg_toplevel.move (a double-click toggles maximize, a right-click opens the window menu), while border
 // regions start a resize. Interactive elements in the title bar handle their presses and keep working.
-internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPointerSource
+internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPointerSource, IDisposable
 {
 	private const uint LeftButton = 0x110; // BTN_LEFT
 	private const uint RightButton = 0x111; // BTN_RIGHT
@@ -35,8 +36,12 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 	private readonly WaylandNonClientRegions _regions = new();
 	private readonly PointerEventHandler _pressedHandler;
 
-	// Written on the dispatch thread: the latest button press on the content surface.
-	private volatile Press? _press;
+	private readonly WaylandProtocolInputConnection? _input;
+	private readonly WaylandPointerInputSource _pointer;
+	private readonly WaylandPointerPress _press = new(WaylandConnection.PostToUI);
+
+	// Set on the UI thread when the window closes; read before posting requests to the dispatch thread.
+	private volatile bool _disposed;
 
 	// UI thread state.
 	private UIElement? _root;
@@ -53,12 +58,14 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 		_post = post;
 		_pressedHandler = OnPointerPressed;
 		ExtendsContent = window.AppWindow.TitleBar.ExtendsContentIntoTitleBar;
-		if (host.Input is { } input)
+		_input = host.Input;
+		_pointer = host.PointerSource;
+		if (_input is { } input)
 		{
 			input.PointerButton += OnPointerButton;
 		}
 		// The visual tree root may not exist yet; a pointer always enters before it presses.
-		host.PointerSource.PointerEntered += (_, _) => AttachToRoot();
+		_pointer.PointerEntered += OnPointerEntered;
 	}
 
 	// UI thread.
@@ -97,12 +104,31 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 	{
 		if (args.State == 1)
 		{
-			_press = new Press(args.Serial, args.Button);
+			_press.Queue(args.Serial, args.Button);
 		}
+	}
+
+	private void OnPointerEntered(object sender, Windows.UI.Core.PointerEventArgs args) => AttachToRoot();
+
+	// UI thread, when the window closes: requests posted afterwards would target destroyed protocol objects.
+	public void Dispose()
+	{
+		_disposed = true;
+		_pointer.PointerEntered -= OnPointerEntered;
+		if (_input is { } input)
+		{
+			input.PointerButton -= OnPointerButton;
+		}
+		_root?.RemoveHandler(UIElement.PointerPressedEvent, _pressedHandler);
+		_root = null;
 	}
 
 	private void AttachToRoot()
 	{
+		if (_disposed)
+		{
+			return;
+		}
 		var root = _window.RootElement;
 		if (root != _root)
 		{
@@ -115,10 +141,9 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 	// Runs last in the bubbling route, so args.Handled tells whether an element took the press.
 	private void OnPointerPressed(object sender, PointerRoutedEventArgs args)
 	{
-		if (!ExtendsContent
+		if (_disposed || !ExtendsContent
 			|| args.Pointer.PointerDeviceType != PointerDeviceType.Mouse
 			|| _window.AppWindow.Presenter is FullScreenPresenter
-			|| _press is not { } press
 			|| _connection.Seat is not { } seat)
 		{
 			return;
@@ -130,11 +155,10 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 			PointerUpdateKind.RightButtonPressed => RightButton,
 			_ => 0u,
 		};
-		if (button == 0 || button != press.Button)
+		if (button == 0 || _press.Take(button) is not { } serial)
 		{
 			return;
 		}
-		_press = null;
 		var position = point.Position;
 		var scale = _scale();
 		var (area, edges) = _regions.HitTest(position.X * scale, position.Y * scale, _window.AppWindow.TitleBar.Height);
@@ -143,10 +167,10 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 		{
 			case WaylandNonClientArea.Resize when button == LeftButton && presenter is not { IsResizable: false }:
 				Trace($"resize edges={edges}");
-				_post(() => _toplevel.Resize(seat, press.Serial, edges));
+				Post(() => _toplevel.Resize(seat, serial, edges));
 				break;
 			case WaylandNonClientArea.Icon:
-				ShowWindowMenu(seat, press.Serial, position);
+				ShowWindowMenu(seat, serial, position);
 				break;
 			case WaylandNonClientArea.Caption when button == LeftButton && !args.Handled:
 				var isDoubleClick = point.Timestamp - _lastClickTime <= DoubleClickTime
@@ -157,7 +181,7 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 				if (!isDoubleClick)
 				{
 					Trace("move");
-					_post(() => _toplevel.Move(seat, press.Serial));
+					Post(() => _toplevel.Move(seat, serial));
 				}
 				else if (presenter is { IsMaximizable: true, IsResizable: true })
 				{
@@ -173,7 +197,7 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 				}
 				break;
 			case WaylandNonClientArea.Caption when button == RightButton && !args.Handled && !HasContextFlyout(args.OriginalSource as DependencyObject):
-				ShowWindowMenu(seat, press.Serial, position);
+				ShowWindowMenu(seat, serial, position);
 				break;
 		}
 	}
@@ -182,8 +206,16 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 	private void ShowWindowMenu(WlSeat seat, uint serial, Point position)
 	{
 		Trace("window menu");
-		_post(() => _toplevel.ShowWindowMenu(seat, serial, (int)position.X, (int)position.Y));
+		Post(() => _toplevel.ShowWindowMenu(seat, serial, (int)position.X, (int)position.Y));
 	}
+
+	private void Post(Action action) => _post(() =>
+	{
+		if (!_disposed)
+		{
+			action();
+		}
+	});
 
 	// A context flyout opens on release, so its element leaves the right press unhandled.
 	private static bool HasContextFlyout(DependencyObject? element)
@@ -205,6 +237,4 @@ internal sealed class WaylandNonClientPointerSource : INativeInputNonClientPoint
 			WaylandDiagnostics.Trace($"window{_windowId}: non-client {action}");
 		}
 	}
-
-	private sealed record Press(uint Serial, uint Button);
 }
