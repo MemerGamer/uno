@@ -46,6 +46,8 @@ internal sealed class WaylandConnection : IDisposable
 			CursorShape = Environment.GetEnvironmentVariable("UNO_WAYLAND_DISABLE_CURSOR_SHAPE") == "1"
 				? null
 				: TryBind<WpCursorShapeManagerV1>(WpCursorShapeManagerV1.ProtocolName, 1);
+			TextInputManager = TryBind<ZwpTextInputManagerV3>(ZwpTextInputManagerV3.ProtocolName, 1);
+			Exporter = TryBind<ZxdgExporterV2>(ZxdgExporterV2.ProtocolName, 1);
 			// TODO: multiple seats; the first advertised one is used for now.
 			Seat = TryBind<WlSeat>(WlSeat.ProtocolName, 9);
 			if (Seat is not null)
@@ -101,6 +103,8 @@ internal sealed class WaylandConnection : IDisposable
 	internal XdgActivationV1? Activation { get; }
 	internal XdgToplevelIconManagerV1? IconManager { get; }
 	internal WpCursorShapeManagerV1? CursorShape { get; }
+	internal ZwpTextInputManagerV3? TextInputManager { get; }
+	internal ZxdgExporterV2? Exporter { get; }
 	internal WlSeat? Seat { get; }
 
 	// Written on the dispatch thread; read under SyncRoot or on the dispatch thread.
@@ -163,6 +167,11 @@ internal sealed class WaylandConnection : IDisposable
 		}
 		_defaultOutput = first;
 	}
+
+	// Dispatch thread: allows keyboard compose to reset when the input method produces text.
+	internal event EventHandler? TextInputReceived;
+
+	internal void NotifyTextInputReceived() => TextInputReceived?.Invoke(this, EventArgs.Empty);
 
 	internal static void PostToUI(Action action)
 		=> NativeDispatcher.Main.Enqueue(action, NativeDispatcherPriority.High);

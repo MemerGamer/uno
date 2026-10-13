@@ -46,6 +46,11 @@ public sealed class GeneratorTests
 			{
 				Assert.AreEqual(File.ReadAllText(file), File.ReadAllText(Path.Combine(second, Path.GetFileName(file))));
 			}
+			var exported = File.ReadAllText(Path.Combine(first, "ZxdgExportedV2.g.cs"));
+			StringAssert.Contains(exported, "event EventHandler<HandleEventArgs>? HandleEvent;");
+			StringAssert.Contains(exported, "target.HandleEvent?.Invoke(target, args)");
+			Assert.IsFalse(File.Exists(Path.Combine(first, "ZxdgImportedV2.g.cs")));
+			Assert.IsFalse(File.Exists(Path.Combine(first, "ZxdgImporterV2.g.cs")));
 			var registry = File.ReadAllText(Path.Combine(first, "WlRegistry.g.cs"));
 			StringAssert.Contains(registry, "RequestArguments(4)");
 			StringAssert.Contains(registry, "args.String(1, @interface)");

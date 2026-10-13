@@ -3,8 +3,8 @@
 	<!--
 		Host-independent tests of the Wayland runtime: the protocol scanner, the generated bindings and the
 		display dispatch (against an in-process protocol peer), pipe transfers, and the pure window, frame, input,
-		selection and drop logic. The sources are linked rather than referenced, so the tests need neither Uno.UI nor
-		a compositor; display tests need libwayland-client and compose tests libxkbcommon.
+		text-input, selection and drop logic. The sources are linked rather than referenced, so the tests need neither
+		Uno.UI nor a compositor; display tests need libwayland-client and compose tests libxkbcommon.
 	-->
 	<PropertyGroup>
 		<TargetFramework>$(NetUnitTests)</TargetFramework>
@@ -26,6 +26,8 @@
 		<Compile Include="..\Uno.UI.Runtime.Wayland\ApplicationModel\DataTransfer\WaylandFileUris.cs" Link="DataTransfer\WaylandFileUris.cs" />
 		<Compile Include="..\Uno.UI.Runtime.Wayland\ApplicationModel\DataTransfer\WaylandDropNegotiation.cs" Link="DataTransfer\WaylandDropNegotiation.cs" />
 		<Compile Include="..\Uno.UI.Runtime.Wayland\ApplicationModel\DataTransfer\WaylandSelectionSerial.cs" Link="DataTransfer\WaylandSelectionSerial.cs" />
+		<Compile Include="..\Uno.UI.Runtime.Wayland\Input\WaylandTextInputStateHistory.cs" Link="Input\WaylandTextInputStateHistory.cs" />
+		<Compile Include="..\Uno.UI.Runtime.Wayland\Input\WaylandTextInputText.cs" Link="Input\WaylandTextInputText.cs" />
 		<None Include="..\Uno.UI.Runtime.Wayland\Protocols\*.xml" Link="protocols\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
 	</ItemGroup>
 
