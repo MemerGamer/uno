@@ -272,6 +272,15 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 		_levelThree = false;
 		Modifiers = VirtualKeyModifiers.None;
 	}
+	// Dispatch thread.
+	internal void ResetCompose()
+	{
+		if (!_disposed)
+		{
+			_compose?.Reset();
+		}
+	}
+
 	public void Dispose()
 	{
 		if (_disposed)

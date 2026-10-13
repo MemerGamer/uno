@@ -71,10 +71,13 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 			connection.Display.Post(() => seat.Capabilities(connection.SeatCapabilities));
 		}
 
+		connection.TextInputReceived += OnTextInputReceived;
+
 		// Input sources must exist before registration: Uno resolves them per IXamlRootHost.
 		XamlRootMap.Register(xamlRoot, this);
 	}
 
+	internal WlSurface Surface => _surface;
 	internal WaylandPointerInputSource PointerSource { get; }
 	internal WaylandProtocolInputConnection? Input => _input;
 	internal WaylandKeyboardInputSource KeyboardSource { get; }
@@ -346,6 +349,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 		var display = _connection.Display;
 		lock (display.SyncRoot)
 		{
+			_connection.TextInputReceived -= OnTextInputReceived;
 			_seat?.Dispose();
 			DisposeCursor();
 		}
@@ -368,6 +372,9 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 	}
 
 	void IDisposable.Dispose() => Dispose(() => { });
+
+	// Dispatch thread: text produced by the input method ends any pending dead-key or Compose sequence.
+	private void OnTextInputReceived(object? sender, EventArgs e) => KeyboardSource.ResetCompose();
 
 	// Used when the compositor advertises no wl_seat: sources exist but never receive devices.
 	private sealed class NoInputConnection : IWaylandInputConnection
