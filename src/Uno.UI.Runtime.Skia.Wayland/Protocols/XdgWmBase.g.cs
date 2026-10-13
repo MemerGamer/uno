@@ -66,8 +66,8 @@ public sealed unsafe class XdgWmBase : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(1, "xdg_positioner", Math.Min(Version, XdgPositioner.MaximumVersion), 1, false, args);
-			return new XdgPositioner(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "xdg_positioner", Math.Min(Version, XdgPositioner.MaximumVersion), 1, false, args);
+			return new XdgPositioner(Display, proxyHandle);
 		}
 	}
 	public XdgSurface GetXdgSurface(WlSurface @surface)
@@ -81,8 +81,8 @@ public sealed unsafe class XdgWmBase : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@surface));
 			}
 			args.Object(1, @surface);
-			var handle = base.MarshalRequest(2, "xdg_surface", Math.Min(Version, XdgSurface.MaximumVersion), 1, false, args);
-			return new XdgSurface(Display, handle);
+			var proxyHandle = base.MarshalRequest(2, "xdg_surface", Math.Min(Version, XdgSurface.MaximumVersion), 1, false, args);
+			return new XdgSurface(Display, proxyHandle);
 		}
 	}
 	public void Pong(uint @serial)

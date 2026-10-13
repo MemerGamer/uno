@@ -51,8 +51,8 @@ public sealed unsafe class XdgActivationV1 : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(1, "xdg_activation_token_v1", Math.Min(Version, XdgActivationTokenV1.MaximumVersion), 1, false, args);
-			return new XdgActivationTokenV1(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "xdg_activation_token_v1", Math.Min(Version, XdgActivationTokenV1.MaximumVersion), 1, false, args);
+			return new XdgActivationTokenV1(Display, proxyHandle);
 		}
 	}
 	public void Activate(string @token, WlSurface @surface)

@@ -51,8 +51,8 @@ public sealed unsafe class ZwpTabletManagerV2 : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@seat));
 			}
 			args.Object(1, @seat);
-			var handle = base.MarshalRequest(0, "zwp_tablet_seat_v2", Math.Min(Version, ZwpTabletSeatV2.MaximumVersion), 1, false, args);
-			return new ZwpTabletSeatV2(Display, handle);
+			var proxyHandle = base.MarshalRequest(0, "zwp_tablet_seat_v2", Math.Min(Version, ZwpTabletSeatV2.MaximumVersion), 1, false, args);
+			return new ZwpTabletSeatV2(Display, proxyHandle);
 		}
 	}
 	public void Destroy()

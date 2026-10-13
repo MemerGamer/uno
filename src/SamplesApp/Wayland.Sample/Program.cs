@@ -79,6 +79,12 @@ public sealed class App : Application
 			timer.Tick += (_, _) => Console.WriteLine($"UI frames: {frames}");
 			timer.Start();
 		}
+		if (PortalsSample.IsEnabled)
+		{
+			var portals = new StackPanel { Spacing = 8 };
+			PortalsSample.Attach(portals);
+			Place(canvas, portals, 400, 140);
+		}
 		window.Content = canvas;
 		// The canvas has a background, so it is hit-testable as a drop target.
 		DataTransferProbe.Attach(canvas);

@@ -42,8 +42,8 @@ public sealed unsafe class ZwpPrimarySelectionDeviceManagerV1 : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(0, "zwp_primary_selection_source_v1", Math.Min(Version, ZwpPrimarySelectionSourceV1.MaximumVersion), 1, false, args);
-			return new ZwpPrimarySelectionSourceV1(Display, handle);
+			var proxyHandle = base.MarshalRequest(0, "zwp_primary_selection_source_v1", Math.Min(Version, ZwpPrimarySelectionSourceV1.MaximumVersion), 1, false, args);
+			return new ZwpPrimarySelectionSourceV1(Display, proxyHandle);
 		}
 	}
 	public ZwpPrimarySelectionDeviceV1 GetDevice(WlSeat @seat)
@@ -57,8 +57,8 @@ public sealed unsafe class ZwpPrimarySelectionDeviceManagerV1 : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@seat));
 			}
 			args.Object(1, @seat);
-			var handle = base.MarshalRequest(1, "zwp_primary_selection_device_v1", Math.Min(Version, ZwpPrimarySelectionDeviceV1.MaximumVersion), 1, false, args);
-			return new ZwpPrimarySelectionDeviceV1(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "zwp_primary_selection_device_v1", Math.Min(Version, ZwpPrimarySelectionDeviceV1.MaximumVersion), 1, false, args);
+			return new ZwpPrimarySelectionDeviceV1(Display, proxyHandle);
 		}
 	}
 	public void Destroy()

@@ -54,8 +54,8 @@ public sealed unsafe class WlShell : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@surface));
 			}
 			args.Object(1, @surface);
-			var handle = base.MarshalRequest(0, "wl_shell_surface", Math.Min(Version, WlShellSurface.MaximumVersion), 1, false, args);
-			return new WlShellSurface(Display, handle);
+			var proxyHandle = base.MarshalRequest(0, "wl_shell_surface", Math.Min(Version, WlShellSurface.MaximumVersion), 1, false, args);
+			return new WlShellSurface(Display, proxyHandle);
 		}
 	}
 }

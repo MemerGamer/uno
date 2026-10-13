@@ -65,8 +65,8 @@ public sealed unsafe class XdgSurface : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(1, "xdg_toplevel", Math.Min(Version, XdgToplevel.MaximumVersion), 1, false, args);
-			return new XdgToplevel(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "xdg_toplevel", Math.Min(Version, XdgToplevel.MaximumVersion), 1, false, args);
+			return new XdgToplevel(Display, proxyHandle);
 		}
 	}
 	public XdgPopup GetPopup(XdgSurface? @parent, XdgPositioner @positioner)
@@ -85,8 +85,8 @@ public sealed unsafe class XdgSurface : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@positioner));
 			}
 			args.Object(2, @positioner);
-			var handle = base.MarshalRequest(2, "xdg_popup", Math.Min(Version, XdgPopup.MaximumVersion), 1, false, args);
-			return new XdgPopup(Display, handle);
+			var proxyHandle = base.MarshalRequest(2, "xdg_popup", Math.Min(Version, XdgPopup.MaximumVersion), 1, false, args);
+			return new XdgPopup(Display, proxyHandle);
 		}
 	}
 	public void SetWindowGeometry(int @x, int @y, int @width, int @height)

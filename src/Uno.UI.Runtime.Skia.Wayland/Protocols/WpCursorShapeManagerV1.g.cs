@@ -55,8 +55,8 @@ public sealed unsafe class WpCursorShapeManagerV1 : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@pointer));
 			}
 			args.Object(1, @pointer);
-			var handle = base.MarshalRequest(1, "wp_cursor_shape_device_v1", Math.Min(Version, WpCursorShapeDeviceV1.MaximumVersion), 1, false, args);
-			return new WpCursorShapeDeviceV1(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "wp_cursor_shape_device_v1", Math.Min(Version, WpCursorShapeDeviceV1.MaximumVersion), 1, false, args);
+			return new WpCursorShapeDeviceV1(Display, proxyHandle);
 		}
 	}
 	public WpCursorShapeDeviceV1 GetTabletToolV2(ZwpTabletToolV2 @tablet_tool)
@@ -70,8 +70,8 @@ public sealed unsafe class WpCursorShapeManagerV1 : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@tablet_tool));
 			}
 			args.Object(1, @tablet_tool);
-			var handle = base.MarshalRequest(2, "wp_cursor_shape_device_v1", Math.Min(Version, WpCursorShapeDeviceV1.MaximumVersion), 1, false, args);
-			return new WpCursorShapeDeviceV1(Display, handle);
+			var proxyHandle = base.MarshalRequest(2, "wp_cursor_shape_device_v1", Math.Min(Version, WpCursorShapeDeviceV1.MaximumVersion), 1, false, args);
+			return new WpCursorShapeDeviceV1(Display, proxyHandle);
 		}
 	}
 }

@@ -54,8 +54,8 @@ public sealed unsafe class WlDataDeviceManager : WaylandProxy
 		lock (Display.SyncRoot)
 		{
 			using var args = new RequestArguments(1);
-			var handle = base.MarshalRequest(0, "wl_data_source", Math.Min(Version, WlDataSource.MaximumVersion), 1, false, args);
-			return new WlDataSource(Display, handle);
+			var proxyHandle = base.MarshalRequest(0, "wl_data_source", Math.Min(Version, WlDataSource.MaximumVersion), 1, false, args);
+			return new WlDataSource(Display, proxyHandle);
 		}
 	}
 	public WlDataDevice GetDataDevice(WlSeat @seat)
@@ -69,8 +69,8 @@ public sealed unsafe class WlDataDeviceManager : WaylandProxy
 				throw new ArgumentException("The object belongs to another Wayland display.", nameof(@seat));
 			}
 			args.Object(1, @seat);
-			var handle = base.MarshalRequest(1, "wl_data_device", Math.Min(Version, WlDataDevice.MaximumVersion), 1, false, args);
-			return new WlDataDevice(Display, handle);
+			var proxyHandle = base.MarshalRequest(1, "wl_data_device", Math.Min(Version, WlDataDevice.MaximumVersion), 1, false, args);
+			return new WlDataDevice(Display, proxyHandle);
 		}
 	}
 	public void Release()
