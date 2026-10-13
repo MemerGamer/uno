@@ -99,19 +99,20 @@ public class Given_AppWindow
 		{
 			var adjustedSize = new SizeInt32() { Width = originalSize.Width + 10, Height = originalSize.Height + 10 };
 			appWindow.Resize(adjustedSize);
-			await TestServices.WindowHelper.WaitFor(() => args is not null);
+			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => args is not null));
 			Assert.IsTrue(args.DidSizeChange);
 			Assert.AreEqual(appWindow.Size, adjustedSize);
 
-			await ActivateAndWaitForBounds(newWindow);
-
-			Assert.AreEqual(appWindow.Size, adjustedSize);
+			await ActivateAndWaitForBounds(newWindow, () =>
+			{
+				Assert.AreEqual(adjustedSize, appWindow.Size);
+				Assert.AreEqual(OverlappedPresenterState.Restored, ((OverlappedPresenter)appWindow.Presenter).State);
+			});
 		}
 		finally
 		{
 			appWindow.Changed -= OnChanged;
-			await TestServices.WindowHelper.WaitForIdle();
-			await TestServices.RunOnUIThread(() => newWindow.Close());
+			newWindow.Close();
 		}
 	}
 
@@ -174,18 +175,20 @@ public class Given_AppWindow
 		{
 			appWindow.Resize(new SizeInt32(640, 480));
 			appWindow.Resize(requestedSize);
-			await TestServices.WindowHelper.WaitFor(() => resized);
+			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => resized));
 			Assert.AreEqual(requestedSize, appWindow.Size);
 			Assert.IsFalse(appWindow.IsVisible);
 
-			await ActivateAndWaitForBounds(newWindow);
-			Assert.AreEqual(requestedSize, appWindow.Size);
+			await ActivateAndWaitForBounds(newWindow, () =>
+			{
+				Assert.AreEqual(requestedSize, appWindow.Size);
+				Assert.AreEqual(OverlappedPresenterState.Restored, ((OverlappedPresenter)appWindow.Presenter).State);
+			});
 		}
 		finally
 		{
 			appWindow.Changed -= OnChanged;
-			await TestServices.WindowHelper.WaitForIdle();
-			await TestServices.RunOnUIThread(() => newWindow.Close());
+			newWindow.Close();
 		}
 	}
 
@@ -201,19 +204,57 @@ public class Given_AppWindow
 		try
 		{
 			appWindow.Resize(requestedSize);
-			await TestServices.WindowHelper.WaitFor(() => appWindow.Size.Equals(requestedSize));
+			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => appWindow.Size.Equals(requestedSize)));
 			var presenter = (OverlappedPresenter)appWindow.Presenter;
 			presenter.Maximize();
-			await ActivateAndWaitForBounds(newWindow);
-
-			Assert.AreEqual(OverlappedPresenterState.Maximized, presenter.State);
-			// A nonzero maximized configure overrides the floating size requested before mapping.
-			Assert.AreNotEqual(requestedSize, appWindow.Size);
+			await ActivateAndWaitForBounds(newWindow, () =>
+			{
+				Assert.AreEqual(OverlappedPresenterState.Maximized, presenter.State);
+				// A nonzero maximized configure overrides the floating size requested before mapping.
+				Assert.AreNotEqual(requestedSize, appWindow.Size);
+			});
 		}
 		finally
 		{
-			await TestServices.WindowHelper.WaitForIdle();
-			await TestServices.RunOnUIThread(() => newWindow.Close());
+			newWindow.Close();
+		}
+	}
+
+	[TestMethod]
+	public async Task When_First_Activation_Observes_Applied_Bounds()
+	{
+		AssertSizingSupport();
+
+		var newWindow = new Window { Content = new Grid() };
+		var appWindow = newWindow.AppWindow;
+		var requestedSize = new SizeInt32(320, 240);
+		var isWayland = RuntimeTestsPlatformHelper.CurrentPlatform == RuntimeTestPlatforms.SkiaWayland;
+		try
+		{
+			appWindow.Resize(requestedSize);
+			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => appWindow.Size.Equals(requestedSize)));
+			var presenter = (OverlappedPresenter)appWindow.Presenter;
+			if (isWayland)
+			{
+				// Wayland applies maximization only when the compositor configures the window.
+				presenter.Maximize();
+			}
+			await ActivateAndWaitForBounds(newWindow, () =>
+			{
+				Assert.AreEqual(isWayland ? OverlappedPresenterState.Maximized : OverlappedPresenterState.Restored, presenter.State);
+				if (isWayland)
+				{
+					Assert.AreNotEqual(requestedSize, appWindow.Size);
+				}
+				else
+				{
+					Assert.AreEqual(requestedSize, appWindow.Size);
+				}
+			});
+		}
+		finally
+		{
+			newWindow.Close();
 		}
 	}
 
@@ -338,49 +379,55 @@ public class Given_AppWindow
 		}
 	}
 
-	private static async Task ActivateAndWaitForBounds(Window window)
+	private static async Task ActivateAndWaitForBounds(Window window, Action assertBounds)
 	{
 		var appWindow = window.AppWindow;
-		var activated = false;
-		var sizeAtActivation = default(SizeInt32);
-		var clientSizeAtActivation = default(SizeInt32);
+		var activation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 		var isWayland = RuntimeTestsPlatformHelper.CurrentPlatform == RuntimeTestPlatforms.SkiaWayland;
 		void OnActivated(object sender, WindowActivatedEventArgs args)
 		{
-			if (activated || args.WindowActivationState == WindowActivationState.Deactivated ||
-				(isWayland && args.WindowActivationState != WindowActivationState.PointerActivated))
+			if (activation.Task.IsCompleted || args.WindowActivationState == WindowActivationState.Deactivated)
 			{
 				return;
 			}
-			// Wayland native activation follows managed configure application, even if the size is unchanged.
-			sizeAtActivation = appWindow.Size;
-			clientSizeAtActivation = appWindow.ClientSize;
-			activated = true;
+			try
+			{
+				Assert.IsTrue(appWindow.ClientSize.Width > 0 && appWindow.ClientSize.Height > 0);
+				Assert.IsTrue(appWindow.ClientSize.Width <= appWindow.Size.Width && appWindow.ClientSize.Height <= appWindow.Size.Height);
+				assertBounds();
+				activation.SetResult(true);
+			}
+			catch (Exception error)
+			{
+				activation.SetException(error);
+			}
 		}
 		window.Activated += OnActivated;
 		try
 		{
 			window.Activate();
-			await TestServices.WindowHelper.WaitFor(() => activated, timeoutMS: 5000, message: "Native activation after managed bounds application");
+			await WaitWithTimeout(activation.Task);
 			var content = (FrameworkElement)window.Content;
-			await TestServices.WindowHelper.WaitForLoaded(content, timeoutMS: 5000);
+			await WaitWithTimeout(TestServices.WindowHelper.WaitForLoaded(content, timeoutMS: 5000));
 			if (isWayland)
 			{
-				await TestServices.WindowHelper.WaitFor(() =>
+				await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() =>
 					content.XamlRoot is { } root &&
 					Math.Abs(root.Size.Width * root.RasterizationScale - appWindow.ClientSize.Width) <= 1 &&
 					Math.Abs(root.Size.Height * root.RasterizationScale - appWindow.ClientSize.Height) <= 1,
-					timeoutMS: 5000, message: "XamlRoot bounds matching AppWindow.ClientSize");
-				Assert.AreEqual(sizeAtActivation, appWindow.Size);
-				Assert.AreEqual(clientSizeAtActivation, appWindow.ClientSize);
+					timeoutMS: 5000, message: "XamlRoot bounds matching AppWindow.ClientSize"));
 			}
-			Assert.IsTrue(appWindow.ClientSize.Width > 0 && appWindow.ClientSize.Height > 0);
-			Assert.IsTrue(appWindow.ClientSize.Width <= appWindow.Size.Width && appWindow.ClientSize.Height <= appWindow.Size.Height);
 		}
 		finally
 		{
 			window.Activated -= OnActivated;
 		}
+	}
+
+	private static async Task WaitWithTimeout(Task task)
+	{
+		Assert.AreSame(task, await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(5))), "Timed out waiting for window state.");
+		await task;
 	}
 
 	private void AssertPositioningSupport()
