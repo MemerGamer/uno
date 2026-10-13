@@ -102,6 +102,38 @@ public sealed partial class DisplayTests
 	}
 
 	[TestMethod]
+	public void DisposedDisplayRejectsPostedOwnership()
+	{
+		using var peer = new ProtocolPeer();
+		var display = peer.Connect();
+		display.Dispose();
+		var rejected = 0;
+		Assert.IsFalse(display.TryPost(() => Assert.Fail(), () => rejected++));
+		Assert.AreEqual(1, rejected);
+	}
+
+	[TestMethod]
+	public void DispatchFailureRejectsQueuedAndNewOwnership()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		var rejected = 0;
+		display.Post(() => throw new InvalidOperationException("dispatch failure"));
+		Assert.IsTrue(display.TryPost(() => Assert.Fail(), () => rejected++));
+		display.StartDispatch();
+		Assert.IsTrue(SpinWait.SpinUntil(() =>
+		{
+			lock (display.SyncRoot)
+			{
+				return display.DispatchError is not null;
+			}
+		}, TimeSpan.FromSeconds(5)));
+		display.StopDispatch();
+		Assert.IsFalse(display.TryPost(() => Assert.Fail(), () => rejected++));
+		Assert.AreEqual(2, rejected);
+	}
+
+	[TestMethod]
 	public void BindClampsToGeneratedVersion()
 	{
 		using var peer = new ProtocolPeer(compositorVersion: WlCompositor.MaximumVersion + 1);

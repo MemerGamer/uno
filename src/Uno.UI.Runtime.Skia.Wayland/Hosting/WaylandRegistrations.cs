@@ -36,7 +36,6 @@ internal static class WaylandRegistrations
 		{
 			return;
 		}
-		_registered = true;
 		ApiExtensibility.Register(typeof(ICoreApplicationExtension), _ => coreApplication);
 		ApiExtensibility.Register(typeof(INativeWindowFactoryExtension), _ => new WaylandNativeWindowFactoryExtension(connection));
 		ApiExtensibility.Register(typeof(Windows.Graphics.Display.IDisplayInformationExtension), owner => new WaylandDisplayInformationExtension(owner, connection));
@@ -63,6 +62,7 @@ internal static class WaylandRegistrations
 		ApiExtensibility.Register<XamlRoot>(typeof(INativeOpenGLWrapper), xamlRoot => new WaylandNativeOpenGLWrapper(xamlRoot, connection));
 		ApiExtensibility.Register(typeof(ISystemThemeHelperExtension), _ => LinuxSystemThemeHelper.Instance);
 		ApiExtensibility.Register(typeof(ITextScaleFactorExtension), _ => LinuxTextScaleFactorExtension.Instance);
+		_registered = true;
 	}
 }
 
@@ -74,7 +74,11 @@ internal sealed class WaylandNativeWindowFactoryExtension : INativeWindowFactory
 
 	public bool SupportsClosingCancellation => true;
 	public bool SupportsMultipleWindows => true;
-	public INativeWindowWrapper CreateWindow(Window window, XamlRoot xamlRoot) => new WaylandWindowWrapper(_connection, window, xamlRoot);
+	public INativeWindowWrapper CreateWindow(Window window, XamlRoot xamlRoot)
+	{
+		ObjectDisposedException.ThrowIf(_connection.IsClosing, _connection);
+		return new WaylandWindowWrapper(_connection, window, xamlRoot);
+	}
 }
 
 internal sealed class WaylandCoreApplicationExtension : ICoreApplicationExtension
@@ -90,7 +94,10 @@ internal sealed class WaylandCoreApplicationExtension : ICoreApplicationExtensio
 
 	public void Exit()
 	{
-		_exitRequested = true;
-		_connection()?.CloseAllWindows();
+		WaylandConnection.PostToUI(() =>
+		{
+			_ = _connection()?.CloseAllWindows();
+			_exitRequested = true;
+		});
 	}
 }

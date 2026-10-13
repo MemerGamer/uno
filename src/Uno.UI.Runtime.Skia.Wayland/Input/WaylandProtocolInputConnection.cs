@@ -41,7 +41,10 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		var proxy = _seat.GetPointer();
 		var binding = new Binding(proxy);
 		Pointer = proxy;
-		WaylandDiagnostics.Trace($"input: wl_pointer v{proxy.Version} bound");
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"input: wl_pointer v{proxy.Version} bound");
+		}
 		bool focused = false;
 		EventHandler<WlPointer.EnterEventArgs> enter = (_, e) =>
 		{
@@ -89,10 +92,16 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 	{
 		var proxy = _seat.GetKeyboard();
 		var binding = new Binding(proxy);
-		WaylandDiagnostics.Trace($"input: wl_keyboard v{proxy.Version} bound");
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"input: wl_keyboard v{proxy.Version} bound");
+		}
 		EventHandler<WlKeyboard.KeymapEventArgs> keymap = (_, e) =>
 		{
-			WaylandDiagnostics.Trace($"input: keymap format={e.Format} size={e.Size}");
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace($"input: keymap format={e.Format} size={e.Size}");
+			}
 			sink.Keymap(e.Format, e.Fd, e.Size);
 		};
 		EventHandler<WlKeyboard.EnterEventArgs> enter = (_, e) => { if (_ownsSurface(e.Surface)) { Trace($"input: keyboard enter"); sink.Enter(MemoryMarshal.Cast<byte, uint>(e.Keys.AsSpan())); } };

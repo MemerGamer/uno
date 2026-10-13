@@ -53,7 +53,11 @@ internal sealed class WaylandPortalParentWindowProvider(WaylandConnection connec
 			return new PortalParentWindow(string.Empty, lifetime);
 		}
 
-		WaylandDiagnostics.Trace($"portal: exported parent window handle {handle.Task.Result}");
-		return new PortalParentWindow("wayland:" + handle.Task.Result, lifetime);
+		var parentHandle = await handle.Task;
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"portal: exported parent window handle {parentHandle}");
+		}
+		return new PortalParentWindow("wayland:" + parentHandle, lifetime);
 	}
 }

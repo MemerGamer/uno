@@ -17,11 +17,12 @@ namespace Uno.WinUI.Runtime.Skia.Wayland;
 internal static class WaylandDiagnostics
 {
 	private static readonly object _gate = new();
+	private static volatile bool _writeFailed;
 	private static readonly Stopwatch _clock = Stopwatch.StartNew();
 	private static readonly string? _directory = Environment.GetEnvironmentVariable("UNO_WAYLAND_DEBUG_DIR") is { Length: > 0 } dir ? dir : null;
 	private static readonly int _maxDumps = int.TryParse(Environment.GetEnvironmentVariable("UNO_WAYLAND_DUMP_FRAMES"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var count) ? count : 3;
 
-	internal static bool IsEnabled => _directory is not null;
+	internal static bool IsEnabled => _directory is not null || typeof(WaylandDiagnostics).Log().IsEnabled(LogLevel.Debug);
 
 	internal static void InstallLoggerIfRequested()
 	{
@@ -43,29 +44,54 @@ internal static class WaylandDiagnostics
 		{
 			return;
 		}
-		lock (_gate)
+		var line = FormattableString.Invariant($"{_clock.Elapsed.TotalMilliseconds,10:F1} [{Environment.CurrentManagedThreadId,3}] {message}\n");
+		Write(() =>
 		{
 			Directory.CreateDirectory(_directory);
-			File.AppendAllText(Path.Combine(_directory, "events.log"), FormattableString.Invariant($"{_clock.Elapsed.TotalMilliseconds,10:F1} [{Environment.CurrentManagedThreadId,3}] {message}\n"));
-		}
+			File.AppendAllText(Path.Combine(_directory, "events.log"), line);
+		});
 	}
 
 	internal static void DumpFrame(int windowId, int frame, SKSurface surface, string kind = "frame")
 	{
-		if (_directory is null || frame > _maxDumps)
+		if (_directory is null || _writeFailed || frame > _maxDumps)
 		{
 			return;
 		}
 		using var image = surface.Snapshot();
 		using var data = image.Encode(SKEncodedImageFormat.Png, 100);
 		var path = Path.Combine(_directory, FormattableString.Invariant($"window{windowId}-{kind}{frame}.png"));
-		lock (_gate)
+		Write(() =>
 		{
 			Directory.CreateDirectory(_directory);
 			using var stream = File.Create(path);
 			data.SaveTo(stream);
-		}
+		});
 		Trace(FormattableString.Invariant($"window{windowId}: dumped {image.Width}x{image.Height} {kind} {frame} to {path}"));
+	}
+
+	// Diagnostics are optional: the first file system failure disables them instead of failing protocol or render work.
+	private static void Write(Action write)
+	{
+		if (_writeFailed)
+		{
+			return;
+		}
+		lock (_gate)
+		{
+			try
+			{
+				write();
+			}
+			catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+			{
+				_writeFailed = true;
+				if (typeof(WaylandDiagnostics).Log().IsEnabled(LogLevel.Warning))
+				{
+					typeof(WaylandDiagnostics).Log().Warn($"Wayland diagnostics disabled: {error.Message}");
+				}
+			}
+		}
 	}
 
 	private sealed class FileLoggerFactory(string path, LogLevel level) : IExternalLoggerFactory
@@ -83,11 +109,12 @@ internal static class WaylandDiagnostics
 			{
 				return;
 			}
-			lock (_gate)
+			var line = FormattableString.Invariant($"{_clock.Elapsed.TotalMilliseconds,10:F1} {logLevel} {category}: {message}{(exception is null ? "" : "\n" + exception)}\n");
+			Write(() =>
 			{
 				Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-				File.AppendAllText(path, FormattableString.Invariant($"{_clock.Elapsed.TotalMilliseconds,10:F1} {logLevel} {category}: {message}{(exception is null ? "" : "\n" + exception)}\n"));
-			}
+				File.AppendAllText(path, line);
+			});
 		}
 	}
 }

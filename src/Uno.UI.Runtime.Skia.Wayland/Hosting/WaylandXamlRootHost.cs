@@ -3,6 +3,7 @@
 #nullable enable
 
 using System;
+using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using SkiaSharp;
@@ -122,7 +123,10 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			return;
 		}
 		var waits = _readiness.ConfigureUI(generation, boundsChanged);
-		WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: UI configure generation {generation}{(waits ? " waits for layout" : "")}"));
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: UI configure generation {generation}{(waits ? " waits for layout" : "")}"));
+		}
 		if (waits)
 		{
 			if (_frameTarget is null)
@@ -145,7 +149,10 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			&& Math.Abs(RootElement.RenderSize.Height - bounds.Height) * Scale <= 1;
 		if (_readiness.OnFrameRecorded(arranged))
 		{
-			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: layout recorded at {bounds.Width}x{bounds.Height}{(arranged ? "" : " (gave up waiting)")}"));
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: layout recorded at {bounds.Width}x{bounds.Height}{(arranged ? "" : " (gave up waiting)")}"));
+			}
 			InvalidateRender();
 		}
 	}
@@ -173,7 +180,10 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	{
 		var renderer = _renderer!;
 		Microsoft.UI.Composition.Compositor.GetSharedCompositor().IsSoftwareRenderer = renderer.IsSoftware;
-		WaylandDiagnostics.Trace($"window{_id}: renderer {(renderer.IsSoftware ? "wl_shm" : "EGL")}{(renderer.EglInitializationError is { } eglError ? $" (EGL unavailable: {eglError.Message})" : "")}");
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"window{_id}: renderer {(renderer.IsSoftware ? "wl_shm" : "EGL")}{(renderer.EglInitializationError is { } eglError ? $" (EGL unavailable: {eglError.Message})" : "")}");
+		}
 	}
 
 	// Returns false to keep the previous buffer while the content still has the size of an older
@@ -187,7 +197,10 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		var content = _canvasSize;
 		if (!_readiness.CanPresent(content.Width, content.Height, bounds.Width, bounds.Height))
 		{
-			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: skip stale content {content.Width}x{content.Height} generation {_readiness.RenderGeneration} for buffer {bounds.Width}x{bounds.Height}"));
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: skip stale content {content.Width}x{content.Height} generation {_readiness.RenderGeneration} for buffer {bounds.Width}x{bounds.Height}"));
+			}
 			return false;
 		}
 		if (!_preparePresentation(_readiness.RenderGeneration))
@@ -258,7 +271,10 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		{
 			this.Log().Error($"Wayland rendering failed for window {_id}.", error);
 		}
-		WaylandDiagnostics.Trace($"window{_id}: render error {error}");
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"window{_id}: render error {error}");
+		}
 	}
 
 	// Dispatch thread.
@@ -287,6 +303,9 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		_cursorPointer = null;
 	}
 
+	// Completes once Dispose has released the renderer and destroyed the protocol objects.
+	internal Task Completion => _renderThread.Completion;
+
 	// UI thread. Protocol objects are destroyed after the renderer has released its buffers.
 	internal void Dispose(Action destroyProtocolObjects)
 	{
@@ -302,18 +321,32 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		}
 		XamlRootMap.Unregister(_xamlRoot);
 		var display = _connection.Display;
-		display.Post(() =>
+		lock (display.SyncRoot)
 		{
 			_seat?.Dispose();
 			DisposeCursor();
-		});
+		}
 		_renderThread.Post(() =>
 		{
-			_renderer?.Dispose();
-			_renderer = null;
-			// Releases the wl_shm canvas; the GPU layer was released with the renderer's context.
-			ReleaseRetainedLayer();
-			display.Post(destroyProtocolObjects);
+			try
+			{
+				_renderer?.Dispose();
+				_renderer = null;
+			}
+			finally
+			{
+				try
+				{
+					ReleaseRetainedLayer();
+				}
+				finally
+				{
+					lock (display.SyncRoot)
+					{
+						destroyProtocolObjects();
+					}
+				}
+			}
 		});
 		_renderThread.Dispose();
 	}

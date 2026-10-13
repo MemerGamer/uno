@@ -26,13 +26,14 @@ public sealed unsafe class WaylandDisplay : IDisposable
 	private bool _stopping;
 	private bool _disposing;
 	private Exception? _callbackError;
+	private volatile Exception? _dispatchError;
 	public object SyncRoot { get; } = new();
 	public WlRegistry Registry { get; private set; } = null!;
 	public int FileDescriptor { get; }
 	public bool IsDisconnected => _display == 0;
 	// Native wl_display pointer for libwayland-egl and libwayland-cursor consumers.
 	internal nint NativeHandle => _display;
-	public Exception? DispatchError { get; private set; }
+	public Exception? DispatchError => _dispatchError;
 	public bool IsDispatchThread => _thread == Thread.CurrentThread;
 	public IReadOnlyList<WaylandGlobal> Globals
 	{
@@ -332,6 +333,10 @@ public sealed unsafe class WaylandDisplay : IDisposable
 						WaylandNative.wl_display_cancel_read(_display);
 						prepared = false;
 					}
+					if (_stopping)
+					{
+						return;
+					}
 					if (result < 0 && error != 4)
 					{
 						throw new IOException($"Wayland poll failed: {error}");
@@ -353,7 +358,7 @@ public sealed unsafe class WaylandDisplay : IDisposable
 		{
 			lock (SyncRoot)
 			{
-				DispatchError = error;
+				_dispatchError = error;
 			}
 		}
 		finally

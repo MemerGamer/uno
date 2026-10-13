@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Uno.UI.Dispatching;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 
@@ -22,7 +23,9 @@ internal sealed class WaylandConnection : IDisposable
 	// Dispatch thread or SyncRoot.
 	private readonly Dictionary<uint, WaylandOutput> _outputs = new();
 	private volatile WaylandOutput? _defaultOutput;
-	private bool _hadWindow;
+	// UI thread: render-thread teardown of closed windows that has not finished yet.
+	private readonly List<Task> _retiringWindows = new();
+	private volatile bool _allWindowsClosed;
 	// The launcher's startup token, consumed by the first activation (xdg-activation-v1 startup notification).
 	private string? _startupActivationToken = TakeStartupActivationToken();
 
@@ -51,7 +54,10 @@ internal sealed class WaylandConnection : IDisposable
 				Seat.Capabilities += (_, e) =>
 				{
 					SeatCapabilities = e.Capabilities;
-					WaylandDiagnostics.Trace(FormattableString.Invariant($"seat: capabilities pointer={(e.Capabilities & 1) != 0} keyboard={(e.Capabilities & 2) != 0} touch={(e.Capabilities & 4) != 0}"));
+					if (WaylandDiagnostics.IsEnabled)
+					{
+						WaylandDiagnostics.Trace(FormattableString.Invariant($"seat: capabilities pointer={(e.Capabilities & 1) != 0} keyboard={(e.Capabilities & 2) != 0} touch={(e.Capabilities & 4) != 0}"));
+					}
 				};
 			}
 			foreach (var global in display.Globals)
@@ -73,7 +79,10 @@ internal sealed class WaylandConnection : IDisposable
 			{
 				if (_outputs.Remove(e.Name, out var output))
 				{
-					WaylandDiagnostics.Trace(FormattableString.Invariant($"output {output.Info.Name}: removed"));
+					if (WaylandDiagnostics.IsEnabled)
+					{
+						WaylandDiagnostics.Trace(FormattableString.Invariant($"output {output.Info.Name}: removed"));
+					}
 					UpdateDefaultOutput();
 					OutputRemoved?.Invoke(this, output);
 					output.Dispose();
@@ -123,7 +132,13 @@ internal sealed class WaylandConnection : IDisposable
 	{
 		var proxy = (WlOutput)Display.Registry.Bind(global.Name, WlOutput.ProtocolName, Math.Min(global.Version, WlOutput.MaximumVersion));
 		var output = new WaylandOutput(global.Name, proxy);
-		output.Changed += (_, _) => WaylandDiagnostics.Trace(FormattableString.Invariant($"output {output.Info.Name}: {output.Info.PixelWidth}x{output.Info.PixelHeight} scale {output.Info.Scale} \"{output.Info.Description}\""));
+		output.Changed += (_, _) =>
+		{
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace(FormattableString.Invariant($"output {output.Info.Name}: {output.Info.PixelWidth}x{output.Info.PixelHeight} scale {output.Info.Scale} \"{output.Info.Description}\""));
+			}
+		};
 		_outputs.Add(global.Name, output);
 		UpdateDefaultOutput();
 	}
@@ -205,12 +220,20 @@ internal sealed class WaylandConnection : IDisposable
 	internal void AddWindow(WaylandWindowWrapper window)
 	{
 		_windows.Add(window);
-		_hadWindow = true;
+		_allWindowsClosed = false;
 	}
 
-	internal void RemoveWindow(WaylandWindowWrapper window) => _windows.Remove(window);
+	internal void RemoveWindow(WaylandWindowWrapper window, Task completion)
+	{
+		_windows.Remove(window);
+		_retiringWindows.RemoveAll(task => task.IsCompleted);
+		_retiringWindows.Add(completion);
+		_allWindowsClosed = _windows.Count == 0;
+	}
 
-	internal bool AllWindowsClosed => _hadWindow && _windows.Count == 0;
+	internal bool AllWindowsClosed => _allWindowsClosed;
+
+	internal bool IsClosing { get; private set; }
 
 	internal WaylandWindowWrapper? FindWindow(Microsoft.UI.Xaml.Window window)
 	{
@@ -224,12 +247,24 @@ internal sealed class WaylandConnection : IDisposable
 		return null;
 	}
 
-	internal void CloseAllWindows()
+	// UI thread. Completes once every window's renderer and protocol objects are gone.
+	internal Task CloseAllWindows()
 	{
+		IsClosing = true;
+		var completions = new List<Task>();
 		foreach (var window in new List<WaylandWindowWrapper>(_windows))
 		{
-			window.Close();
+			try
+			{
+				window.Close();
+			}
+			catch (Exception error)
+			{
+				completions.Add(Task.FromException(error));
+			}
 		}
+		completions.AddRange(_retiringWindows);
+		return Task.WhenAll(completions);
 	}
 
 	public void Dispose() => Display.Dispose();
