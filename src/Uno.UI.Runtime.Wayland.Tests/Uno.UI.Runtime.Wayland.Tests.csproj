@@ -2,8 +2,9 @@
 
 	<!--
 		Host-independent tests of the Wayland runtime: the protocol scanner, the generated bindings and the
-		display dispatch (against an in-process protocol peer), and pure scale math. The sources are linked rather
-		than referenced, so the tests need neither Uno.UI nor a compositor; display tests need libwayland-client.
+		display dispatch (against an in-process protocol peer), and the pure window, frame and input logic. The
+		sources are linked rather than referenced, so the tests need neither Uno.UI nor a compositor; display tests
+		need libwayland-client and compose tests libxkbcommon.
 	-->
 	<PropertyGroup>
 		<TargetFramework>$(NetUnitTests)</TargetFramework>
@@ -19,7 +20,9 @@
 	<ItemGroup>
 		<Compile Include="..\Uno.UI.Runtime.Wayland\Native\**\*.cs" Link="Native\%(RecursiveDir)%(Filename)%(Extension)" />
 		<Compile Include="..\Uno.UI.Runtime.Wayland\Protocols\**\*.cs" Link="Protocols\%(RecursiveDir)%(Filename)%(Extension)" />
-		<Compile Include="..\Uno.UI.Runtime.Wayland\Rendering\WaylandRenderScale.cs" Link="Rendering\WaylandRenderScale.cs" />
+		<Compile Include="..\Uno.UI.Runtime.Wayland\Rendering\WaylandRenderScale.cs;..\Uno.UI.Runtime.Wayland\Rendering\WaylandRenderThread.cs;..\Uno.UI.Runtime.Wayland\Rendering\WaylandEglConfig.cs;..\Uno.UI.Runtime.Wayland\Rendering\WaylandFrameScheduler.cs" Link="Rendering\%(Filename)%(Extension)" />
+		<Compile Include="..\Uno.UI.Runtime.Wayland\Hosting\WaylandOutput.cs;..\Uno.UI.Runtime.Wayland\Hosting\WaylandFrameReadiness.cs;..\Uno.UI.Runtime.Wayland\Hosting\WaylandDecorationLayout.cs;..\Uno.UI.Runtime.Wayland\Hosting\WaylandToplevelStates.cs;..\Uno.UI.Runtime.Wayland\Hosting\WaylandNonClientRegions.cs" Link="Hosting\%(Filename)%(Extension)" />
+		<Compile Include="..\Uno.UI.Runtime.Wayland\Input\WaylandPointerPress.cs;..\Uno.UI.Runtime.Wayland\Input\WaylandXkb.cs;..\Uno.UI.Runtime.Wayland\Input\WaylandKeyboardCompose.cs" Link="Input\%(Filename)%(Extension)" />
 		<None Include="..\Uno.UI.Runtime.Wayland\Protocols\*.xml" Link="protocols\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
 	</ItemGroup>
 

@@ -5,7 +5,9 @@ using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using Uno.Foundation.Logging;
+using Uno.UI.Composition;
 using Uno.UI.Composition.Drawing;
+using Uno.UI.Helpers;
 using Uno.UI.Hosting;
 using Uno.UI.Runtime.Wayland.Input;
 using Uno.UI.Runtime.Wayland.Protocols;
@@ -14,46 +16,49 @@ using Windows.UI.Core;
 
 namespace Uno.UI.Runtime.Wayland;
 
-internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
+internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, IDisposable
 {
 	private readonly Window _window;
 	private readonly XamlRoot _xamlRoot;
 	private readonly WaylandConnection _connection;
 	private readonly int _id;
+	private readonly WlSurface _surface;
 	private readonly WaylandRenderThread _renderThread;
 	private readonly WaylandProtocolInputConnection? _input;
 	private readonly WaylandSeat? _seat;
+	private readonly WaylandFrameReadiness _readiness = new();
+	private readonly Func<long, bool> _preparePresentation;
 	private volatile bool _disposed;
 
 	// Render thread state.
 	private WaylandRenderer? _renderer;
 
+	// UI thread state.
+	private CompositionTarget? _frameTarget;
+
 	// Dispatch thread state.
 	private WaylandCursor? _cursor;
 	private WlPointer? _cursorPointer;
 
-	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged)
+	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, bool> preparePresentation)
 	{
 		_connection = connection;
 		_id = id;
 		_window = window;
 		_xamlRoot = xamlRoot;
-		Surface = surface;
+		_surface = surface;
+		_preparePresentation = preparePresentation;
 		_renderThread = new WaylandRenderThread($"Uno Wayland render {id}", OnRenderError);
 
-		// The host only turns a negotiated context kind into a context for this surface; the backend is chosen by
-		// GraphicsRegistry, honouring the kinds the host builder disabled.
-		GraphicsRegistry.ContextFactory = kind => Task.FromResult<ISwapChain?>(CreateContext(kind, connection, surface));
-		var init = GraphicsRegistry.Initialize();
-		Microsoft.UI.Composition.Compositor.GetSharedCompositor().IsSoftwareRenderer = init.Context.Kind == GraphicsContextKind.Software;
-		WaylandDiagnostics.Trace($"window{id}: graphics context {init.Context.Kind}");
+		var (context, drawingFactory) = InitializeGraphics();
 		var scale = new WaylandRenderScale(surface, viewport);
-		_renderThread.Post(() => _renderer = new WaylandRenderer(this, scale, (IWaylandGraphicsContext)init.Context, init.Renderer, surface, _renderThread.Post));
+		_renderThread.Post(() => _renderer = new WaylandRenderer(this, this, scale, context, drawingFactory, surface, _renderThread.Post));
 
 		if (connection.Seat is { } wlSeat)
 		{
 			_input = new WaylandProtocolInputConnection(wlSeat, s => s == surface, connection.Display.Post, SetCursor);
 			_input.PointerReleasing += (_, _) => DisposeCursor();
+			_input.InputSerial += (_, serial) => connection.InputSerial = serial;
 		}
 		var input = (IWaylandInputConnection?)_input ?? NoInputConnection.Instance;
 		KeyboardSource = new WaylandKeyboardInputSource(input, WaylandConnection.PostToUI, keyboardFocusChanged);
@@ -70,11 +75,16 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		XamlRootMap.Register(xamlRoot, this);
 	}
 
-	internal WlSurface Surface { get; }
 	internal WaylandPointerInputSource PointerSource { get; }
+	internal WaylandProtocolInputConnection? Input => _input;
 	internal WaylandKeyboardInputSource KeyboardSource { get; }
+
+	// The backend that won negotiation, also asked for the client-side decorations' software rendering.
+	internal IGraphicsProvider? GraphicsProvider { get; private set; }
+
 	// Written on the UI thread, read by the dispatch thread for cursor scaling.
 	internal double Scale { get; set; } = 1;
+
 	public UIElement? RootElement => _window.RootElement;
 
 	public Windows.UI.Color? BackgroundColor
@@ -102,15 +112,35 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		}
 	}
 
-	private IWaylandGraphicsContext? CreateContext(GraphicsContextKind kind, WaylandConnection connection, WlSurface surface)
+	// UI thread. The host turns a negotiated context kind into a context for this surface; the backend is chosen by
+	// GraphicsRegistry, honouring the kinds the host builder disabled.
+	private (IWaylandGraphicsContext Context, IDrawingFactory DrawingFactory) InitializeGraphics()
 	{
-		bool PrepareCommit() => _renderer?.PrepareCommit() ?? false;
+		GraphicsRegistry.ContextFactory = kind => Task.FromResult<ISwapChain?>(CreateContext(kind));
+		var init = GraphicsRegistry.Initialize();
+		GraphicsProvider = init.Provider;
+		Microsoft.UI.Composition.Compositor.GetSharedCompositor().IsSoftwareRenderer = init.Context.Kind == GraphicsContextKind.Software;
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"window{_id}: graphics context {init.Context.Kind}");
+		}
+		var context = (IWaylandGraphicsContext)init.Context;
+		if (context is WaylandEglGraphicsContext egl)
+		{
+			egl.ContextLost += OnContextLost;
+		}
+		return (context, init.Renderer);
+	}
+
+	private IWaylandGraphicsContext? CreateContext(GraphicsContextKind kind)
+	{
+		bool PrepareCommit(int width, int height) => _renderer?.PrepareCommit(width, height) ?? false;
 		switch (kind)
 		{
 			case GraphicsContextKind.OpenGLES:
 				try
 				{
-					return new WaylandEglGraphicsContext(connection.Display.NativeHandle, surface, PrepareCommit);
+					return new WaylandEglGraphicsContext(_connection.Display.NativeHandle, _surface, PrepareCommit);
 				}
 				catch (Exception error) when (error is InvalidOperationException or NotSupportedException or DllNotFoundException or EntryPointNotFoundException)
 				{
@@ -122,15 +152,103 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 				}
 
 			case GraphicsContextKind.Software:
-				return new WaylandSoftwareGraphicsContext(surface, connection.Shm, _renderThread.Post, PrepareCommit);
+				return new WaylandSoftwareGraphicsContext(_surface, _connection.Shm, _renderThread.Post, PrepareCommit);
 
 			default:
 				return null;
 		}
 	}
 
-	// Called after the configure serial was acknowledged on the dispatch thread.
-	internal void Configure(int logicalWidth, int logicalHeight, uint preferredScale, int integerScale)
+	// Render thread. The backend's resources died with the context, so the window negotiates graphics again,
+	// which falls back to software rendering when EGL is unusable.
+	private void OnContextLost(object? sender, EventArgs args)
+	{
+		if (this.Log().IsEnabled(LogLevel.Warning))
+		{
+			this.Log().Warn($"The EGL context of window {_id} was lost; recreating its graphics.");
+		}
+		WaylandConnection.PostToUI(() =>
+		{
+			if (_disposed)
+			{
+				return;
+			}
+			IWaylandGraphicsContext context;
+			IDrawingFactory drawingFactory;
+			try
+			{
+				(context, drawingFactory) = InitializeGraphics();
+			}
+			catch (Exception error)
+			{
+				if (this.Log().IsEnabled(LogLevel.Error))
+				{
+					this.Log().Error($"Wayland graphics could not be recreated for window {_id}.", error);
+				}
+				return;
+			}
+			_renderThread.Post(() =>
+			{
+				if (_renderer is { } renderer)
+				{
+					renderer.ReplaceGraphics(context, drawingFactory);
+				}
+				else
+				{
+					(drawingFactory as IDisposable)?.Dispose();
+					context.Dispose();
+				}
+			});
+		});
+	}
+
+	// UI thread, after the configure's bounds and scale were applied. The render target follows new bounds
+	// immediately, while Uno records the new layout only in a later frame.
+	internal void ConfigureUI(long generation, bool boundsChanged)
+	{
+		if (RootElement?.Visual.CompositionTarget is not CompositionTarget compositionTarget)
+		{
+			// Nothing was recorded yet, so no older layout can be presented.
+			_readiness.ConfigureUI(generation, boundsChanged: false);
+			return;
+		}
+		var waits = _readiness.ConfigureUI(generation, boundsChanged);
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: UI configure generation {generation}{(waits ? " waits for layout" : "")}"));
+		}
+		if (waits)
+		{
+			if (_frameTarget is null)
+			{
+				_frameTarget = compositionTarget;
+				compositionTarget.FrameRendered += OnFrameRendered;
+			}
+			// Records a frame even when layout leaves the visuals unchanged.
+			((ICompositionTarget)compositionTarget).RequestNewFrame();
+		}
+	}
+
+	// UI thread.
+	private void OnFrameRendered()
+	{
+		var bounds = _xamlRoot.Bounds;
+		// The recorded frame reflects the new bounds only if no layout pass was still pending.
+		var arranged = FrameRenderHelper.CanRecordFrame(RootElement)
+			&& Math.Abs(RootElement.RenderSize.Width - bounds.Width) * Scale <= 1
+			&& Math.Abs(RootElement.RenderSize.Height - bounds.Height) * Scale <= 1;
+		if (_readiness.OnFrameRecorded(arranged))
+		{
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: layout recorded at {bounds.Width}x{bounds.Height}{(arranged ? "" : " (gave up waiting)")}"));
+			}
+			InvalidateRender();
+		}
+	}
+
+	// Called after the configure was staged on the dispatch thread.
+	internal void Configure(int logicalWidth, int logicalHeight, uint preferredScale, int integerScale, long generation)
 	{
 		_renderThread.Post(() =>
 		{
@@ -138,6 +256,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				return;
 			}
+			_readiness.ConfigureRender(generation);
 			if (preferredScale != 0)
 			{
 				renderer.Scale.SetPreferredScale(preferredScale);
@@ -147,13 +266,38 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		});
 	}
 
+	// Render thread, before Uno draws its latest recorded frame.
+	void IWaylandFrameGate.BeginFrame() => _readiness.BeginFrame();
+
+	// Render thread. Keeps the previous buffer while the frame still has the size of an older configure or scale,
+	// so a frame drawn for stale geometry never acknowledges the new configure.
+	bool IWaylandFrameGate.CanPresent(int frameWidth, int frameHeight, int bufferWidth, int bufferHeight)
+	{
+		if (!_readiness.CanPresent(frameWidth, frameHeight, bufferWidth, bufferHeight))
+		{
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: skip stale frame {frameWidth}x{frameHeight} generation {_readiness.RenderGeneration} for buffer {bufferWidth}x{bufferHeight}"));
+			}
+			return false;
+		}
+		if (!_preparePresentation(_readiness.RenderGeneration))
+		{
+			return false;
+		}
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: present frame {frameWidth}x{frameHeight} generation {_readiness.RenderGeneration}"));
+		}
+		return true;
+	}
+
 	private void OnRenderError(Exception error)
 	{
 		if (this.Log().IsEnabled(LogLevel.Error))
 		{
 			this.Log().Error($"Wayland rendering failed for window {_id}.", error);
 		}
-		WaylandDiagnostics.Trace($"window{_id}: render error {error}");
 	}
 
 	// Dispatch thread.
@@ -182,6 +326,9 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		_cursorPointer = null;
 	}
 
+	// Completes once Dispose has released the renderer and destroyed the protocol objects.
+	internal Task Completion => _renderThread.Completion;
+
 	// UI thread. Protocol objects are destroyed after the renderer has released its buffers.
 	internal void Dispose(Action destroyProtocolObjects)
 	{
@@ -190,18 +337,32 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			return;
 		}
 		_disposed = true;
+		if (_frameTarget is not null)
+		{
+			_frameTarget.FrameRendered -= OnFrameRendered;
+			_frameTarget = null;
+		}
 		XamlRootMap.Unregister(_xamlRoot);
 		var display = _connection.Display;
-		display.Post(() =>
+		lock (display.SyncRoot)
 		{
 			_seat?.Dispose();
 			DisposeCursor();
-		});
+		}
 		_renderThread.Post(() =>
 		{
-			_renderer?.Dispose();
-			_renderer = null;
-			display.Post(destroyProtocolObjects);
+			try
+			{
+				_renderer?.Dispose();
+				_renderer = null;
+			}
+			finally
+			{
+				lock (display.SyncRoot)
+				{
+					destroyProtocolObjects();
+				}
+			}
 		});
 		_renderThread.Dispose();
 	}
