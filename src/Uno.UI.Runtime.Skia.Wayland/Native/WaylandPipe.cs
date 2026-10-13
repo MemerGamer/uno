@@ -64,7 +64,7 @@ internal static unsafe class WaylandPipe
 		}
 		finally
 		{
-			Posix.close(fd);
+			_ = Posix.close(fd);
 		}
 	}
 
@@ -100,7 +100,7 @@ internal static unsafe class WaylandPipe
 		}
 		finally
 		{
-			Posix.close(fd);
+			_ = Posix.close(fd);
 		}
 	}
 

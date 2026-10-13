@@ -9,6 +9,9 @@ namespace Wayland.Scanner.Tests;
 [TestClass]
 public sealed class DataTransferTests
 {
+	private static readonly string[] ParsedUriList = ["/a", "/b", "/c", "/f"];
+	private static readonly string[] ParsedCut = ["/x"];
+
 	[TestMethod]
 	public void UriListRoundTripsLocalPaths()
 	{
@@ -22,7 +25,7 @@ public sealed class DataTransferTests
 	public void UriListSkipsCommentsRemoteHostsAndOtherSchemes()
 	{
 		var text = "# comment\nfile:///a\nfile://localhost/b\nfile:/c\nfile://server/d\nhttps://example.com/e\n\nfile:///f\0";
-		CollectionAssert.AreEqual(new[] { "/a", "/b", "/c", "/f" }, WaylandFileUris.ParseUriList(text));
+		CollectionAssert.AreEqual(ParsedUriList, WaylandFileUris.ParseUriList(text));
 	}
 
 	[TestMethod]
@@ -32,7 +35,7 @@ public sealed class DataTransferTests
 		var text = WaylandFileUris.FormatGnomeCopiedFiles(paths);
 		Assert.AreEqual("copy\nfile:///tmp/a%20b\nfile:///tmp/c", text);
 		CollectionAssert.AreEqual(paths, WaylandFileUris.ParseGnomeCopiedFiles(text));
-		CollectionAssert.AreEqual(new[] { "/x" }, WaylandFileUris.ParseGnomeCopiedFiles("cut\nfile:///x\n"));
+		CollectionAssert.AreEqual(ParsedCut, WaylandFileUris.ParseGnomeCopiedFiles("cut\nfile:///x\n"));
 		Assert.AreEqual(0, WaylandFileUris.ParseGnomeCopiedFiles("copy").Count);
 	}
 
@@ -58,7 +61,7 @@ public sealed class DataTransferTests
 		}
 		finally
 		{
-			Posix.close(write);
+			_ = Posix.close(write);
 		}
 	}
 
@@ -66,7 +69,7 @@ public sealed class DataTransferTests
 	public void PipeWriteFailsWhenTheReaderIsGone()
 	{
 		var (read, write) = WaylandPipe.Create();
-		Posix.close(read);
+		_ = Posix.close(read);
 		Assert.IsFalse(WaylandPipe.WriteAll(write, Encoding.UTF8.GetBytes("text"), TimeSpan.FromSeconds(1)));
 	}
 }

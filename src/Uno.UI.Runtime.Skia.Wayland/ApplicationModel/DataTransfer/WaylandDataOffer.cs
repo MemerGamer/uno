@@ -88,10 +88,10 @@ internal sealed class WaylandDataOffer
 				_offer.Receive(mimeType, write);
 			}
 		}
-		Posix.close(write);
+		_ = Posix.close(write);
 		if (destroyed)
 		{
-			Posix.close(read);
+			_ = Posix.close(read);
 			return null;
 		}
 		var data = WaylandPipe.ReadToEnd(read, _readTimeout);

@@ -7,6 +7,9 @@ namespace Wayland.Scanner;
 
 public static class Program
 {
+	// Untyped new_id expands to interface name, version and id.
+	private static readonly string[] UntypedNewIdTypes = ["null", "null", "null"];
+
 	public static int Main(string[] args)
 	{
 		if (args.Length != 2)
@@ -84,7 +87,7 @@ public static class Program
 				catalog.AppendLine("\t\t[");
 				foreach (var message in node.Elements(kind))
 				{
-					var types = message.Elements("arg").SelectMany(arg => Attr(arg, "type") == "new_id" && Attr(arg, "interface") == "" ? new[] { "null", "null", "null" } : new[] { Attr(arg, "interface") is { Length: > 0 } name ? Quote(name) : "null" });
+					var types = message.Elements("arg").SelectMany(arg => Attr(arg, "type") == "new_id" && Attr(arg, "interface") == "" ? UntypedNewIdTypes : new[] { Attr(arg, "interface") is { Length: > 0 } name ? Quote(name) : "null" });
 					catalog.AppendLine($"\t\t\tnew({Quote(Attr(message, "name"))}, {Quote(Signature(message))}, [{string.Join(", ", types)}]),");
 				}
 				catalog.AppendLine(kind == "request" ? "\t\t]," : "\t\t]),");

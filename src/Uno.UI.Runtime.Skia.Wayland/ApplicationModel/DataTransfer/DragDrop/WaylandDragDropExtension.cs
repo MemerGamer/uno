@@ -3,7 +3,6 @@
 #nullable enable
 
 using System;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
@@ -75,7 +74,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 			session.Accepted = accepted;
 			var actions = WaylandDataFormats.ToDndActions(accepted);
 			var preferred = (actions & WaylandDataFormats.DndActionCopy) != 0 ? WaylandDataFormats.DndActionCopy : actions;
-			session.Offer.Accept(session.Serial, accepted != DataPackageOperation.None ? session.Offer.MimeTypes.FirstOrDefault() : null, actions, preferred);
+			session.Offer.Accept(session.Serial, accepted != DataPackageOperation.None && session.Offer.MimeTypes is [var mime, ..] ? mime : null, actions, preferred);
 		}
 	}
 
