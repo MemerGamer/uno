@@ -76,7 +76,8 @@ internal sealed class WaylandEglRenderer : IDisposable
 	// Call EnsureContext before using this context for an unpresented frame.
 	public GRContext? GpuContext => _grContext;
 
-	public bool Render(int width, int height, Action<SKSurface, GRContext> draw)
+	// Returns false without swapping when draw declines the frame or the context was lost at the swap.
+	public bool Render(int width, int height, Func<SKSurface, GRContext, bool> draw)
 	{
 		ObjectDisposedException.ThrowIf(_disposed, this);
 		if (width <= 0 || height <= 0)
@@ -84,7 +85,10 @@ internal sealed class WaylandEglRenderer : IDisposable
 			return false;
 		}
 		EnsureContext(width, height);
-		draw(_surface!, _grContext!);
+		if (!draw(_surface!, _grContext!))
+		{
+			return false;
+		}
 		_grContext!.Flush();
 		// eglSwapBuffers commits the wl_surface, including the frame callback requested by the scheduler.
 		if (WaylandRenderNative.eglSwapBuffers(_display, _eglSurface) == 0)

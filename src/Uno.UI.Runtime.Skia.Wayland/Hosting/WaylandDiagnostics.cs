@@ -50,7 +50,7 @@ internal static class WaylandDiagnostics
 		}
 	}
 
-	internal static void DumpFrame(int windowId, int frame, SKSurface surface)
+	internal static void DumpFrame(int windowId, int frame, SKSurface surface, string kind = "frame")
 	{
 		if (_directory is null || frame > _maxDumps)
 		{
@@ -58,14 +58,14 @@ internal static class WaylandDiagnostics
 		}
 		using var image = surface.Snapshot();
 		using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-		var path = Path.Combine(_directory, FormattableString.Invariant($"window{windowId}-frame{frame}.png"));
+		var path = Path.Combine(_directory, FormattableString.Invariant($"window{windowId}-{kind}{frame}.png"));
 		lock (_gate)
 		{
 			Directory.CreateDirectory(_directory);
 			using var stream = File.Create(path);
 			data.SaveTo(stream);
 		}
-		Trace(FormattableString.Invariant($"window{windowId}: dumped {image.Width}x{image.Height} frame {frame} to {path}"));
+		Trace(FormattableString.Invariant($"window{windowId}: dumped {image.Width}x{image.Height} {kind} {frame} to {path}"));
 	}
 
 	private sealed class FileLoggerFactory(string path, LogLevel level) : IExternalLoggerFactory

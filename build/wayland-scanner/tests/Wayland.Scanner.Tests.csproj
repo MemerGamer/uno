@@ -23,6 +23,7 @@
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandTextInput.cs" Link="Input/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/UI/Xaml/Controls/TextBox/WaylandImeTextBoxExtension.cs" Link="Input/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI/UI/Xaml/Controls/TextBox/Extensions/*Ime*.skia.cs" Link="Input/%(Filename)%(Extension)" />
+		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandDecorationLayout.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandToplevelStates.cs" Link="Hosting/%(Filename)%(Extension)" />
 		<None Include="../protocols/*.xml" Link="protocols/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
 	</ItemGroup>
 </Project>
