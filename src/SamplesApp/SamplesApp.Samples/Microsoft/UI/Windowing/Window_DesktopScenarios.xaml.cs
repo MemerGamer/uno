@@ -56,15 +56,19 @@ public sealed partial class Window_DesktopScenarios : Page
 			Children = { _titleBar, new TextBox { Text = "Type here, then drag the title bar or resize the window.", Margin = new Thickness(16) } }
 		};
 		window.Content = root;
-		_titleBar.SizeChanged += (_, _) => UpdateRegions();
-		_titleBar.Loaded += (_, _) =>
+		var titleBar = _titleBar;
+		titleBar.SizeChanged += (_, _) => UpdateRegions();
+		titleBar.Loaded += (_, _) =>
 		{
 			if (_titleRoot is not null)
 			{
 				_titleRoot.Changed -= TitleRootChanged;
 			}
-			_titleRoot = _titleBar.XamlRoot;
-			_titleRoot.Changed += TitleRootChanged;
+			_titleRoot = titleBar.XamlRoot;
+			if (_titleRoot is not null)
+			{
+				_titleRoot.Changed += TitleRootChanged;
+			}
 			UpdateRegions();
 		};
 		window.Closed += (_, _) =>
@@ -166,8 +170,9 @@ public sealed partial class Window_DesktopScenarios : Page
 		{
 			return;
 		}
-		_smokeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-		_smokeTimer.Tick += (_, _) =>
+		var smokeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+		_smokeTimer = smokeTimer;
+		smokeTimer.Tick += (_, _) =>
 		{
 			try
 			{
@@ -193,26 +198,26 @@ public sealed partial class Window_DesktopScenarios : Page
 						break;
 					case 8: _window!.Close(); break;
 					case 9:
-						_smokeTimer.Stop();
+						smokeTimer.Stop();
 						if (_window is not null)
 						{
 							throw new InvalidOperationException("Reopened window did not close.");
 						}
 						Console.WriteLine("Wayland lifecycle: windows closed");
-						App.MainWindow.Close();
+						App.MainWindow?.Close();
 						break;
 				}
 			}
 			catch (Exception error)
 			{
-				_smokeTimer.Stop();
+				smokeTimer.Stop();
 				Console.Error.WriteLine(error);
 				Environment.ExitCode = 1;
 				_window?.Close();
-				App.MainWindow.Close();
+				App.MainWindow?.Close();
 			}
 		};
-		_smokeTimer.Start();
+		smokeTimer.Start();
 #endif
 	}
 }

@@ -23,7 +23,7 @@ public sealed partial class Clipboard_DesktopTransfers : Page
 		{
 			var package = new DataPackage();
 			package.SetText(Input.Text);
-			package.SetHtmlFormat(HtmlFormatHelper.CreateHtmlFormat($"<p>{System.Net.WebUtility.HtmlEncode(Input.Text)}</p>"));
+			package.SetHtmlFormat($"<p>{System.Net.WebUtility.HtmlEncode(Input.Text)}</p>");
 			Clipboard.SetContent(package);
 			Result.Text = "Text and HTML submitted to clipboard";
 		}
@@ -79,7 +79,7 @@ public sealed partial class Clipboard_DesktopTransfers : Page
 	{
 		try
 		{
-			Result.Text = await Describe(Clipboard.GetContent());
+			Result.Text = Clipboard.GetContent() is { } content ? await Describe(content) : "The clipboard is empty";
 		}
 		catch (Exception error)
 		{
