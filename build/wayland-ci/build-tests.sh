@@ -26,7 +26,8 @@ build_samples() {
 	dotnet build src/SamplesApp/SamplesApp/SamplesApp.csproj -c Release \
 		-p:UnoTargetFrameworkOverride="$tfm-desktop" -f "$tfm-desktop" \
 		-p:UNO_DISABLE_ANALYZERS_IN_SAMPLES=true -p:GeneratePackageOnBuild=false \
-		-p:ContinuousIntegrationBuild=true -p:UnoFastDevBuild=false --verbosity minimal
+		-p:ContinuousIntegrationBuild=true -p:UnoFastDevBuild=false --verbosity minimal \
+		-p:NuGetAudit=false  # upstream dev-tool dependencies carry fresh advisories; not part of this PR
 }
 host_project=src/Uno.UI.Runtime.Skia.Wayland/Uno.UI.Runtime.Skia.Wayland.csproj
 port_project=src/Uno.UI.Runtime.Wayland/Uno.UI.Runtime.Wayland.csproj

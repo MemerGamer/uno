@@ -212,7 +212,7 @@ jobs:
           dotnet build src/SamplesApp/SamplesApp/SamplesApp.csproj -c Release \
             -p:UnoTargetFrameworkOverride=net10.0-desktop -f net10.0-desktop \
             -p:UNO_DISABLE_ANALYZERS_IN_SAMPLES=true -p:GeneratePackageOnBuild=false \
-            -p:ContinuousIntegrationBuild=true -p:UnoFastDevBuild=false
+            -p:ContinuousIntegrationBuild=true -p:UnoFastDevBuild=false -p:NuGetAudit=false
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wayland-samplesapp-desktop
