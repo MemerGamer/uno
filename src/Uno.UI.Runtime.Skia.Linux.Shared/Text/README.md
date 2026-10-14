@@ -8,6 +8,7 @@ Startup overrides:
 
 - `UNO_SKIA_TEXT_HINTING=none|slight|normal|full`
 - `UNO_SKIA_TEXT_RGBA=none|rgb|bgr|vrgb|vbgr`
+- `UNO_SKIA_TEXT_GAMMA=linear|skia`
 
 Invalid values keep the fontconfig preference. An rgba override still obeys the presentation safety gates and does not override `antialias=false`.
 
@@ -16,6 +17,12 @@ LCD geometry is supplied to the content surface where text rasterizes: the GPU r
 X11 requires RandR 1.3 queries and change notifications, integer rasterization scales, and agreement between every intersected output (including cloned outputs) and the configured physical order. Intersected CRTCs must have normal rotation, an identity presentation transform, matching mode/buffer dimensions and disabled panning. Failed/unknown queries, conflicting orders and windows not fully covered by one verified CRTC use grayscale. Window configure and RandR screen/CRTC/output/property events invalidate the cached output geometry and request a redraw. Wayland additionally requires entered outputs to agree with the configured order, use normal output transforms and have the same integer scale as the buffer. Unknown outputs, conflicting orders, mixed scales and fractional presentation use grayscale. Compositor-side effects and panel-internal scaling cannot all be detected; `UNO_SKIA_TEXT_RGBA=none` is the escape hatch.
 
 The [Skia scaler](https://github.com/google/skia/blob/chrome/m119/src/core/SkScalerContext.cpp) falls back to grayscale for unknown geometry. The raster backend does **not** universally disable LCD for translucent paint or rotated glyphs: native SkiaSharp 3.119.0 probes produce chromatic pixels in both cases. Uno explicitly uses grayscale fonts for non-opaque/effect paints and gates frame geometry for transforms. Ordinary [saveLayer surfaces](https://github.com/google/skia/blob/chrome/m119/src/core/SkCanvas.cpp) discard geometry unless LCD preservation is explicitly requested, so opacity/effect layers use grayscale.
+
+## Coverage gamma
+
+Skia's scaler runs every antialiased glyph mask through a luminance-dependent gamma/contrast table (`SK_GAMMA_EXPONENT`, `SK_GAMMA_CONTRAST`, applied to A8 masks in SkiaSharp's native build). With the default 2.2/0.5 build constants, black 14px text keeps about 78% of the raw FreeType coverage while white text on black gets about 130%; Qt and cairo blend the raw coverage, so Uno's dark text looked thinner and lighter than native text at 1x. SkiaSharp exposes neither the constants nor `SkSurfaceProps` text gamma/contrast, and a linear colour space surface would change every other blend.
+
+Skia only computes the luminance when the paint is "just a colour" (`SkPaintPriv::ComputeLuminanceColor`): colour and gradient shaders report their luminance, other shaders fall back to the neutral mid-grey table, which is within a few percent of raw coverage. `LinuxTextRenderingExtension.GetRenderPaint` therefore draws glyphs with a shared paint whose shader is the paint colour behind an identity colour filter, keeping the original alpha on the paint. Paints that already carry a shader or colour filter, and aliased text, are drawn unchanged. `UNO_SKIA_TEXT_GAMMA=skia` restores Skia's tables. The `When_RenderPaintCoverageIsLinear` test pins the symmetric coverage, so a SkiaSharp update that starts collapsing the filter or changes the build constants shows up there.
 
 ## Transparent roots and opaque controls
 

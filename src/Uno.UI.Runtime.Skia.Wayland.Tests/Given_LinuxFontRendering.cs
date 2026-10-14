@@ -1,5 +1,6 @@
 #nullable enable
 
+using System;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using SkiaSharp;
 using Uno.WinUI.Runtime.Skia.Linux;
@@ -160,5 +161,99 @@ public sealed class Given_LinuxFontRendering
 		Assert.IsFalse(LinuxFontRenderingSettings.CanUseLcd(SKMatrix.Identity with { Persp0 = 0.01f }, paint));
 		paint.BlendMode = SKBlendMode.Src;
 		Assert.IsFalse(LinuxFontRenderingSettings.CanUseLcd(SKMatrix.Identity, paint));
+	}
+
+	[TestMethod]
+	public void When_GammaIsOverridden()
+	{
+		Assert.IsTrue(LinuxFontRenderingSettings.Default.LinearCoverage);
+		Assert.IsFalse(LinuxFontRenderingSettings.Default.WithOverrides(null, null, " Skia ").LinearCoverage);
+		Assert.IsTrue(LinuxFontRenderingSettings.Default.WithOverrides(null, null, "skia").WithOverrides(null, null, "linear").LinearCoverage);
+		Assert.IsFalse(LinuxFontRenderingSettings.Default.WithOverrides(null, null, "skia").WithOverrides(null, null, "invalid").LinearCoverage);
+		Assert.IsTrue(LinuxFontRenderingSettings.Unavailable.LinearCoverage);
+	}
+
+	[TestMethod]
+	public void When_RenderPaintHidesLuminance()
+	{
+		var extension = new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Default);
+		using var paint = new SKPaint { Color = new SKColor(0, 0, 0, 0xE4), IsAntialias = true, BlendMode = SKBlendMode.Multiply };
+		var renderPaint = extension.GetRenderPaint(paint);
+		Assert.AreNotSame(paint, renderPaint);
+		Assert.IsNotNull(renderPaint.Shader);
+		Assert.AreEqual((byte)0xE4, renderPaint.Color.Alpha);
+		Assert.AreEqual(SKBlendMode.Multiply, renderPaint.BlendMode);
+		Assert.IsTrue(renderPaint.IsAntialias);
+		Assert.IsNull(paint.Shader);
+
+		// The shared paint is reused and the shader is cached per opaque colour.
+		var shader = renderPaint.Shader;
+		paint.Color = SKColors.Black;
+		Assert.AreSame(renderPaint, extension.GetRenderPaint(paint));
+		Assert.AreSame(shader, extension.GetRenderPaint(paint).Shader);
+		paint.Color = SKColors.Red;
+		Assert.AreNotSame(shader, extension.GetRenderPaint(paint).Shader);
+	}
+
+	[TestMethod]
+	public void When_RenderPaintIsNotApplicable()
+	{
+		var extension = new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Default);
+		using var aliased = new SKPaint { Color = SKColors.Black, IsAntialias = false };
+		Assert.AreSame(aliased, extension.GetRenderPaint(aliased));
+		using var shaded = new SKPaint { Color = SKColors.Black, IsAntialias = true, Shader = SKShader.CreateColor(SKColors.Blue) };
+		Assert.AreSame(shaded, extension.GetRenderPaint(shaded));
+		using var filtered = new SKPaint { Color = SKColors.Black, IsAntialias = true, ColorFilter = SKColorFilter.CreateBlendMode(SKColors.Red, SKBlendMode.SrcIn) };
+		Assert.AreSame(filtered, extension.GetRenderPaint(filtered));
+
+		var skiaGamma = new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Default.WithOverrides(null, null, "skia"));
+		using var plain = new SKPaint { Color = SKColors.Black, IsAntialias = true };
+		Assert.AreSame(plain, skiaGamma.GetRenderPaint(plain));
+	}
+
+	[TestMethod]
+	public void When_RenderPaintCoverageIsLinear()
+	{
+		using var typeface = SKTypeface.Default;
+		if (typeface is null || typeface.GlyphCount == 0)
+		{
+			Assert.Inconclusive("No default typeface is available.");
+		}
+
+		var extension = new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Default);
+		using var font = new SKFont(typeface, 14) { Edging = SKFontEdging.Antialias, Subpixel = true, Hinting = SKFontHinting.Slight };
+		using var paint = new SKPaint { IsAntialias = true };
+
+		var plainDark = Ink(font, paint, SKColors.Black, SKColors.White, extension: null);
+		var plainLight = Ink(font, paint, SKColors.White, SKColors.Black, extension: null);
+		var linearDark = Ink(font, paint, SKColors.Black, SKColors.White, extension);
+		var linearLight = Ink(font, paint, SKColors.White, SKColors.Black, extension);
+		Assert.IsTrue(plainDark > 0 && linearDark > 0, "Nothing was drawn.");
+
+		// Skia's luminance tables thin dark text and thicken light text; the render paint gives both the same coverage.
+		Assert.IsTrue(plainLight > plainDark * 1.1, $"Skia gamma expected: dark {plainDark}, light {plainLight}.");
+		Assert.IsTrue(Math.Abs(linearDark - linearLight) <= linearDark * 0.02, $"Linear coverage expected: dark {linearDark}, light {linearLight}.");
+		Assert.IsTrue(linearDark > plainDark, $"Dark text should gain coverage: {plainDark} -> {linearDark}.");
+	}
+
+	private static long Ink(SKFont font, SKPaint paint, SKColor foreground, SKColor background, LinuxTextRenderingExtension? extension)
+	{
+		using var surface = SKSurface.Create(new SKImageInfo(160, 32, SKColorType.Bgra8888, SKAlphaType.Premul));
+		surface.Canvas.Clear(background);
+		paint.Color = foreground;
+		surface.Canvas.DrawText("Downloads", 4, 22, SKTextAlign.Left, font, extension?.GetRenderPaint(paint) ?? paint);
+		using var image = surface.Snapshot();
+		using var pixels = image.PeekPixels();
+		long ink = 0;
+		for (var y = 0; y < pixels.Height; y++)
+		{
+			for (var x = 0; x < pixels.Width; x++)
+			{
+				var green = pixels.GetPixelColor(x, y).Green;
+				ink += background == SKColors.White ? 255 - green : green;
+			}
+		}
+
+		return ink;
 	}
 }

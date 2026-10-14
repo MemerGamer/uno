@@ -15,6 +15,10 @@ internal sealed record LinuxFontRenderingSettings(bool Antialias, SKFontHinting 
 	internal bool HasFontConfig { get; init; } = true;
 	internal bool HintingOverridden { get; init; }
 
+	// Skia darkens or lightens glyph coverage per text colour (SK_GAMMA_EXPONENT/SK_GAMMA_CONTRAST); FreeType consumers
+	// such as Qt and cairo blend the raw coverage. Linear coverage matches them, which matters most for dark text at 1x.
+	internal bool LinearCoverage { get; init; } = true;
+
 	internal SKFontEdging Edging => !Antialias ? SKFontEdging.Alias
 		: PixelGeometry == SKPixelGeometry.Unknown ? SKFontEdging.Antialias : SKFontEdging.SubpixelAntialias;
 
@@ -38,11 +42,17 @@ internal sealed record LinuxFontRenderingSettings(bool Antialias, SKFontHinting 
 			},
 			lcdFilter ?? Default.LcdFilter, autohint ?? Default.ForceAutoHinting);
 
-	// Startup overrides: UNO_SKIA_TEXT_HINTING=none|slight|normal|full and
-	// UNO_SKIA_TEXT_RGBA=none|rgb|bgr|vrgb|vbgr. Invalid values keep fontconfig's preference.
-	internal LinuxFontRenderingSettings WithOverrides(string? hinting, string? rgba)
+	// Startup overrides: UNO_SKIA_TEXT_HINTING=none|slight|normal|full, UNO_SKIA_TEXT_RGBA=none|rgb|bgr|vrgb|vbgr and
+	// UNO_SKIA_TEXT_GAMMA=linear|skia. Invalid values keep the current preference.
+	internal LinuxFontRenderingSettings WithOverrides(string? hinting, string? rgba, string? gamma = null)
 		=> this with
 		{
+			LinearCoverage = gamma?.Trim().ToLowerInvariant() switch
+			{
+				"linear" => true,
+				"skia" => false,
+				_ => LinearCoverage,
+			},
 			HintingOverridden = HintingOverridden || hinting?.Trim().ToLowerInvariant() is "none" or "slight" or "normal" or "full",
 			Hinting = hinting?.Trim().ToLowerInvariant() switch
 			{
