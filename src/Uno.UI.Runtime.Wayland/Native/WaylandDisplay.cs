@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
+using Uno.Foundation.Logging;
 using Uno.UI.Runtime.Wayland.Rendering;
 using Uno.UI.Runtime.Wayland.Native;
 using Uno.UI.Runtime.Wayland.Protocols;
@@ -223,6 +224,10 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 				return true;
 			}
 		}
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"display: command dropped ({(DispatchError is null ? "stopping" : "dispatch failed")})");
+		}
 		rejected?.Invoke();
 		return false;
 	}
@@ -254,6 +259,10 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 			}
 			catch (Exception error)
 			{
+				if (this.Log().IsEnabled(LogLevel.Error))
+				{
+					this.Log().Error("A posted Wayland display command failed.", error);
+				}
 				CaptureCallbackError(error);
 			}
 			ThrowCallbackError();
@@ -439,6 +448,15 @@ internal sealed unsafe class WaylandDisplay : IDisposable
 	internal void Unregister(nint handle) => _proxies.Remove(handle);
 	internal WaylandProxy? FindProxy(nint handle) => handle == 0 ? null : _proxies.GetValueOrDefault(handle);
 	internal void CaptureCallbackError(Exception error) => _callbackError ??= error;
+	// Called by generated event thunks; the failure is fatal for the loop, so name its source while it is known.
+	internal void CaptureCallbackError(Exception error, WaylandProxy proxy, string eventName)
+	{
+		if (this.Log().IsEnabled(LogLevel.Error))
+		{
+			this.Log().Error($"The {proxy.InterfaceName} v{proxy.Version} {eventName} handler failed.", error);
+		}
+		CaptureCallbackError(error);
+	}
 	private void ThrowCallbackError()
 	{
 		if (_callbackError is { } error)

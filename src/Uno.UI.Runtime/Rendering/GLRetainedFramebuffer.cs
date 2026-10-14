@@ -235,6 +235,10 @@ internal sealed class GLRetainedFramebuffer : IDisposable
 	}
 
 	/// <summary>Copies the composed frame onto the default framebuffer, which the host then swaps.</summary>
+	/// <remarks>
+	/// The raw binds here bypass Skia's GL state cache; that is safe only because the Skia backend calls
+	/// GRContext.ResetContext before drawing the next frame.
+	/// </remarks>
 	public void BlitToDefault()
 	{
 		if (_framebuffer == 0)

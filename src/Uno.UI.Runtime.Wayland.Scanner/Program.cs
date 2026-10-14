@@ -292,7 +292,7 @@ public static class Program
 			{
 				builder.AppendLine($"\t\t\tif (target.{eventMember} is null)\n\t\t\t{{\n\t\t\t\tPosix.close(arg{pair.i});\n\t\t\t\treturn;\n\t\t\t}}");
 			}
-			builder.AppendLine($"\t\t\tvar args = new {eventName}EventArgs({string.Join(", ", values)});\n\t\t\ttarget.{eventMember}?.Invoke(target, args);\n\t\t}}\n\t\tcatch (Exception error)\n\t\t{{\n\t\t\ttarget.Display.CaptureCallbackError(error);\n\t\t}}");
+			builder.AppendLine($"\t\t\tvar args = new {eventName}EventArgs({string.Join(", ", values)});\n\t\t\ttarget.{eventMember}?.Invoke(target, args);\n\t\t}}\n\t\tcatch (Exception error)\n\t\t{{\n\t\t\ttarget.Display.CaptureCallbackError(error, target, \"{eventName}\");\n\t\t}}");
 			if (Attr(evt, "type") == "destructor")
 			{
 				builder.AppendLine("\t\tfinally\n\t\t{\n\t\t\ttarget.DisposeLocal();\n\t\t}");

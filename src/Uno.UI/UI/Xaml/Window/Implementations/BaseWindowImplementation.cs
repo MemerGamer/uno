@@ -393,7 +393,8 @@ internal abstract partial class BaseWindowImplementation : IWindowImplementation
 		{
 			NativeWindowWrapper?.Show(true);
 
-			// Hosts that are not ready yet raise activation once their native state is applied.
+			// A host returning false must raise activation itself once its native state is applied. On xdg-shell
+			// the surface is only mapped after the initial configure, so a window that never gets one is never shown.
 			if (NativeWindowWrapper is not { IsReadyForActivation: false })
 			{
 				OnActivationStateChanged(CoreWindowActivationState.CodeActivated);

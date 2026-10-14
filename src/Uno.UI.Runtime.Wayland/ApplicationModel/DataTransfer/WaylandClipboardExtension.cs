@@ -129,15 +129,8 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 			cache[mimeType] = data = completion.Task;
 			try
 			{
-				_device.PostToUI(async () =>
-				{
-					if (cancellationToken.IsCancellationRequested)
-					{
-						completion.TrySetCanceled(cancellationToken);
-						return;
-					}
-					completion.TrySetResult(await GetBytesAsync(view, mimeType));
-				});
+				// Not an async lambda: a failure must reach the completion rather than the UI dispatcher.
+				_device.PostToUI(() => _ = ProduceAsync(view, mimeType, completion, cancellationToken));
 			}
 			catch (Exception error)
 			{
@@ -145,6 +138,23 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 			}
 		}
 		_ = SendAsync(fd, data, mimeType, cancellationToken);
+	}
+
+	private async Task ProduceAsync(DataPackageView view, string mimeType, TaskCompletionSource<byte[]?> completion, CancellationToken cancellationToken)
+	{
+		if (cancellationToken.IsCancellationRequested)
+		{
+			completion.TrySetCanceled(cancellationToken);
+			return;
+		}
+		try
+		{
+			completion.TrySetResult(await GetBytesAsync(view, mimeType));
+		}
+		catch (Exception error)
+		{
+			completion.TrySetException(error);
+		}
 	}
 
 	private async Task SendAsync(int fd, Task<byte[]?> data, string mimeType, CancellationToken cancellationToken)
@@ -157,11 +167,15 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 				this.Log().Debug($"The clipboard reader stopped receiving {mimeType}.");
 			}
 		}
+		catch (OperationCanceledException)
+		{
+			// A newer selection replaced this one.
+		}
 		catch (Exception error)
 		{
-			if (this.Log().IsEnabled(LogLevel.Debug))
+			if (this.Log().IsEnabled(LogLevel.Warning))
 			{
-				this.Log().Debug($"Clipboard transfer failed for {mimeType}: {error.Message}");
+				this.Log().Warn($"Clipboard transfer failed for {mimeType}.", error);
 			}
 		}
 	}

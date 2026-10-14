@@ -1,17 +1,19 @@
 #nullable enable
 
+using System;
 using System.Runtime.InteropServices;
+using Uno.UI.Runtime;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Uno.UI.Runtime.Wayland.Tests;
+namespace Uno.UI.Tests.Uno_UI_Runtime;
 
 [TestClass]
-public sealed class RetainedFramebufferTests
+public sealed class Given_GLRetainedFramebuffer
 {
 	[TestMethod]
 	[DataRow(true)]
 	[DataRow(false)]
-	public void BlitCopiesWholeRetainedFrameAndRestoresScissor(bool scissorEnabled)
+	public void When_Blit_Then_WholeRetainedFrameIsCopiedAndScissorRestored(bool scissorEnabled)
 	{
 		using var gl = new FakeGl();
 		using var framebuffer = new GLRetainedFramebuffer(gl.GetProcAddress);

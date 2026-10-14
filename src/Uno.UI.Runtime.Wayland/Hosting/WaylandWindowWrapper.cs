@@ -248,6 +248,10 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	{
 		if (_connection.IconManager is null)
 		{
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace($"window{_id}: compositor has no xdg_toplevel_icon; icon ignored");
+			}
 			return;
 		}
 		var generation = Interlocked.Increment(ref _iconGeneration);
@@ -823,9 +827,14 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 				// Even an unchanged size must be applied before activation observers inspect the window.
 				var initialActivation = !_hasAppliedConfigure && _activationRequested;
 				_hasAppliedConfigure = true;
-				ActivationState = (states & WaylandToplevelStates.Activated) != 0
-					? CoreWindowActivationState.PointerActivated
-					: initialActivation ? CoreWindowActivationState.CodeActivated : CoreWindowActivationState.Deactivated;
+				foreach (var state in WaylandToplevelStateParser.GetActivationSequence(states, initialActivation))
+				{
+					if (_closed)
+					{
+						break;
+					}
+					ActivationState = state;
+				}
 			}
 		});
 		// Pre-activation resizes update managed bounds, but buffers must wait for the first configure.

@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Uno.UI.Composition.Drawing;
 using Windows.Graphics.Imaging;
@@ -139,34 +140,37 @@ internal static class WaylandDataFormats
 		var mimeTypes = offer.MimeTypes;
 		foreach (var mimeType in mimeTypes)
 		{
-			package.SetDataProvider(mimeType, async _ => (await offer.ReadAsync(mimeType))!);
+			package.SetDataProvider(mimeType, async cancellationToken => await ReadRequiredAsync(offer, mimeType, cancellationToken));
 		}
 		if (TextMimeTypes.FirstOrDefault(mimeTypes.Contains) is { } textMimeType)
 		{
 			var encoding = textMimeType == "STRING" ? Encoding.Latin1 : Encoding.UTF8;
-			package.SetDataProvider(StandardDataFormats.Text, async _ => (await offer.ReadAsync(textMimeType) is { } bytes ? encoding.GetString(bytes).TrimEnd('\0') : null)!);
+			package.SetDataProvider(StandardDataFormats.Text, async cancellationToken => encoding.GetString(await ReadRequiredAsync(offer, textMimeType, cancellationToken)).TrimEnd('\0'));
 		}
 		if (mimeTypes.Contains(HtmlMimeType))
 		{
-			package.SetDataProvider(StandardDataFormats.Html, async _ => (await offer.ReadAsync(HtmlMimeType) is { } bytes ? Encoding.UTF8.GetString(bytes) : null)!);
+			package.SetDataProvider(StandardDataFormats.Html, async cancellationToken => Encoding.UTF8.GetString(await ReadRequiredAsync(offer, HtmlMimeType, cancellationToken)));
 		}
 		if (mimeTypes.Contains(WaylandFileUris.UriListMimeType) || mimeTypes.Contains(WaylandFileUris.GnomeCopiedFilesMimeType))
 		{
-			package.SetDataProvider(StandardDataFormats.StorageItems, async _ => await ReadStorageItemsAsync(offer, mimeTypes));
+			package.SetDataProvider(StandardDataFormats.StorageItems, async cancellationToken => await ReadStorageItemsAsync(offer, mimeTypes, cancellationToken));
 		}
 		if (ImageMimeTypes.FirstOrDefault(mimeTypes.Contains) is { } imageMimeType)
 		{
-			package.SetDataProvider(StandardDataFormats.Bitmap, async _ => (await offer.ReadAsync(imageMimeType) is { } bytes
-				? RandomAccessStreamReference.CreateFromStream(new MemoryStream(bytes).AsRandomAccessStream())
-				: null)!);
+			package.SetDataProvider(StandardDataFormats.Bitmap, async cancellationToken =>
+				RandomAccessStreamReference.CreateFromStream(new MemoryStream(await ReadRequiredAsync(offer, imageMimeType, cancellationToken)).AsRandomAccessStream()));
 		}
 	}
 
-	private static async Task<object> ReadStorageItemsAsync(WaylandDataOffer offer, IReadOnlyList<string> mimeTypes)
+	// A failed transfer faults the DataPackageView getter (as WinUI does for unavailable data) instead of resolving empty content.
+	private static async Task<byte[]> ReadRequiredAsync(WaylandDataOffer offer, string mimeType, CancellationToken cancellationToken)
+		=> await offer.ReadAsync(mimeType, cancellationToken) ?? throw new IOException($"The Wayland data source did not deliver {mimeType}.");
+
+	private static async Task<object> ReadStorageItemsAsync(WaylandDataOffer offer, IReadOnlyList<string> mimeTypes, CancellationToken cancellationToken)
 	{
 		var paths = mimeTypes.Contains(WaylandFileUris.UriListMimeType)
-			? await offer.ReadAsync(WaylandFileUris.UriListMimeType) is { } uriList ? WaylandFileUris.ParseUriList(Encoding.UTF8.GetString(uriList)) : []
-			: await offer.ReadAsync(WaylandFileUris.GnomeCopiedFilesMimeType) is { } copied ? WaylandFileUris.ParseGnomeCopiedFiles(Encoding.UTF8.GetString(copied)) : [];
+			? WaylandFileUris.ParseUriList(Encoding.UTF8.GetString(await ReadRequiredAsync(offer, WaylandFileUris.UriListMimeType, cancellationToken)))
+			: WaylandFileUris.ParseGnomeCopiedFiles(Encoding.UTF8.GetString(await ReadRequiredAsync(offer, WaylandFileUris.GnomeCopiedFilesMimeType, cancellationToken)));
 		var items = new List<IStorageItem>(paths.Count);
 		foreach (var path in paths)
 		{

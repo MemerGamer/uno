@@ -90,6 +90,7 @@ internal static class Program
 		}
 
 		host.Run();
+		// Final step of the CI lifecycle smoke driven by Window_DesktopScenarios; linux-skia-runtime-tests.sh waits for this line.
 		if (Environment.GetEnvironmentVariable("UNO_WAYLAND_LIFECYCLE_SMOKE") == "1")
 		{
 			Console.WriteLine("Wayland lifecycle: host stopped");

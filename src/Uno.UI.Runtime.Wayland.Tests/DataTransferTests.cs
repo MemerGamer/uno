@@ -1,5 +1,7 @@
 #nullable enable
 
+using System.Diagnostics;
+using System.IO;
 using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Uno.UI.Runtime.Wayland;
@@ -162,7 +164,7 @@ public sealed partial class DataTransferTests
 	}
 
 	[TestMethod]
-	public async Task PipeReadDeadlineIsNotExtendedByProgress()
+	public async Task PipeReadDeadlineIsExtendedByProgress()
 	{
 		RequireLinux();
 		var (read, write) = WaylandPipe.Create();
@@ -187,13 +189,37 @@ public sealed partial class DataTransferTests
 		});
 		try
 		{
+			// A writer that keeps sending must outlive the idle timeout; only its own end of file completes the read.
 			var reader = Task.Run(() => WaylandPipe.ReadToEnd(read, TimeSpan.FromMilliseconds(100)));
-			Assert.IsNull(await reader.WaitAsync(TimeSpan.FromSeconds(3)));
+			await Task.Delay(400);
+			Assert.IsFalse(reader.IsCompleted);
+			cancellation.Cancel();
+			await writer;
+			var received = await reader.WaitAsync(TimeSpan.FromSeconds(3));
+			Assert.IsNotNull(received);
+			Assert.IsGreaterThanOrEqualTo(10, received.Length);
 		}
 		finally
 		{
 			cancellation.Cancel();
 			await writer;
+		}
+	}
+
+	[TestMethod]
+	public async Task PipeReadTimesOutWhenTheWriterStallsAfterProgress()
+	{
+		RequireLinux();
+		var (read, write) = WaylandPipe.Create();
+		try
+		{
+			Assert.IsTrue(WriteByte(write));
+			var reader = Task.Run(() => WaylandPipe.ReadToEnd(read, TimeSpan.FromMilliseconds(100)));
+			Assert.IsNull(await reader.WaitAsync(TimeSpan.FromSeconds(3)));
+		}
+		finally
+		{
+			_ = Posix.close(write);
 		}
 	}
 
@@ -229,6 +255,218 @@ public sealed partial class DataTransferTests
 		finally
 		{
 			_ = Posix.close(read);
+		}
+	}
+
+	[TestMethod]
+	public async Task PipeReadCancellationStopsATricklingSource()
+	{
+		RequireLinux();
+		using var source = new TricklingSource();
+		using var cancellation = new CancellationTokenSource();
+		var reader = Task.Run(() => source.Receive("text/plain", cancellation.Token));
+		await source.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		await source.FirstByte.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		await Task.Delay(200);
+		Assert.IsTrue(source.BytesWritten > 1);
+		Assert.IsFalse(reader.IsCompleted);
+		cancellation.Cancel();
+		Assert.IsNull(await reader.WaitAsync(TimeSpan.FromSeconds(3)));
+		await source.Writer.WaitAsync(TimeSpan.FromSeconds(3));
+		Assert.IsTrue(source.ReaderClosed, "Cancellation must close the descriptor even while bytes keep arriving.");
+	}
+
+	[TestMethod]
+	public async Task AbandonedOfferReadStopsATricklingSource()
+	{
+		RequireLinux();
+		using var source = new TricklingSource();
+		using var reads = new WaylandDataOfferReads(source.Receive);
+		using var cancellation = new CancellationTokenSource();
+		var reader = reads.ReadAsync("text/plain", cancellation.Token);
+		await source.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		await source.FirstByte.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		await Task.Delay(200);
+		Assert.IsTrue(source.BytesWritten > 1);
+		Assert.IsFalse(reader.IsCompleted);
+		cancellation.Cancel();
+		await Assert.ThrowsAsync<OperationCanceledException>(() => reader);
+		Assert.IsFalse(await reads.WhenReadsCompleted().WaitAsync(TimeSpan.FromSeconds(3)));
+		await source.Writer.WaitAsync(TimeSpan.FromSeconds(3));
+		Assert.IsTrue(source.ReaderClosed);
+	}
+
+	[TestMethod]
+	public async Task CancellingOneSameMimeReaderKeepsTheSharedTransferAlive()
+	{
+		RequireLinux();
+		using var source = new TricklingSource();
+		using var reads = new WaylandDataOfferReads(source.Receive);
+		using var cancellation = new CancellationTokenSource();
+		var first = reads.ReadAsync("text/plain", cancellation.Token);
+		var second = reads.ReadAsync("text/plain", CancellationToken.None);
+		await source.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		cancellation.Cancel();
+		await Assert.ThrowsAsync<OperationCanceledException>(() => first);
+		await Task.Delay(200);
+		Assert.IsFalse(second.IsCompleted);
+		Assert.IsFalse(source.ReaderClosed);
+		Assert.AreEqual(1, source.ReceiveCount);
+		source.Stop();
+		var received = await second.WaitAsync(TimeSpan.FromSeconds(3));
+		Assert.IsNotNull(received);
+		Assert.IsTrue(received.Length > 0);
+		Assert.IsTrue(await reads.WhenReadsCompleted().WaitAsync(TimeSpan.FromSeconds(3)));
+		CollectionAssert.AreEqual(received, await reads.ReadAsync("text/plain", CancellationToken.None));
+		Assert.AreEqual(1, source.ReceiveCount, "Completed same-MIME transfers remain cached.");
+	}
+
+	[TestMethod]
+	public async Task AbandonedOfferReadCanBeRequestedAgain()
+	{
+		RequireLinux();
+		using var firstSource = new TricklingSource();
+		using var secondSource = new TricklingSource();
+		var receives = 0;
+		using var reads = new WaylandDataOfferReads((mimeType, token) =>
+			(Interlocked.Increment(ref receives) == 1 ? firstSource : secondSource).Receive(mimeType, token));
+		using var cancellation = new CancellationTokenSource();
+		var first = reads.ReadAsync("text/plain", cancellation.Token);
+		await firstSource.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		cancellation.Cancel();
+		await Assert.ThrowsAsync<OperationCanceledException>(() => first);
+		await firstSource.Writer.WaitAsync(TimeSpan.FromSeconds(3));
+
+		var second = reads.ReadAsync("text/plain", CancellationToken.None);
+		await secondSource.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		await secondSource.FirstByte.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		secondSource.Stop();
+		var received = await second.WaitAsync(TimeSpan.FromSeconds(3));
+		Assert.IsNotNull(received);
+		Assert.IsTrue(received.Length > 0);
+		Assert.AreEqual(2, receives, "An abandoned transfer must not poison the MIME cache.");
+	}
+
+	[TestMethod]
+	public async Task DestroyedOfferCancelsAllInFlightReads()
+	{
+		RequireLinux();
+		using var firstSource = new TricklingSource();
+		using var secondSource = new TricklingSource();
+		using var reads = new WaylandDataOfferReads((mimeType, token) =>
+			(mimeType == "text/plain" ? firstSource : secondSource).Receive(mimeType, token));
+		var first = reads.ReadAsync("text/plain", CancellationToken.None);
+		var second = reads.ReadAsync("text/html", CancellationToken.None);
+		await Task.WhenAll(firstSource.Started.Task, secondSource.Started.Task).WaitAsync(TimeSpan.FromSeconds(3));
+		reads.Dispose();
+		Assert.IsNull(await first.WaitAsync(TimeSpan.FromSeconds(3)));
+		Assert.IsNull(await second.WaitAsync(TimeSpan.FromSeconds(3)));
+		Assert.IsFalse(await reads.WhenReadsCompleted().WaitAsync(TimeSpan.FromSeconds(3)));
+		await Task.WhenAll(firstSource.Writer, secondSource.Writer).WaitAsync(TimeSpan.FromSeconds(3));
+		Assert.IsTrue(firstSource.ReaderClosed);
+		Assert.IsTrue(secondSource.ReaderClosed);
+		Assert.IsNull(await reads.ReadAsync("text/plain", CancellationToken.None));
+	}
+
+	[TestMethod]
+	public async Task PipeWriteDeadlineIsExtendedByASlowReader()
+	{
+		RequireLinux();
+		var data = new byte[512 * 1024];
+		new Random(2).NextBytes(data);
+		var (read, write) = WaylandPipe.Create();
+		var timeout = TimeSpan.FromMilliseconds(500);
+		var elapsed = Stopwatch.StartNew();
+		var writer = Task.Run(() => WaylandPipe.WriteAll(write, data, timeout));
+		var reader = Task.Run(() => ReadSlowly(read));
+		var sent = await writer.WaitAsync(TimeSpan.FromSeconds(10));
+		var received = await reader.WaitAsync(TimeSpan.FromSeconds(10));
+		Assert.IsTrue(sent);
+		CollectionAssert.AreEqual(data, received);
+		Assert.IsTrue(elapsed.Elapsed > timeout, "The transfer must exceed the original deadline while the reader keeps making progress.");
+	}
+
+	private static unsafe byte[] ReadSlowly(int fd)
+	{
+		try
+		{
+			using var received = new MemoryStream();
+			var chunk = new byte[4096];
+			while (true)
+			{
+				nint count;
+				fixed (byte* pointer = chunk)
+				{
+					count = Posix.read(fd, pointer, (nuint)chunk.Length);
+				}
+				if (count == 0)
+				{
+					return received.ToArray();
+				}
+				Assert.IsTrue(count > 0);
+				received.Write(chunk, 0, (int)count);
+				Thread.Sleep(15);
+			}
+		}
+		finally
+		{
+			_ = Posix.close(fd);
+		}
+	}
+
+	private sealed class TricklingSource : IDisposable
+	{
+		private readonly CancellationTokenSource _stop = new();
+		private readonly int _read;
+		private int _bytesWritten;
+		internal readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		internal readonly TaskCompletionSource FirstByte = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		internal Task Writer { get; }
+		internal bool ReaderClosed { get; private set; }
+		internal int ReceiveCount { get; private set; }
+		internal int BytesWritten => Volatile.Read(ref _bytesWritten);
+
+		internal TricklingSource()
+		{
+			var (read, write) = WaylandPipe.Create();
+			_read = read;
+			Writer = Task.Run(async () =>
+			{
+				try
+				{
+					while (!_stop.IsCancellationRequested)
+					{
+						if (!WriteByte(write))
+						{
+							ReaderClosed = true;
+							break;
+						}
+						Interlocked.Increment(ref _bytesWritten);
+						FirstByte.TrySetResult();
+						await Task.Delay(10);
+					}
+				}
+				finally
+				{
+					_ = Posix.close(write);
+				}
+			});
+		}
+
+		internal byte[]? Receive(string mimeType, CancellationToken cancellationToken)
+		{
+			ReceiveCount++;
+			Started.TrySetResult();
+			return WaylandPipe.ReadToEnd(_read, TimeSpan.FromSeconds(5), cancellationToken: cancellationToken);
+		}
+
+		internal void Stop() => _stop.Cancel();
+
+		public void Dispose()
+		{
+			Stop();
+			Writer.GetAwaiter().GetResult();
+			_stop.Dispose();
 		}
 	}
 
