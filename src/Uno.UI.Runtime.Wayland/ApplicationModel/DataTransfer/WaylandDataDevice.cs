@@ -5,12 +5,13 @@ using System.Collections.Generic;
 using Windows.Foundation;
 using Uno.UI.Runtime.Wayland.Protocols;
 using Uno.UI.Runtime.Wayland.Native;
+using Windows.ApplicationModel.DataTransfer;
 
 namespace Uno.UI.Runtime.Wayland;
 
 // The seat's wl_data_device, shared by the clipboard and every window's drop target.
 // Protocol events arrive on the dispatch thread; drag-and-drop events are forwarded to the UI thread in order.
-internal sealed class WaylandDataDevice
+internal sealed class WaylandDataDevice : IWaylandClipboardDevice
 {
 	private readonly WaylandConnection _connection;
 	private readonly WlDataDeviceManager _manager;
@@ -135,6 +136,27 @@ internal sealed class WaylandDataDevice
 	internal void RequestSelection(Action publish, Action? cancel = null) => _selectionSerial.Request(publish, cancel);
 
 	internal void CancelPendingSelection() => _selectionSerial.CancelPendingSelection();
+
+	event EventHandler? IWaylandClipboardDevice.SelectionChanged
+	{
+		add => SelectionChanged += value;
+		remove => SelectionChanged -= value;
+	}
+
+	bool IWaylandClipboardDevice.HasSelection => Selection is not null;
+	void IWaylandClipboardDevice.Post(Action action) => Display.Post(action);
+	void IWaylandClipboardDevice.RequestSelection(Action publish, Action? cancel) => RequestSelection(publish, cancel);
+	void IWaylandClipboardDevice.CancelPendingSelection() => CancelPendingSelection();
+	WlDataSource IWaylandClipboardDevice.CreateSource() => CreateSource();
+	void IWaylandClipboardDevice.SetSelection(WlDataSource? source) => SetSelection(source);
+
+	void IWaylandClipboardDevice.FillContent(DataPackage package)
+	{
+		if (Selection is { } offer)
+		{
+			WaylandDataFormats.Fill(package, offer);
+		}
+	}
 
 	// UI thread.
 	internal void AddDropTarget(WaylandDragDropExtension target) => _dropTargets.Add(target);

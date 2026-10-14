@@ -20,6 +20,7 @@ using Uno.UI.Xaml.Controls.Extensions;
 using Windows.ApplicationModel.DataTransfer.DragDrop.Core;
 using Windows.Storage.Pickers;
 using Windows.UI.Core;
+using Windows.UI.Input.Preview.Injection;
 using Windows.UI.ViewManagement;
 
 namespace Uno.UI.Runtime.Wayland;
@@ -43,10 +44,12 @@ internal static class WaylandRegistrations
 		ApiExtensibility.Register<AppWindow>(typeof(INativeInputNonClientPointerSource), appWindow => ((WaylandWindowWrapper)appWindow.NativeAppWindow).NonClientPointerSource);
 		ApiExtensibility.Register(typeof(IApplicationViewExtension), owner => new WaylandApplicationViewExtension(owner, connection));
 		ApiExtensibility.Register(typeof(ILauncherExtension), owner => new LinuxLauncherExtension(owner));
-		if (WaylandDataDevice.Create(connection) is { } dataDevice)
+		ApiExtensibility.Register(typeof(IInputInjectorKeyboardTargetPolicy), _ => connection.KeyboardInjectionPolicy);
+		var dataDevice = WaylandDataDevice.Create(connection);
+		var clipboard = new WaylandClipboardExtension(dataDevice, connection.PostToUI);
+		ApiExtensibility.Register(typeof(IClipboardExtension), _ => clipboard);
+		if (dataDevice is not null)
 		{
-			var clipboard = new WaylandClipboardExtension(dataDevice);
-			ApiExtensibility.Register(typeof(IClipboardExtension), _ => clipboard);
 			ApiExtensibility.Register<DragDropManager>(typeof(IDragDropExtension), manager => new WaylandDragDropExtension(manager, dataDevice));
 		}
 		if (WaylandImeTextBoxExtension.TryCreate(connection) is { } ime)

@@ -195,7 +195,7 @@ public sealed partial class DisplayTests
 		internal int Server;
 	}
 
-	private sealed class ProtocolPeer : IDisposable
+	internal sealed class ProtocolPeer : IDisposable
 	{
 		private readonly Socket _server;
 		private readonly Thread _thread;
@@ -203,11 +203,16 @@ public sealed partial class DisplayTests
 		private uint _registry;
 		private readonly uint _compositorVersion;
 		private readonly bool _answerSync;
+		private readonly bool _dataDeviceManager;
+		private readonly object _sendGate = new();
+		private readonly ManualResetEventSlim _sourceCreated = new();
+		private uint _manager, _source;
 
-		internal ProtocolPeer(uint compositorVersion = 6, bool answerSync = true)
+		internal ProtocolPeer(uint compositorVersion = 6, bool answerSync = true, bool dataDeviceManager = false)
 		{
 			_compositorVersion = compositorVersion;
 			_answerSync = answerSync;
+			_dataDeviceManager = dataDeviceManager;
 			if (socketpair(1, 1 | 0x80000, 0, out var pair) != 0)
 			{
 				throw new IOException($"socketpair failed: {Marshal.GetLastPInvokeError()}");
@@ -223,6 +228,23 @@ public sealed partial class DisplayTests
 			_client = -1;
 			return WaylandDisplay.ConnectToFileDescriptor(fd);
 		}
+		internal void CancelSource()
+		{
+			Assert.IsTrue(_sourceCreated.Wait(TimeSpan.FromSeconds(5)), "Data source was not created.");
+			Send(_source, 2, []); // wl_data_source.cancelled
+		}
+
+		private void AdvertiseGlobal(uint id, string interfaceName, uint version)
+		{
+			var name = Encoding.UTF8.GetBytes(interfaceName + "\0");
+			var global = new byte[4 + 4 + ((name.Length + 3) & ~3) + 4];
+			BinaryPrimitives.WriteUInt32LittleEndian(global, id);
+			BinaryPrimitives.WriteUInt32LittleEndian(global.AsSpan(4), (uint)name.Length);
+			name.CopyTo(global, 8);
+			BinaryPrimitives.WriteUInt32LittleEndian(global.AsSpan(global.Length - 4), version);
+			Send(_registry, 0, global);
+		}
+
 		private void Serve()
 		{
 			try
@@ -239,13 +261,20 @@ public sealed partial class DisplayTests
 					if (id == 1 && opcode == 1)
 					{
 						_registry = BinaryPrimitives.ReadUInt32LittleEndian(body);
-						var name = Encoding.UTF8.GetBytes("wl_compositor\0");
-						var global = new byte[4 + 4 + ((name.Length + 3) & ~3) + 4];
-						BinaryPrimitives.WriteUInt32LittleEndian(global, 7);
-						BinaryPrimitives.WriteUInt32LittleEndian(global.AsSpan(4), (uint)name.Length);
-						name.CopyTo(global, 8);
-						BinaryPrimitives.WriteUInt32LittleEndian(global.AsSpan(global.Length - 4), _compositorVersion);
-						Send(_registry, 0, global);
+						AdvertiseGlobal(7, WlCompositor.ProtocolName, _compositorVersion);
+						if (_dataDeviceManager)
+						{
+							AdvertiseGlobal(8, WlDataDeviceManager.ProtocolName, 3);
+						}
+					}
+					else if (_dataDeviceManager && id == _registry && opcode == 0 && BinaryPrimitives.ReadUInt32LittleEndian(body) == 8)
+					{
+						_manager = BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(body.Length - 4));
+					}
+					else if (_dataDeviceManager && id == _manager && opcode == 0)
+					{
+						_source = BinaryPrimitives.ReadUInt32LittleEndian(body);
+						_sourceCreated.Set();
 					}
 					else if (id == 1 && opcode == 0 && _answerSync)
 					{
@@ -279,7 +308,15 @@ public sealed partial class DisplayTests
 				offset += read;
 			}
 		}
-		private unsafe void Send(uint id, uint opcode, byte[] body)
+		private void Send(uint id, uint opcode, byte[] body)
+		{
+			lock (_sendGate)
+			{
+				SendCore(id, opcode, body);
+			}
+		}
+
+		private unsafe void SendCore(uint id, uint opcode, byte[] body)
 		{
 			var bytes = new byte[body.Length + 8];
 			BinaryPrimitives.WriteUInt32LittleEndian(bytes, id);
@@ -310,6 +347,7 @@ public sealed partial class DisplayTests
 			}
 			_server.Dispose();
 			Assert.IsTrue(_thread.Join(TimeSpan.FromSeconds(5)), "Protocol peer did not stop.");
+			_sourceCreated.Dispose();
 			if (_client >= 0)
 			{
 				new SafeSocketHandle(_client, ownsHandle: true).Dispose();

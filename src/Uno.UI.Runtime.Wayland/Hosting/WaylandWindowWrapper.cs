@@ -297,6 +297,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	internal protected override void Activate()
 	{
+		_host.RecordActivation();
 		_activationRequested = true;
 		Post(() =>
 		{
@@ -362,7 +363,14 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	}
 
 	// Overlapped presenter, UI thread.
-	internal void Maximize() => Post(() => _toplevel.SetMaximized());
+	internal void Maximize() => Post(() =>
+	{
+		_toplevel.SetMaximized();
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"window{_id}: set_maximized marshalled");
+		}
+	});
 
 	// Returns whether the presenter state changed; OverlappedPresenter notifies AppWindow for its own calls.
 	internal bool Minimize()
@@ -854,6 +862,8 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		var previousStates = _uiStates;
 		var wasMinimized = _minimizeRequested;
 		_uiStates = states;
+		// The first CodeActivated notification can be synthetic; injection follows compositor activation.
+		_connection.KeyboardInjectionPolicy.NativeActivationChanged(XamlRoot!.VisualTree.ContentRoot.InputManager, (states & WaylandToplevelStates.Activated) != 0);
 		if ((states & WaylandToplevelStates.Activated) != 0)
 		{
 			_minimizeRequested = false;
@@ -894,6 +904,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			return;
 		}
 		_closed = true;
+		_connection.KeyboardInjectionPolicy.NativeActivationChanged(XamlRoot!.VisualTree.ContentRoot.InputManager, active: false);
 		Interlocked.Increment(ref _iconGeneration);
 		if (WaylandDiagnostics.IsEnabled)
 		{

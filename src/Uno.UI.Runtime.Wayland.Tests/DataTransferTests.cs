@@ -207,6 +207,84 @@ public sealed partial class DataTransferTests
 	}
 
 	[TestMethod]
+	public async Task PipeReadTotalDeadlineCutsOffTricklingWriter()
+	{
+		RequireLinux();
+		var (read, write) = WaylandPipe.Create();
+		using var cancellation = new CancellationTokenSource();
+		var writes = 0;
+		var writer = Task.Run(async () =>
+		{
+			try
+			{
+				while (!cancellation.IsCancellationRequested && WriteByte(write))
+				{
+					Interlocked.Increment(ref writes);
+					await Task.Delay(10);
+				}
+			}
+			finally
+			{
+				_ = Posix.close(write);
+			}
+		});
+		try
+		{
+			var reader = Task.Run(() => WaylandPipe.ReadToEnd(read, TimeSpan.FromSeconds(5), totalTimeout: TimeSpan.FromMilliseconds(500)));
+			Assert.IsNull(await reader.WaitAsync(TimeSpan.FromSeconds(3)), "Progress must not reset the total deadline.");
+			Assert.IsTrue(Volatile.Read(ref writes) > 1, "The peer must make repeated progress before cutoff.");
+			Assert.AreEqual(-1, Posix.fcntl(read, 3, 0));
+		}
+		finally
+		{
+			cancellation.Cancel();
+			await writer.WaitAsync(TimeSpan.FromSeconds(3));
+		}
+	}
+
+	[TestMethod]
+	public async Task PipeWriteTotalDeadlineCutsOffTricklingReader()
+	{
+		RequireLinux();
+		var (read, write) = WaylandPipe.Create();
+		using var cancellation = new CancellationTokenSource();
+		var reads = 0;
+		var reader = Task.Run(async () =>
+		{
+			try
+			{
+				while (!cancellation.IsCancellationRequested && ReadChunk(read) > 0)
+				{
+					Interlocked.Increment(ref reads);
+					await Task.Delay(10);
+				}
+			}
+			finally
+			{
+				_ = Posix.close(read);
+			}
+		});
+		try
+		{
+			var writer = Task.Run(() => WaylandPipe.WriteAll(write, new byte[3 * 1024 * 1024], TimeSpan.FromSeconds(5), totalTimeout: TimeSpan.FromMilliseconds(500)));
+			Assert.IsFalse(await writer.WaitAsync(TimeSpan.FromSeconds(3)), "Progress must not reset the total deadline.");
+			Assert.IsTrue(Volatile.Read(ref reads) > 1);
+			Assert.AreEqual(-1, Posix.fcntl(write, 3, 0));
+		}
+		finally
+		{
+			cancellation.Cancel();
+			await reader.WaitAsync(TimeSpan.FromSeconds(3));
+		}
+	}
+
+	private static unsafe nint ReadChunk(int fd)
+	{
+		byte* bytes = stackalloc byte[4096];
+		return Posix.read(fd, bytes, 4096);
+	}
+
+	[TestMethod]
 	public async Task PipeReadTimesOutWhenTheWriterStallsAfterProgress()
 	{
 		RequireLinux();

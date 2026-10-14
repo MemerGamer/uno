@@ -96,6 +96,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 
 			// Input sources must exist before registration: Uno resolves them per IXamlRootHost.
 			XamlRootMap.Register(xamlRoot, this);
+			_window.Activated += OnWindowActivated;
 		}
 		catch
 		{
@@ -121,6 +122,28 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 			throw;
 		}
 	}
+
+	void IXamlRootHost.OnManagedFocusChanged(bool hasFocus)
+	{
+		if (hasFocus)
+		{
+			_connection.KeyboardInjectionPolicy.Focused(_xamlRoot.VisualTree.ContentRoot.InputManager);
+		}
+		else
+		{
+			_connection.KeyboardInjectionPolicy.Unfocused(_xamlRoot.VisualTree.ContentRoot.InputManager);
+		}
+	}
+
+	private void OnWindowActivated(object sender, Microsoft.UI.Xaml.WindowActivatedEventArgs args)
+	{
+		if (args.WindowActivationState != WindowActivationState.Deactivated)
+		{
+			RecordActivation();
+		}
+	}
+
+	internal void RecordActivation() => _connection.KeyboardInjectionPolicy.Activated(_xamlRoot.VisualTree.ContentRoot.InputManager);
 
 	internal WlSurface Surface => _surface;
 	internal WaylandPointerInputSource PointerSource { get; }
@@ -416,7 +439,12 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 						_frameTarget = null;
 					}
 				},
-				() => XamlRootMap.Unregister(_xamlRoot),
+				() =>
+				{
+					_window.Activated -= OnWindowActivated;
+					_connection.KeyboardInjectionPolicy.Remove(_xamlRoot.VisualTree.ContentRoot.InputManager);
+					XamlRootMap.Unregister(_xamlRoot);
+				},
 				() =>
 				{
 					lock (display.SyncRoot)

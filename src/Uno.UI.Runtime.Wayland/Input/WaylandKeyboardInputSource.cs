@@ -52,9 +52,14 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			ClearKeymap();
 			return;
 		}
-		var text = WaylandXkb.ReadKeymap(fd, size);
+		SetKeymap(WaylandXkb.ReadKeymap(fd, size));
+	}
+
+	private void SetKeymap(string text)
+	{
 		var context = WaylandXkb.ContextNew(0);
 		nint keymap = 0, state = 0;
+		WaylandKeyboardCompose? compose = null;
 		try
 		{
 			if (context == 0)
@@ -71,14 +76,16 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 			{
 				throw new InvalidOperationException("Cannot create XKB state.");
 			}
+			compose = new WaylandKeyboardCompose(context, GetComposeLocale());
 			ClearKeymap();
 			_context = context;
 			_keymap = keymap;
 			_state = state;
-			_compose = new WaylandKeyboardCompose(context, GetComposeLocale());
+			_compose = compose;
 		}
 		catch
 		{
+			compose?.Dispose();
 			if (state != 0)
 			{
 				WaylandXkb.StateUnref(state);

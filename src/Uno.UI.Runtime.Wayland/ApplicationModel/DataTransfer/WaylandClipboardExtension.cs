@@ -12,33 +12,55 @@ using Windows.ApplicationModel.DataTransfer;
 
 namespace Uno.UI.Runtime.Wayland;
 
-// The CLIPBOARD selection through wl_data_device. Wayland only lets the client with keyboard focus set the
-// selection, and only announces selection changes to it, so ContentChanged is raised while a window is focused.
+// Local copies remain readable even without a seat or selection ownership. Foreign selections use wl_data_device.
 internal sealed class WaylandClipboardExtension : IClipboardExtension
 {
 	// Data production and writing each have a bounded deadline.
 	private static readonly TimeSpan _writeTimeout = TimeSpan.FromSeconds(5);
 
-	private readonly WaylandDataDevice _device;
+	private readonly IWaylandClipboardDevice? _device;
+	private readonly Action<Action> _postToUI;
 	private readonly object _gate = new();
-	// Guarded by _gate: the content we offer, valid while our source is the selection.
+	// Guarded by _gate: local generations survive announcements while pending and echoed offers while owned.
 	private DataPackageView? _content;
 	private int _generation;
+	private int? _pendingGeneration;
 	// Dispatch thread.
 	private WlDataSource? _source;
 	private CancellationTokenSource? _sourceCancellation;
 	private volatile bool _isMonitoringEnabled;
 
-	internal WaylandClipboardExtension(WaylandDataDevice device)
+	internal WaylandClipboardExtension(IWaylandClipboardDevice? device, Action<Action> postToUI)
 	{
 		_device = device;
-		device.SelectionChanged += (_, _) =>
+		_postToUI = postToUI;
+		if (device is not null)
 		{
-			if (_isMonitoringEnabled)
+			device.SelectionChanged += (_, _) =>
 			{
-				_device.PostToUI(() => ContentChanged?.Invoke(this, EventArgs.Empty));
-			}
-		};
+				// On refocus the existing offer precedes keyboard enter. It must not overwrite a pending copy or clear.
+				if (_source is null)
+				{
+					lock (_gate)
+					{
+						if (_pendingGeneration is null)
+						{
+							_content = null;
+							_generation++;
+						}
+					}
+				}
+				NotifyContentChanged();
+			};
+		}
+	}
+
+	private void NotifyContentChanged()
+	{
+		if (_isMonitoringEnabled)
+		{
+			_postToUI(() => ContentChanged?.Invoke(this, EventArgs.Empty));
+		}
 	}
 
 	public event EventHandler<object>? ContentChanged;
@@ -60,13 +82,32 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 		lock (_gate)
 		{
 			// Readable locally right away, as on WinUI, even while publishing waits for keyboard focus.
-			_content = view;
+			_content = view ?? new DataPackage().GetView();
 			generation = ++_generation;
+			_pendingGeneration = generation;
+		}
+		if (_device is not { } device)
+		{
+			NotifyContentChanged();
+			return;
 		}
 		var mimeTypes = view is null ? [] : WaylandDataFormats.GetMimeTypes(view);
 		// Wayland only accepts a selection from the focused client with a recent input serial.
-		_device.Display.Post(() => _device.RequestSelection(() =>
+		device.Post(() =>
 		{
+			if (IsCurrentSelection(generation))
+			{
+				device.RequestSelection(Publish);
+			}
+		});
+		NotifyContentChanged();
+
+		void Publish()
+		{
+			if (!IsCurrentSelection(generation))
+			{
+				return;
+			}
 			var previous = _source;
 			_sourceCancellation?.Cancel();
 			_sourceCancellation?.Dispose();
@@ -74,7 +115,7 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 			_source = null;
 			if (view is not null)
 			{
-				var source = _device.CreateSource();
+				var source = device.CreateSource();
 				foreach (var mimeType in mimeTypes)
 				{
 					source.Offer(mimeType);
@@ -88,36 +129,44 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 				source.Cancelled += (_, _) =>
 				{
 					cancellation.Cancel();
-					// Another client (or a newer SetContent) took the selection.
 					if (_source == source)
 					{
 						_source = null;
-						// Unfocused clients get no selection events, but this one is newer than a still deferred copy.
-						_device.CancelPendingSelection();
+						_sourceCancellation = null;
+						cancellation.Dispose();
 						lock (_gate)
 						{
+							// Ownership loss invalidates this source, never a newer deferred copy or clear.
 							if (_generation == generation)
 							{
 								_content = null;
+								_generation++;
 							}
 						}
+						NotifyContentChanged();
 					}
 					source.Destroy();
 				};
 				_source = source;
 			}
-			_device.SetSelection(_source);
-			previous?.Destroy();
-		}, () =>
-		{
+			device.SetSelection(_source);
 			lock (_gate)
 			{
-				if (_generation == generation)
+				if (_pendingGeneration == generation)
 				{
-					_content = null;
+					_pendingGeneration = null;
 				}
 			}
-		}));
+			previous?.Destroy();
+		}
+	}
+
+	private bool IsCurrentSelection(int generation)
+	{
+		lock (_gate)
+		{
+			return _generation == generation;
+		}
 	}
 
 	// Providers run on the UI dispatcher; pipe ownership stays with the worker.
@@ -130,7 +179,7 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 			try
 			{
 				// Not an async lambda: a failure must reach the completion rather than the UI dispatcher.
-				_device.PostToUI(() => _ = ProduceAsync(view, mimeType, completion, cancellationToken));
+				_postToUI(() => _ = ProduceAsync(view, mimeType, completion, cancellationToken));
 			}
 			catch (Exception error)
 			{
@@ -207,10 +256,7 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 		}
 
 		var package = new DataPackage();
-		if (_device.Selection is { } offer)
-		{
-			WaylandDataFormats.Fill(package, offer);
-		}
+		_device?.FillContent(package);
 		return package.GetView();
 	}
 }

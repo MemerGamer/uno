@@ -54,7 +54,7 @@ public class X11NativeWebViewProvider(CoreWebView2 coreWebView2) : INativeWebVie
 			return null;
 		}
 
-		XLib.XCloseDisplay(display);
+		_ = XLib.XCloseDisplay(display);
 		return new X11NativeWebView(coreWebView2, contentPresenter);
 	}
 }
