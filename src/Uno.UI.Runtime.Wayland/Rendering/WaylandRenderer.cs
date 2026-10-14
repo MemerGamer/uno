@@ -18,13 +18,19 @@ internal interface IWaylandFrameGate
 
 	/// <summary>Called right before the commit, with the drawn frame's size and the configured buffer size.</summary>
 	bool CanPresent(int frameWidth, int frameHeight, int bufferWidth, int bufferHeight);
+
+	/// <summary>Called after a frame was committed or consumed by the liveness fallback.</summary>
+	void EndFrame(bool presented);
+
+	/// <summary>Called at a display callback or liveness opportunity, independently of layout readiness.</summary>
+	void FrameOpportunity();
 }
 
 /// <summary>
 /// Drives one window's frames over its negotiated graphics context, paced by wl_surface frame callbacks.
 /// All members run on the window's render thread.
 /// </summary>
-internal sealed class WaylandRenderer : IDisposable
+internal sealed class WaylandRenderer : IDisposable, ISwapChain
 {
 	private readonly IXamlRootHost _host;
 	private readonly IWaylandFrameGate _gate;
@@ -44,7 +50,7 @@ internal sealed class WaylandRenderer : IDisposable
 		Scale = scale;
 		_context = context;
 		_drawingFactory = drawingFactory;
-		_scheduler = new WaylandFrameScheduler(surface, Render, ProduceUnpresentedFrame, postToOwner);
+		_scheduler = new WaylandFrameScheduler(surface, Render, ProduceUnpresentedFrame, postToOwner, _gate.FrameOpportunity);
 		Attach(context);
 	}
 
@@ -116,19 +122,38 @@ internal sealed class WaylandRenderer : IDisposable
 
 	private bool Draw(bool commit)
 	{
-		if (_disposed
-			|| _context is WaylandEglGraphicsContext { IsLost: true }
-			|| _host.RootElement?.Visual.CompositionTarget is not CompositionTarget compositionTarget)
+		if (_disposed || _context is WaylandEglGraphicsContext { IsLost: true })
 		{
 			return false;
 		}
-		_commitAllowed = commit;
 		_gate.BeginFrame();
+		if (_host.RootElement?.Visual.CompositionTarget is not CompositionTarget compositionTarget)
+		{
+			_gate.EndFrame(false);
+			return false;
+		}
+		_commitAllowed = commit;
 		// Each window owns its context, so its backend factory is bound to this window's CompositionTarget.
 		compositionTarget.Renderer = _drawingFactory;
-		compositionTarget.OnNativePlatformFrameRequested(_context);
-		return commit && _context.Committed;
+		compositionTarget.OnNativePlatformFrameRequested(this);
+		var presented = commit && _context.Committed;
+		if (presented || !commit)
+		{
+			_gate.EndFrame(presented);
+		}
+		return presented;
 	}
+
+	GraphicsContextKind IGraphicsContext.Kind => _context.Kind;
+	bool ISwapChain.PreservesContents => _context.PreservesContents;
+
+	IRenderTarget ISwapChain.AcquireRenderTarget(int width, int height)
+	{
+		var size = WaylandRenderTargetSize.GetSize(_configured, _width, _height, Scale.EffectiveScale, width, height);
+		return _context.AcquireRenderTarget(size.Width, size.Height);
+	}
+
+	void ISwapChain.Present() => _context.Present();
 
 	private void Attach(IWaylandGraphicsContext context)
 	{

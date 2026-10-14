@@ -183,7 +183,7 @@ public sealed class WindowLogicTests
 	}
 
 	[TestMethod]
-	public void WaitsHaveSafetyValves()
+	public void LayoutWaitIsBoundedButMismatchedBuffersNeverPresent()
 	{
 		var readiness = new WaylandFrameReadiness();
 		readiness.ConfigureUI(1, boundsChanged: true);
@@ -195,17 +195,127 @@ public sealed class WindowLogicTests
 
 		readiness.ConfigureRender(1);
 		readiness.BeginFrame();
-		Assert.IsTrue(readiness.CanPresent(100, 100, 101, 101));
-		for (var i = 0; i < WaylandFrameReadiness.MaxStaleFrames; i++)
+		Assert.IsTrue(readiness.CanPresent(101, 101, 101, 101));
+		Assert.IsFalse(readiness.CanPresent(100, 100, 101, 101));
+		for (var i = 0; i < 2 * WaylandFrameReadiness.MaxStaleFrames; i++)
 		{
 			readiness.BeginFrame();
 			Assert.IsFalse(readiness.CanPresent(80, 80, 101, 101));
 		}
 		readiness.BeginFrame();
-		Assert.IsTrue(readiness.CanPresent(80, 80, 101, 101));
-		readiness.ConfigureRender(1);
+		Assert.IsTrue(readiness.CanPresent(101, 101, 101, 101));
+	}
+
+	private static WaylandWindowConfiguration Configuration(long generation, uint? serial = null, long? serialSequence = null)
+		=> new(generation, new(800 + (int)generation, 600 + (int)generation, 32, 8, WaylandCaptionButtons.Close),
+			1, 0, 1, WaylandToplevelStates.Resizing, "test", true, serial ?? (uint)generation, serialSequence ?? generation);
+
+	[TestMethod]
+	public void ConfigureBurstDoesNotReplaceLayoutInFlight()
+	{
+		var ui = new Queue<Action>();
+		var applied = new List<WaylandWindowConfiguration>();
+		var scheduler = new WaylandConfigureScheduler(ui.Enqueue, applied.Add);
+		scheduler.Enqueue(Configuration(1));
+		scheduler.Enqueue(Configuration(2));
+		Assert.AreEqual(1, ui.Count);
+		ui.Dequeue()();
+		Assert.AreEqual(2L, scheduler.Current!.Generation);
+		for (var generation = 3; generation <= 200; generation++)
+		{
+			scheduler.Enqueue(Configuration(generation));
+		}
+		Assert.AreEqual(0, ui.Count, "New arrivals must not restart an in-flight layout.");
+		Assert.AreEqual(2L, scheduler.Current!.Generation);
+		scheduler.Complete(1);
+		Assert.AreEqual(0, ui.Count, "An older frame must not release the applied configure.");
+		scheduler.Complete(2);
+		scheduler.Complete(2);
+		Assert.AreEqual(1, ui.Count, "Completion must schedule exactly one dispatcher turn.");
+		ui.Dequeue()();
+		CollectionAssert.AreEqual(new long[] { 2, 200 }, applied.Select(configuration => configuration.Generation).ToArray());
+		scheduler.Complete(200);
+		Assert.AreEqual(0, ui.Count, "An idle configure scheduler must not spin.");
+	}
+
+	[TestMethod]
+	public void CompletedLayoutAcknowledgesItsReceivedSerialDespiteNewerPendingConfigure()
+	{
+		var ui = new Queue<Action>();
+		var scheduler = new WaylandConfigureScheduler(ui.Enqueue, _ => { });
+		var acknowledgements = new List<uint>();
+		scheduler.Enqueue(Configuration(1, 42));
+		ui.Dequeue()();
+		var inFlight = scheduler.Current!;
+		scheduler.Enqueue(Configuration(2, 43));
+		scheduler.Acknowledge(inFlight, acknowledgements.Add);
+		scheduler.Acknowledge(inFlight, acknowledgements.Add);
+		CollectionAssert.AreEqual(new uint[] { 42 }, acknowledgements);
+		scheduler.Complete(1);
+		ui.Dequeue()();
+		scheduler.Acknowledge(scheduler.Current!, acknowledgements.Add);
+		scheduler.Acknowledge(inFlight, acknowledgements.Add);
+		scheduler.Complete(2);
+		// A local scale change retains the received serial, which must not be acknowledged twice.
+		scheduler.Enqueue(Configuration(3, 43, 2));
+		ui.Dequeue()();
+		scheduler.Acknowledge(scheduler.Current!, acknowledgements.Add);
+		CollectionAssert.AreEqual(new uint[] { 42, 43 }, acknowledgements);
+	}
+
+	[TestMethod]
+	public void ConfigureAcknowledgementsFollowReceiptOrderAcrossSerialWraparound()
+	{
+		var ui = new Queue<Action>();
+		var scheduler = new WaylandConfigureScheduler(ui.Enqueue, _ => { });
+		var acknowledgements = new List<uint>();
+		scheduler.Enqueue(Configuration(1, uint.MaxValue));
+		ui.Dequeue()();
+		scheduler.Acknowledge(scheduler.Current!, acknowledgements.Add);
+		scheduler.Complete(1);
+		scheduler.Enqueue(Configuration(2, 0));
+		ui.Dequeue()();
+		scheduler.Acknowledge(scheduler.Current!, acknowledgements.Add);
+		CollectionAssert.AreEqual(new uint[] { uint.MaxValue, 0 }, acknowledgements);
+	}
+
+	[TestMethod]
+	public void ConfigureFloodCannotResetLayoutFallback()
+	{
+		var ui = new Queue<Action>();
+		var readiness = new WaylandFrameReadiness();
+		var scheduler = new WaylandConfigureScheduler(ui.Enqueue, configuration =>
+		{
+			readiness.ConfigureUI(configuration.Generation, boundsChanged: true);
+			readiness.ConfigureRender(configuration.Generation);
+		});
+		scheduler.Enqueue(Configuration(1));
+		ui.Dequeue()();
+		for (var frame = 0; frame <= WaylandFrameReadiness.MaxStaleFrames; frame++)
+		{
+			scheduler.Enqueue(Configuration(2 + frame));
+			Assert.AreEqual(frame == WaylandFrameReadiness.MaxStaleFrames, readiness.OnFrameRecorded(arrangedAtBounds: false));
+		}
 		readiness.BeginFrame();
-		Assert.IsFalse(readiness.CanPresent(80, 80, 101, 101));
+		Assert.IsTrue(readiness.IsFrameReady);
+		Assert.AreEqual(1L, scheduler.Current!.Generation);
+		// The hidden-surface fallback consumes this ready frame without committing it.
+		scheduler.Complete(readiness.RenderGeneration);
+		Assert.AreEqual(1, ui.Count);
+		ui.Dequeue()();
+		Assert.AreEqual(2L + WaylandFrameReadiness.MaxStaleFrames, scheduler.Current!.Generation);
+	}
+
+	[TestMethod]
+	public void CoalescedLocalChangesRetainActivationNotificationAndDoNotInventSerials()
+	{
+		var ui = new Queue<Action>();
+		var scheduler = new WaylandConfigureScheduler(ui.Enqueue, _ => { });
+		scheduler.Enqueue(Configuration(1) with { Serial = null, SerialSequence = 0 });
+		scheduler.Enqueue(Configuration(2) with { NotifyActivation = false, Serial = null, SerialSequence = 0 });
+		ui.Dequeue()();
+		Assert.IsTrue(scheduler.Current!.NotifyActivation);
+		scheduler.Acknowledge(scheduler.Current!, _ => Assert.Fail("No configure serial was received."));
 	}
 
 	[TestMethod]

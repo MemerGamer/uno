@@ -449,6 +449,9 @@ public class Given_AppWindow
 					completed.TrySetException(failure);
 				}
 			}
+			// Maximize() notifies synchronously before Wayland applies the request.
+			// Subscribe before yielding so the close is triggered by the configure callback.
+			((OverlappedPresenter)appWindow.Presenter).Maximize();
 			appWindow.Changed += (_, args) =>
 			{
 				if (args.DidPresenterChange)
@@ -463,7 +466,6 @@ public class Given_AppWindow
 			window.SizeChanged += (_, _) => OnNotification("WindowSize");
 			window.Activated += (_, _) => OnNotification("Activation");
 			root.Changed += (_, _) => OnNotification("XamlRoot");
-			((OverlappedPresenter)appWindow.Presenter).Maximize();
 			await WaitWithTimeout(completed.Task);
 			await TestServices.WindowHelper.WaitForIdle();
 			Assert.IsTrue(closed);
@@ -492,13 +494,27 @@ public class Given_AppWindow
 			var scale = (float)(root.RasterizationScale + 0.5);
 			var wrapper = window.NativeWrapper;
 			var wrapperType = wrapper.GetType();
-			var applyConfigure = wrapperType.GetMethod("ApplyConfigure", BindingFlags.Instance | BindingFlags.NonPublic);
+			var applyConfigure = wrapperType.GetMethod("ApplyConfigurationUI", BindingFlags.Instance | BindingFlags.NonPublic);
 			Assert.IsNotNull(applyConfigure);
 			var statesField = wrapperType.GetField("_uiStates", BindingFlags.Instance | BindingFlags.NonPublic);
 			Assert.IsNotNull(statesField);
 			var maximized = Convert.ToUInt32(Enum.Parse(statesField.FieldType, "Maximized"));
 			var states = Enum.ToObject(statesField.FieldType, Convert.ToUInt32(statesField.GetValue(wrapper)) ^ maximized);
+			var expectedState = (Convert.ToUInt32(states) & maximized) != 0
+				? OverlappedPresenterState.Maximized : OverlappedPresenterState.Restored;
+			var configurationType = applyConfigure.GetParameters()[0].ParameterType;
+			var layoutType = configurationType.GetProperty("Layout").PropertyType;
+			var buttonsType = layoutType.GetProperty("Buttons").PropertyType;
+			var layout = Activator.CreateInstance(layoutType, 400, 300, 0, 0, Enum.ToObject(buttonsType, 0));
+			var generationField = wrapperType.GetField("_uiStateGeneration", BindingFlags.Instance | BindingFlags.NonPublic);
+			Assert.IsNotNull(generationField);
+			var generation = (long)generationField.GetValue(wrapper) + 1;
+			var configuration = Activator.CreateInstance(configurationType, new object[]
+			{
+				generation, layout, (double)scale, 0u, 1, states, string.Empty, false, null, 0L, true
+			});
 			var presenterChanges = 0;
+			var sizeNotifications = new List<string>();
 			var observedScale = 0.0;
 			var observedBounds = default(Windows.Foundation.Rect);
 			var observedClientSize = default(SizeInt32);
@@ -511,16 +527,35 @@ public class Given_AppWindow
 					observedBounds = window.Bounds;
 					observedClientSize = window.AppWindow.ClientSize;
 				}
+				if (args.DidSizeChange)
+				{
+					Assert.AreEqual(expectedState, ((OverlappedPresenter)window.AppWindow.Presenter).State);
+					Assert.AreEqual(1, presenterChanges, "Presenter notification must precede size notifications.");
+					sizeNotifications.Add("AppWindowSize");
+				}
+			};
+			window.SizeChanged += (_, _) =>
+			{
+				Assert.AreEqual(expectedState, ((OverlappedPresenter)window.AppWindow.Presenter).State);
+				Assert.AreEqual(1, presenterChanges, "Presenter notification must precede size notifications.");
+				sizeNotifications.Add("WindowSize");
 			};
 
 			// Inject one combined configure without relying on compositor-specific output scale controls.
-			applyConfigure.Invoke(wrapper, new object[] { 400, 300, 0, (double)scale, states, 0L });
+			// No serial means the synthetic snapshot cannot submit a compositor buffer.
+			applyConfigure.Invoke(wrapper, new[] { configuration });
 
 			Assert.AreEqual(1, presenterChanges);
+			CollectionAssert.AreEqual(new[] { "AppWindowSize", "WindowSize" }, sizeNotifications);
 			Assert.AreEqual((double)scale, observedScale, "Presenter observers must see the configured XamlRoot scale.");
 			Assert.AreEqual(new Windows.Foundation.Rect(0, 0, 400, 300), observedBounds);
 			Assert.IsTrue(Math.Abs(observedBounds.Width * observedScale - observedClientSize.Width) <= 1);
 			Assert.IsTrue(Math.Abs(observedBounds.Height * observedScale - observedClientSize.Height) <= 1);
+
+			var applyState = wrapperType.GetMethod("ApplyConfigurationStateUI", BindingFlags.Instance | BindingFlags.NonPublic);
+			Assert.IsNotNull(applyState);
+			applyState.Invoke(wrapper, new[] { configuration });
+			Assert.AreEqual(1, presenterChanges, "The independent state callback must not notify the same presenter change twice.");
 		}
 		finally
 		{
