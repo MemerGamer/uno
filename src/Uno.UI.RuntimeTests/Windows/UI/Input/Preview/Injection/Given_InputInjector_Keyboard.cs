@@ -107,7 +107,7 @@ public class Given_InputInjector_Keyboard
 		{
 			await TestServices.WindowHelper.WaitForIdle();
 			// An unshown HWND is inactive. Exercise the real WM_ACTIVATE inside ShowWindow/ShowCore.
-			secondary.NativeWrapper!.ActivationState = Windows.UI.Core.CoreWindowActivationState.Deactivated;
+			((Uno.UI.Xaml.Controls.NativeWindowWrapperBase)secondary.NativeWrapper!).ActivationState = Windows.UI.Core.CoreWindowActivationState.Deactivated;
 			secondary.Activate();
 			await injected.Task.WaitAsync(TimeSpan.FromSeconds(5));
 			Assert.IsFalse(visibleDuringActivation, "This test must inject before ShowCore returns and marks the wrapper visible.");
@@ -164,6 +164,59 @@ public class Given_InputInjector_Keyboard
 			Tap(injector, VirtualKey.B);
 			Assert.AreEqual("b", firstText.Text);
 			Assert.AreEqual("a", secondText.Text);
+		}
+		finally
+		{
+			second.Close();
+			first.Close();
+			original.Activate();
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWayland)]
+	public async Task When_InjectKey_Immediately_After_Cross_Window_Focus()
+	{
+		var original = TestServices.WindowHelper.CurrentTestWindow;
+		var injector = GetInjector();
+		var firstText = new TextBox { IsTabStop = false };
+		var secondText = new TextBox { IsTabStop = false };
+		var first = new Window { Content = firstText };
+		var second = new Window { Content = secondText };
+		try
+		{
+			first.Activate();
+			await TestServices.WindowHelper.WaitForLoaded(firstText);
+			second.Activate();
+			await TestServices.WindowHelper.WaitForLoaded(secondText);
+			await TestServices.WindowHelper.WaitForIdle();
+			Assert.IsTrue(ApiExtensibility.CreateInstance<IInputInjectorKeyboardTargetPolicy>(injector, out var policy));
+			var firstTarget = (IInputInjectorTarget)first.RootElement!.XamlRoot!.VisualTree.ContentRoot.InputManager;
+			var secondTarget = (IInputInjectorTarget)second.RootElement!.XamlRoot!.VisualTree.ContentRoot.InputManager;
+			var originalTarget = (IInputInjectorTarget)original.RootElement!.XamlRoot!.VisualTree.ContentRoot.InputManager;
+			if (policy!.IsActive(firstTarget) || policy.IsActive(secondTarget) || policy.IsActive(originalTarget))
+			{
+				Assert.Inconclusive("This test requires a compositor without native activation (e.g. seatless Weston).");
+			}
+
+			// Prevent loading from pre-focusing B, then establish A as the previous injection target.
+			firstText.IsTabStop = true;
+			Assert.IsTrue(firstText.Focus(FocusState.Programmatic));
+			await TestServices.WindowHelper.WaitForIdle();
+			Assert.AreSame(firstTarget, policy.GetFallbackTarget());
+			Assert.AreNotSame(secondText, FocusManager.GetFocusedElement(secondText.XamlRoot!));
+
+			secondText.IsTabStop = true;
+			Assert.IsTrue(secondText.Focus(FocusState.Programmatic));
+			// No dispatcher yield: injection must observe the focus committed by the preceding call.
+			Tap(injector, VirtualKey.A);
+			Assert.AreEqual("a", secondText.Text);
+			Assert.AreEqual(string.Empty, firstText.Text);
+
+			await TestServices.WindowHelper.WaitForIdle();
+			Tap(injector, VirtualKey.B);
+			Assert.AreEqual("ab", secondText.Text, "Deferred focus events must preserve the committed injection target.");
+			Assert.AreEqual(string.Empty, firstText.Text);
 		}
 		finally
 		{
