@@ -494,10 +494,15 @@ public class Given_AppWindow
 			var scale = (float)(root.RasterizationScale + 0.5);
 			var wrapper = window.NativeWrapper;
 			var wrapperType = wrapper.GetType();
-			var applyConfigure = wrapperType.GetMethod("ApplyConfigure", BindingFlags.Instance | BindingFlags.NonPublic);
+			var applyConfigure = wrapperType.GetMethod("ApplyConfigure", BindingFlags.Instance | BindingFlags.NonPublic,
+				new[] { typeof(int), typeof(int), typeof(int), typeof(double), typeof(long) });
 			Assert.IsNotNull(applyConfigure);
+			var configure = applyConfigure.CreateDelegate<Action<int, int, int, double, long>>(wrapper);
 			var statesField = wrapperType.GetField("_uiStates", BindingFlags.Instance | BindingFlags.NonPublic);
 			Assert.IsNotNull(statesField);
+			var applyStates = wrapperType.GetMethod("ApplyStates", BindingFlags.Instance | BindingFlags.NonPublic,
+				new[] { statesField.FieldType });
+			Assert.IsNotNull(applyStates);
 			var maximized = Convert.ToUInt32(Enum.Parse(statesField.FieldType, "Maximized"));
 			var states = Enum.ToObject(statesField.FieldType, Convert.ToUInt32(statesField.GetValue(wrapper)) ^ maximized);
 			var presenterChanges = 0;
@@ -516,7 +521,9 @@ public class Given_AppWindow
 			};
 
 			// Inject one combined configure without relying on compositor-specific output scale controls.
-			applyConfigure.Invoke(wrapper, new object[] { 400, 300, 0, (double)scale, states, 0L });
+			// Geometry and presenter state are applied separately in the same UI turn.
+			configure(400, 300, 0, scale, 0L);
+			applyStates.Invoke(wrapper, new[] { states });
 
 			Assert.AreEqual(1, presenterChanges);
 			Assert.AreEqual((double)scale, observedScale, "Presenter observers must see the configured XamlRoot scale.");

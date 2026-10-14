@@ -45,10 +45,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	// UI thread state.
 	private WaylandToplevelStates _uiStates;
-	private bool _hasAppliedConfigure;
+	private readonly WaylandWindowActivation _activation;
 	private WaylandWindowConfiguration? _initialConfigurationState;
 	private long _uiStateGeneration;
-	private bool _activationRequested;
 	private volatile bool _minimizeRequested;
 	// Written on the dispatch thread, also read by Minimize on the UI thread.
 	private volatile WaylandWindowCapabilities _capabilities = WaylandWindowCapabilities.All;
@@ -97,6 +96,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		: base(window, root)
 	{
 		_connection = connection;
+		_activation = new(connection.PostToUI, () => !_closed, state => ActivationState = state);
 		_configures = new(connection.PostToUI, ApplyConfigurationUI, ApplyConfigurationStateUI);
 		_id = Interlocked.Increment(ref _nextId);
 		OwnerWindow = window;
@@ -155,7 +155,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			// Posted because Uno subscribes to SizeChanged only after the factory returns this wrapper.
 			_connection.PostToUI(() =>
 			{
-				if (!_closed && !_hasAppliedConfigure)
+				if (!_closed && !_activation.HasAppliedConfigure)
 				{
 					ApplyConfigure(InitialWidth, InitialHeight, 0, 1, 0);
 				}
@@ -209,7 +209,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	public override object NativeWindow => _surface;
 
-	public override bool IsReadyForActivation => _hasAppliedConfigure;
+	public override bool IsReadyForActivation => _activation.IsReadyForActivation;
 
 	public override string Title
 	{
@@ -303,7 +303,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	internal protected override void Activate()
 	{
 		_host.RecordActivation();
-		_activationRequested = true;
+		_activation.Request();
 		Post(() =>
 		{
 			if (_minimizeRequested || (_states & WaylandToplevelStates.Activated) == 0)
@@ -829,7 +829,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	// UI thread. State notifications do not wait for layout, buffer availability or a frame callback.
 	private void ApplyConfigurationStateUI(WaylandWindowConfiguration configuration)
 	{
-		if (!_hasAppliedConfigure)
+		if (!_activation.HasAppliedConfigure)
 		{
 			// Initial activation observers must see the configured bounds rather than provisional ones.
 			_initialConfigurationState = configuration with { NotifyActivation = configuration.NotifyActivation || _initialConfigurationState?.NotifyActivation == true };
@@ -845,24 +845,12 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			return;
 		}
 		_uiStateGeneration = configuration.Generation;
-		var initialActivation = !_hasAppliedConfigure && _activationRequested;
-		_hasAppliedConfigure = true;
 		ApplyStates(configuration.States);
 		if (_closed)
 		{
 			return;
 		}
-		if (configuration.NotifyActivation && !_closed)
-		{
-			foreach (var state in WaylandToplevelStateParser.GetActivationSequence(configuration.States, initialActivation))
-			{
-				if (_closed)
-				{
-					break;
-				}
-				ActivationState = state;
-			}
-		}
+		_activation.Configure(configuration.States, configuration.NotifyActivation);
 		Post(() =>
 		{
 			if (_presentation.Generation != 0 && configuration.Layout == _presentation.Layout && configuration.Scale == _presentation.Scale)
@@ -883,7 +871,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		// A provisional snapshot cannot become presentable when a later dispatch configure arrives.
 		if (configuration.CanPresent && !_closed)
 		{
-			if (!_hasAppliedConfigure)
+			if (!_activation.HasAppliedConfigure)
 			{
 				ApplyConfigurationState(_initialConfigurationState is { Configured: true } initial && initial.Generation > configuration.Generation
 					? initial : configuration);
