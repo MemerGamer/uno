@@ -71,9 +71,112 @@ public sealed partial class DisplayTests
 	}
 
 	[TestMethod]
+	[DataRow(false)]
+	[DataRow(true)]
+	public void ContentRejectionRetriesWhenANewFrameIsRecorded(bool boundsChanged)
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		using var compositor = (WlCompositor)display.Bind(WlCompositor.ProtocolName, WlCompositor.MaximumVersion);
+		using var surface = compositor.CreateSurface();
+		var owner = new BlockingCollection<Action>();
+		var readiness = new WaylandFrameReadiness();
+		readiness.ConfigureUI(1, boundsChanged);
+		readiness.ConfigureRender(1);
+		var canvasSize = 80;
+		var draws = 0;
+		var submissions = 0;
+		using var scheduler = new WaylandFrameScheduler(surface, () =>
+		{
+			draws++;
+			readiness.BeginFrame();
+			if (!readiness.CanPresent(canvasSize, canvasSize, 100, 100))
+			{
+				return WaylandRenderResult.ContentRejected;
+			}
+			submissions++;
+			return WaylandRenderResult.Presented;
+		}, () => Assert.Fail("New content must resume presentation before the fallback is needed."), owner.Add);
+		scheduler.PresentationReady();
+		Assert.AreEqual(1, draws);
+		Assert.AreEqual(0, submissions);
+		Assert.AreEqual(boundsChanged, readiness.OnFrameRecorded(arrangedAtBounds: true));
+		scheduler.ContentReady();
+		Assert.AreEqual(2, draws, "Recording the layout must wake a pending content retry immediately.");
+		Assert.AreEqual(0, submissions, "Layout readiness alone must not present a stale canvas.");
+
+		canvasSize = 100;
+		scheduler.Invalidate();
+		Assert.AreEqual(2, draws, "A request alone must not bypass the wait for recorded content.");
+		Assert.IsFalse(readiness.OnFrameRecorded(arrangedAtBounds: true));
+		scheduler.ContentReady();
+		Assert.AreEqual(3, draws, "A later matching picture must retry even without a new layout generation.");
+		Assert.AreEqual(1, submissions, "Content must present without executing a fallback tick.");
+		scheduler.ContentReady();
+		scheduler.BufferAvailable();
+		Assert.AreEqual(3, draws, "Readiness without pending work must not request another draw.");
+		Assert.IsTrue(owner.TryTake(out var tick, TimeSpan.FromSeconds(5)));
+		tick();
+		Assert.AreEqual(3, draws, "The previously armed fallback must not redraw presented content.");
+		Assert.IsFalse(owner.TryTake(out _, WaylandFrameScheduler.StallInterval * 3), "Successful presentation must stop retries.");
+		scheduler.Invalidate();
+		scheduler.ContentReady();
+		Assert.AreEqual(3, draws, "New content must still wait for the committed frame callback.");
+	}
+
+	[TestMethod]
+	public void RapidConfiguresAndRecordedFramesRetryWithoutFallbackTicks()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		using var compositor = (WlCompositor)display.Bind(WlCompositor.ProtocolName, WlCompositor.MaximumVersion);
+		using var surface = compositor.CreateSurface();
+		var owner = new BlockingCollection<Action>();
+		var readiness = new WaylandFrameReadiness();
+		var configuredSize = 100;
+		var canvasSize = 80;
+		var draws = 0;
+		var submissions = 0;
+		using var scheduler = new WaylandFrameScheduler(surface, () =>
+		{
+			draws++;
+			readiness.BeginFrame();
+			if (!readiness.CanPresent(canvasSize, canvasSize, configuredSize, configuredSize))
+			{
+				return WaylandRenderResult.ContentRejected;
+			}
+			submissions++;
+			return WaylandRenderResult.Presented;
+		}, () => Assert.Fail("Active resize must not wait for the stall fallback."), owner.Add);
+		for (var generation = 1; generation <= 10; generation++)
+		{
+			configuredSize += 10;
+			readiness.ConfigureRender(generation);
+			scheduler.PresentationReady();
+			Assert.AreEqual(generation * 3 - 2, draws, "Staging each configure must immediately retry the pending frame.");
+			readiness.ConfigureUI(generation, boundsChanged: true);
+			scheduler.PresentationReady();
+			Assert.AreEqual(generation * 3 - 1, draws, "Applying each configure to the root must request a redraw.");
+			Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+			scheduler.ContentReady();
+			Assert.AreEqual(generation * 3, draws, "Each recorded frame must retry without running a timer tick.");
+			Assert.AreEqual(0, submissions, "A superseded canvas must not acknowledge the configure.");
+		}
+		canvasSize = configuredSize;
+		scheduler.ContentReady();
+		Assert.AreEqual(31, draws);
+		Assert.AreEqual(1, submissions);
+		scheduler.ContentReady();
+		Assert.AreEqual(31, draws, "The matching content must be consumed only once.");
+		Assert.IsTrue(owner.TryTake(out var tick, TimeSpan.FromSeconds(5)));
+		tick();
+		Assert.AreEqual(31, draws, "A fallback queued during resize must not add another draw.");
+	}
+
+	[TestMethod]
 	[DataRow(true)]
 	[DataRow(false)]
-	public void ContentRejectionResumesOnPacedTicksWithoutReadinessWakeups(bool contentBecomesReady)
+	public void ContentRejectionResumesOnFallbackTicksWithoutReadinessWakeups(bool contentBecomesReady)
 	{
 		using var peer = new ProtocolPeer();
 		using var display = peer.Connect();
@@ -154,6 +257,8 @@ public sealed partial class DisplayTests
 			return WaylandRenderResult.Presented;
 		}, () => stalls++, owner.Add);
 		scheduler.Invalidate();
+		scheduler.ContentReady();
+		Assert.AreEqual(1, attempts, "Recorded content must not bypass buffer availability.");
 		for (var i = 0; i < 3; i++)
 		{
 			scheduler.Invalidate();

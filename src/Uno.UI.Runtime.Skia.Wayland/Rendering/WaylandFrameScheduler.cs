@@ -28,7 +28,7 @@ internal sealed class WaylandFrameScheduler : IDisposable
 	private readonly Timer _stallTimer;
 	private WlCallback? _callback;
 	private bool _dirty;
-	// Rejection has no committed frame callback; invalidations must not bypass the wait or retry pace.
+	// Requests alone cannot resolve rejection; wait for availability, recorded content, or the fallback timer.
 	private bool _waitingForAvailability;
 	private bool _waitingForContentRetry;
 	private bool _stallArmed;
@@ -66,6 +66,12 @@ internal sealed class WaylandFrameScheduler : IDisposable
 		TryRender();
 	}
 
+	public void ContentReady()
+	{
+		_waitingForContentRetry = false;
+		TryRender();
+	}
+
 	public void PresentationReady()
 	{
 		_waitingForAvailability = false;
@@ -97,7 +103,7 @@ internal sealed class WaylandFrameScheduler : IDisposable
 				_waitingForContentRetry = result == WaylandRenderResult.ContentRejected;
 				if (_waitingForContentRetry)
 				{
-					// No buffer was committed to drive the frame clock; bound retries with its stall timer.
+					// No frame callback can arrive; retry if neither a configure nor recorded content wakes us.
 					ArmStallTimer();
 				}
 				if (result == WaylandRenderResult.ContextRecovered)

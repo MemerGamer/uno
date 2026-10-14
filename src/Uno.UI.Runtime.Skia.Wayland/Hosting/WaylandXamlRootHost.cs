@@ -173,6 +173,11 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			_readiness.ConfigureUI(generation, boundsChanged: false);
 			return;
 		}
+		if (_frameTarget is null)
+		{
+			_frameTarget = compositionTarget;
+			compositionTarget.FrameRendered += OnFrameRendered;
+		}
 		var waits = _readiness.ConfigureUI(generation, boundsChanged);
 		if (WaylandDiagnostics.IsEnabled)
 		{
@@ -180,11 +185,6 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		}
 		if (waits)
 		{
-			if (_frameTarget is null)
-			{
-				_frameTarget = compositionTarget;
-				compositionTarget.FrameRendered += OnFrameRendered;
-			}
 			// Records a frame even when layout leaves the visuals unchanged.
 			((ICompositionTarget)compositionTarget).RequestNewFrame();
 		}
@@ -204,7 +204,11 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: layout recorded at {bounds.Width}x{bounds.Height}{(arranged ? "" : " (gave up waiting)")}"));
 			}
-			PresentationReady();
+		}
+		// A later picture can fix a canvas-size rejection even after this generation's layout became ready.
+		if (!_disposed)
+		{
+			_renderThread.Post(() => _renderer?.ContentReady());
 		}
 	}
 

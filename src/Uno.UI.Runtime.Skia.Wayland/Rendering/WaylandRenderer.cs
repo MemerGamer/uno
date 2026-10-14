@@ -83,6 +83,8 @@ internal sealed class WaylandRenderer : IDisposable
 
 	public void Invalidate() => _scheduler.Invalidate();
 
+	public void ContentReady() => _scheduler.ContentReady();
+
 	public void PresentationReady() => _scheduler.PresentationReady();
 
 	public void ProduceUnpresentedFrame(Action<GRContext?> produce)
