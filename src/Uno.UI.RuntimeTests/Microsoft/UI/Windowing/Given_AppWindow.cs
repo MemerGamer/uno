@@ -208,12 +208,14 @@ public class Given_AppWindow
 			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => appWindow.Size.Equals(requestedSize)));
 			var presenter = (OverlappedPresenter)appWindow.Presenter;
 			presenter.Maximize();
-			await ActivateAndWaitForBounds(newWindow, () =>
-			{
-				Assert.AreEqual(OverlappedPresenterState.Maximized, presenter.State);
-				// A nonzero maximized configure overrides the floating size requested before mapping.
-				Assert.AreNotEqual(requestedSize, appWindow.Size);
-			});
+			await ActivateAndWaitForBounds(newWindow, () => { });
+			// CodeActivated can precede the UI application of the compositor's maximize configure.
+			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(
+				() => presenter.State == OverlappedPresenterState.Maximized,
+				timeoutMS: 5000, message: "Compositor maximize configure applied to the presenter"));
+			Assert.AreEqual(OverlappedPresenterState.Maximized, presenter.State);
+			// A nonzero maximized configure overrides the floating size requested before mapping.
+			Assert.AreNotEqual(requestedSize, appWindow.Size);
 		}
 		finally
 		{

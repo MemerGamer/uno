@@ -363,7 +363,14 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	}
 
 	// Overlapped presenter, UI thread.
-	internal void Maximize() => Post(() => _toplevel.SetMaximized());
+	internal void Maximize() => Post(() =>
+	{
+		_toplevel.SetMaximized();
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"window{_id}: set_maximized marshalled");
+		}
+	});
 
 	// Returns whether the presenter state changed; OverlappedPresenter notifies AppWindow for its own calls.
 	internal bool Minimize()
