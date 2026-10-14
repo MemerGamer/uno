@@ -48,6 +48,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	private readonly WaylandWindowActivation _activation;
 	private WaylandWindowConfiguration? _initialConfigurationState;
 	private long _uiStateGeneration;
+	private long _uiPresenterGeneration;
 	private volatile bool _minimizeRequested;
 	// Written on the dispatch thread, also read by Minimize on the UI thread.
 	private volatile WaylandWindowCapabilities _capabilities = WaylandWindowCapabilities.All;
@@ -845,7 +846,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			return;
 		}
 		_uiStateGeneration = configuration.Generation;
-		ApplyStates(configuration.States);
+		ApplyConfigurationPresenter(configuration);
 		if (_closed)
 		{
 			return;
@@ -867,14 +868,18 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			return;
 		}
 		var layout = configuration.Layout;
-		ApplyConfigure(layout.ContentWidth, layout.ContentHeight, layout.TitleBarHeight, configuration.Scale, configuration.Generation);
+		var stateConfiguration = !_activation.HasAppliedConfigure && _initialConfigurationState is { Configured: true } initial && initial.Generation > configuration.Generation
+			? initial : configuration;
+		var changes = StageConfigure(layout.ContentWidth, layout.ContentHeight, layout.TitleBarHeight, configuration.Scale);
+		// Presenter and size observers must see the same configured state and geometry.
+		var presenterChanged = configuration.Configured && StageConfigurationPresenter(stateConfiguration);
+		NotifyConfigure(changes, configuration.Generation, presenterChanged ? NotifyPresenterChanged : null);
 		// A provisional snapshot cannot become presentable when a later dispatch configure arrives.
 		if (configuration.CanPresent && !_closed)
 		{
 			if (!_activation.HasAppliedConfigure)
 			{
-				ApplyConfigurationState(_initialConfigurationState is { Configured: true } initial && initial.Generation > configuration.Generation
-					? initial : configuration);
+				ApplyConfigurationState(stateConfiguration);
 				_initialConfigurationState = null;
 			}
 			if (_closed)
@@ -893,7 +898,27 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 	}
 
-	private void ApplyStates(WaylandToplevelStates states)
+	private void ApplyConfigurationPresenter(WaylandWindowConfiguration configuration)
+	{
+		if (StageConfigurationPresenter(configuration))
+		{
+			NotifyPresenterChanged();
+		}
+	}
+
+	private bool StageConfigurationPresenter(WaylandWindowConfiguration configuration)
+	{
+		if (_closed || configuration.Generation <= _uiPresenterGeneration)
+		{
+			return false;
+		}
+		_uiPresenterGeneration = configuration.Generation;
+		return StageStates(configuration.States);
+	}
+
+	private void NotifyPresenterChanged() => Window?.AppWindow.OnAppWindowChanged(AppWindowChangedEventArgs.PresenterChangedEventArgs);
+
+	private bool StageStates(WaylandToplevelStates states)
 	{
 		var previousStates = _uiStates;
 		var wasMinimized = _minimizeRequested;
@@ -903,10 +928,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			_minimizeRequested = false;
 		}
-		if (WaylandToplevelStateParser.HasPresenterChanged(previousStates, states, wasMinimized, _minimizeRequested))
-		{
-			Window?.AppWindow.OnAppWindowChanged(AppWindowChangedEventArgs.PresenterChangedEventArgs);
-		}
+		return WaylandToplevelStateParser.HasPresenterChanged(previousStates, states, wasMinimized, _minimizeRequested);
 	}
 
 	// UI thread.
@@ -916,13 +938,22 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			return;
 		}
+		NotifyConfigure(StageConfigure(width, height, titleBarHeight, scale), generation);
+	}
+
+	private WindowConfigurationChanges StageConfigure(int width, int height, int titleBarHeight, double scale)
+	{
 		var geometry = WaylandWindowGeometry.Create(width, height, titleBarHeight, scale);
 		_host.Scale = geometry.Scale;
 		var bounds = new Rect(0, 0, geometry.Width, geometry.Height);
 		var client = new SizeInt32(geometry.BufferWidth, geometry.BufferHeight);
 		var outer = new SizeInt32(client.Width, geometry.OuterHeight);
-		var changes = StageWindowConfiguration(bounds, bounds, outer, client, geometry.Scale);
-		NotifyWindowConfiguration(changes, () => !_closed);
+		return StageWindowConfiguration(bounds, bounds, outer, client, geometry.Scale);
+	}
+
+	private void NotifyConfigure(WindowConfigurationChanges changes, long generation, Action? beforeSizeNotifications = null)
+	{
+		NotifyWindowConfiguration(changes, () => !_closed, beforeSizeNotifications);
 		if (_closed)
 		{
 			return;

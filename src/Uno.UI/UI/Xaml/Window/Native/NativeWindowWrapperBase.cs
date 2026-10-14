@@ -221,11 +221,15 @@ internal abstract class NativeWindowWrapperBase : INativeWindowWrapper
 		return changes;
 	}
 
-	protected void NotifyWindowConfiguration(WindowConfigurationChanges changes, Func<bool> canNotify)
+	protected void NotifyWindowConfiguration(WindowConfigurationChanges changes, Func<bool> canNotify, Action? beforeSizeNotifications = null)
 	{
 		if (changes.ScaleChanged && canNotify())
 		{
 			RaiseContentIslandStateChanged(ContentIslandStateChangedEventArgs.RasterizationScaleChange);
+		}
+		if (canNotify())
+		{
+			beforeSizeNotifications?.Invoke();
 		}
 		if (changes.SizeChanged && canNotify())
 		{
