@@ -2,7 +2,6 @@
 
 using System;
 using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
 using Uno.Extensions;
@@ -57,7 +56,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		}
 
 		var info = new CoreDragInfo(new DragEventSource(position), package.GetView(), operations);
-		info.RegisterCompletedCallback(result => Complete(session, result));
+		info.RegisterCompletedCallback(session.Complete);
 		CoreDragDropManager.DragStarted(info);
 		Motion(position);
 		StopAcceptancePoll();
@@ -107,8 +106,8 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		{
 			_session = null;
 			StopAcceptancePoll();
+			session.Leave();
 			CoreDragDropManager.ProcessAborted(_fakePointerId);
-			Complete(session, DataPackageOperation.None);
 		}
 	}
 
@@ -124,6 +123,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		session.DropAction = session.Offer.MarkDropped();
 		if (session.DropAction == 0)
 		{
+			session.Leave();
 			CoreDragDropManager.ProcessAborted(_fakePointerId);
 			return;
 		}
@@ -133,31 +133,6 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		{
 			this.Log().Trace($"Drop processed, last accepted operation {accepted}.");
 		}
-	}
-
-	// Called once the drop handlers completed (or the drag was aborted). The offer stays alive until
-	// the data they requested has been received.
-	private static void Complete(Session session, DataPackageOperation result)
-	{
-		if (session.Completed)
-		{
-			return;
-		}
-		session.Completed = true;
-		// wl_data_offer.finish is only valid once an action was negotiated, and lets the source delete moved data,
-		// so it is sent only when the drop handlers performed the selected action.
-		var succeeded = session.Dropped && session.DropAction != 0 && (WaylandDataFormats.ToDndActions(result) & session.DropAction) != 0;
-		_ = session.Offer.WhenReadsCompleted().ContinueWith(reads =>
-		{
-			if (succeeded && reads.Status == TaskStatus.RanToCompletion && reads.Result)
-			{
-				session.Offer.FinishAndDestroy(session.DropAction);
-			}
-			else
-			{
-				session.Offer.Destroy();
-			}
-		}, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
 	}
 
 	// Drags leaving the window keep the implicit pointer grab on Wayland, so an internal drag simply
@@ -175,15 +150,13 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 	}
 
 	private sealed class Session(WaylandDataOffer offer, uint serial)
+		: WaylandDropSession(offer.WhenReadsCompleted, offer.FinishAndDestroy, offer.Destroy)
 	{
 		public WaylandDataOffer Offer { get; } = offer;
 		public uint Serial { get; } = serial;
 		public Point Position { get; set; }
 		// Null until the first motion was answered, so the first answer is always sent.
 		public DataPackageOperation? Accepted { get; set; }
-		public bool Completed { get; set; }
-		public bool Dropped { get; set; }
-		public uint DropAction { get; set; }
 	}
 
 	private readonly struct DragEventSource(Point location, uint? frameId = null) : IDragEventSource

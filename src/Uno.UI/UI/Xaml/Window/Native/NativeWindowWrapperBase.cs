@@ -206,6 +206,47 @@ internal abstract class NativeWindowWrapperBase : INativeWindowWrapper
 		}
 	}
 
+	// Configure callbacks can close the window. Stage every observable value before publishing any of them.
+	protected WindowConfigurationChanges StageWindowConfiguration(Rect bounds, Rect visibleBounds, SizeInt32 size, SizeInt32 clientSize, float scale)
+	{
+		var changes = new WindowConfigurationChanges(
+			_bounds != bounds, _visibleBounds != visibleBounds,
+			!Size.Equals(size) || !ClientSize.Equals(clientSize), _rasterizationScale != scale);
+		_bounds = bounds;
+		_visibleBounds = visibleBounds;
+		Size = size;
+		ClientSize = clientSize;
+		_rasterizationScale = scale;
+		_contentSite.ParentScale = scale;
+		return changes;
+	}
+
+	protected void NotifyWindowConfiguration(WindowConfigurationChanges changes, Func<bool> canNotify)
+	{
+		if (changes.ScaleChanged && canNotify())
+		{
+			RaiseContentIslandStateChanged(ContentIslandStateChangedEventArgs.RasterizationScaleChange);
+		}
+		if (changes.SizeChanged && canNotify())
+		{
+			_window?.AppWindow.OnAppWindowChanged(new AppWindowChangedEventArgs() { DidSizeChange = true });
+		}
+		if (changes.VisibleBoundsChanged && canNotify())
+		{
+			VisibleBoundsChanged?.Invoke(this, _visibleBounds);
+		}
+		if (changes.BoundsChanged && canNotify())
+		{
+			SizeChanged?.Invoke(this, _bounds.Size);
+			if (canNotify())
+			{
+				RaiseContentIslandStateChanged(ContentIslandStateChangedEventArgs.ActualSizeChange);
+			}
+		}
+	}
+
+	protected readonly record struct WindowConfigurationChanges(bool BoundsChanged, bool VisibleBoundsChanged, bool SizeChanged, bool ScaleChanged);
+
 	public DispatcherQueue DispatcherQueue => throw new NotImplementedException();
 
 	public event EventHandler<Size>? SizeChanged;

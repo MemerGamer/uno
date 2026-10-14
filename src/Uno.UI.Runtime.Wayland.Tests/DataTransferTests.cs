@@ -29,7 +29,9 @@ public sealed partial class DataTransferTests
 		stream.Seek(7);
 
 		var first = await WaylandDataFormats.GetBytesAsync(view, "image/png");
+		Assert.AreEqual(7ul, stream.Position);
 		var second = await WaylandDataFormats.GetBytesAsync(view, "image/png");
+		Assert.AreEqual(7ul, stream.Position);
 
 		CollectionAssert.AreEqual(png, first);
 		CollectionAssert.AreEqual(first, second);
@@ -37,6 +39,31 @@ public sealed partial class DataTransferTests
 		Assert.IsTrue(original.CanSeek);
 		stream.Seek(0);
 		Assert.AreEqual(0x89, original.ReadByte());
+	}
+
+	[TestMethod]
+	public async Task BitmapSerializationRestoresPositionAfterReadFailure()
+	{
+		using var original = new FailingBitmapStream();
+		using var stream = original.AsRandomAccessStream();
+		var package = new DataPackage();
+		package.SetBitmap(RandomAccessStreamReference.CreateFromStream(stream));
+		stream.Seek(7);
+
+		await Assert.ThrowsAsync<IOException>(() => WaylandDataFormats.GetBytesAsync(package.GetView(), "image/png"));
+		Assert.AreEqual(7ul, stream.Position);
+		await Assert.ThrowsAsync<IOException>(() => WaylandDataFormats.GetBytesAsync(package.GetView(), "image/png"));
+		Assert.AreEqual(7ul, stream.Position);
+		Assert.IsTrue(original.CanRead);
+	}
+
+	private sealed class FailingBitmapStream() : MemoryStream(new byte[16])
+	{
+		public override Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
+		{
+			Position = 4;
+			return Task.FromException(new IOException("Bitmap read failed after advancing the stream."));
+		}
 	}
 
 	[TestMethod]
@@ -426,6 +453,94 @@ public sealed partial class DataTransferTests
 	}
 
 	[TestMethod]
+	[DataRow(false, true, DataPackageOperation.None)]
+	[DataRow(false, false, DataPackageOperation.None)]
+	[DataRow(true, true, DataPackageOperation.None)]
+	[DataRow(true, false, DataPackageOperation.None)]
+	[DataRow(true, false, DataPackageOperation.Move)]
+	public async Task LeavingOrRejectingDropCancelsATricklingTransfer(bool dropped, bool leave, DataPackageOperation result)
+	{
+		RequireLinux();
+		using var source = new TricklingSource();
+		using var reads = new WaylandDataOfferReads(source.Receive);
+		var waits = 0;
+		var destroyed = 0;
+		var session = new WaylandDropSession(
+			() => { waits++; return reads.WhenReadsCompleted(); },
+			_ => Assert.Fail("An aborted or rejected drop must not send finish."),
+			() => { destroyed++; reads.Dispose(); })
+		{
+			Dropped = dropped,
+			DropAction = dropped ? WaylandDataFormats.DndActionCopy : 0,
+		};
+		var reader = reads.ReadAsync("text/plain", CancellationToken.None);
+		await source.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		await source.Progressed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		Assert.IsTrue(source.BytesWritten > 1);
+		Assert.IsFalse(reader.IsCompleted);
+
+		if (leave)
+		{
+			session.Leave();
+		}
+		else
+		{
+			session.Complete(result);
+		}
+		Assert.AreEqual(1, destroyed, "Ending the drag must destroy the offer synchronously.");
+		Assert.AreEqual(0, waits, "An unsuccessful drop must not wait for a progressing source.");
+		Assert.IsNull(await reader.WaitAsync(TimeSpan.FromSeconds(3)));
+		await source.Writer.WaitAsync(TimeSpan.FromSeconds(3));
+		Assert.IsTrue(source.ReaderClosed);
+		Assert.IsTrue(source.ReadDescriptorReleased);
+		session.Complete(DataPackageOperation.Copy);
+		Assert.AreEqual(1, destroyed, "A late completion must not finish or destroy the offer again.");
+	}
+
+	[TestMethod]
+	public async Task SuccessfulDropWaitsForReadsBeforeFinishing()
+	{
+		var reads = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var finished = new TaskCompletionSource<uint>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var session = new WaylandDropSession(() => reads.Task, action => finished.SetResult(action), () => Assert.Fail("Successful reads must finish the drop."))
+		{
+			Dropped = true,
+			DropAction = WaylandDataFormats.DndActionMove,
+		};
+		session.Complete(DataPackageOperation.Move);
+		Assert.IsFalse(finished.Task.IsCompleted);
+		reads.SetResult(true);
+		Assert.AreEqual(WaylandDataFormats.DndActionMove, await finished.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+	}
+
+	[TestMethod]
+	[DataRow(false)]
+	[DataRow(true)]
+	public async Task SuccessfulDropWithFailedReadsDestroysWithoutFinishing(bool throws)
+	{
+		var reads = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var destroyed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var finishes = 0;
+		var session = new WaylandDropSession(() => reads.Task, _ => finishes++, () => destroyed.SetResult())
+		{
+			Dropped = true,
+			DropAction = WaylandDataFormats.DndActionMove,
+		};
+		session.Complete(DataPackageOperation.Move);
+		Assert.IsFalse(destroyed.Task.IsCompleted);
+		if (throws)
+		{
+			reads.SetException(new IOException("Transfer failed."));
+		}
+		else
+		{
+			reads.SetResult(false);
+		}
+		await destroyed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+		Assert.AreEqual(0, finishes, "Failed transfers must not let the source delete moved data.");
+	}
+
+	[TestMethod]
 	public async Task DestroyedOfferCancelsAllInFlightReads()
 	{
 		RequireLinux();
@@ -499,8 +614,10 @@ public sealed partial class DataTransferTests
 		private int _bytesWritten;
 		internal readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		internal readonly TaskCompletionSource FirstByte = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		internal readonly TaskCompletionSource Progressed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		internal Task Writer { get; }
 		internal bool ReaderClosed { get; private set; }
+		internal bool ReadDescriptorReleased => Posix.fcntl(_read, 3, 0) == -1;
 		internal int ReceiveCount { get; private set; }
 		internal int BytesWritten => Volatile.Read(ref _bytesWritten);
 
@@ -519,7 +636,10 @@ public sealed partial class DataTransferTests
 							ReaderClosed = true;
 							break;
 						}
-						Interlocked.Increment(ref _bytesWritten);
+						if (Interlocked.Increment(ref _bytesWritten) > 1)
+						{
+							Progressed.TrySetResult();
+						}
 						FirstByte.TrySetResult();
 						await Task.Delay(10);
 					}
