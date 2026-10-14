@@ -22,4 +22,7 @@ internal interface IInputInjectorTarget
 	/// of the Windows implementation.
 	/// </summary>
 	bool IsActive { get; }
+
+	/// <summary>Gets whether this target is initialized and attached to a visible window.</summary>
+	bool IsReadyForKeyboardInput { get; }
 }

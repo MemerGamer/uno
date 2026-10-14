@@ -58,11 +58,15 @@ internal sealed class WaylandSeat : IDisposable
 		{
 			_keyboardProxy ??= _connection.GetKeyboard(_keyboard);
 		}
-		else if (_keyboardProxy is { } keyboard)
+		else
 		{
-			_keyboard.Leave();
-			keyboard.Dispose();
-			_keyboardProxy = null;
+			if (_keyboardProxy is { } keyboard)
+			{
+				_keyboard.Leave();
+				keyboard.Dispose();
+				_keyboardProxy = null;
+			}
+			_keyboard.UseDefaultKeymap();
 		}
 		if ((capabilities & 4) != 0)
 		{

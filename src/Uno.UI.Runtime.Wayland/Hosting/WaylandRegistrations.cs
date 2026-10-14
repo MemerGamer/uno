@@ -43,10 +43,11 @@ internal static class WaylandRegistrations
 		ApiExtensibility.Register<AppWindow>(typeof(INativeInputNonClientPointerSource), appWindow => ((WaylandWindowWrapper)appWindow.NativeAppWindow).NonClientPointerSource);
 		ApiExtensibility.Register(typeof(IApplicationViewExtension), owner => new WaylandApplicationViewExtension(owner, connection));
 		ApiExtensibility.Register(typeof(ILauncherExtension), owner => new LinuxLauncherExtension(owner));
-		if (WaylandDataDevice.Create(connection) is { } dataDevice)
+		var dataDevice = WaylandDataDevice.Create(connection);
+		var clipboard = new WaylandClipboardExtension(dataDevice, connection.PostToUI);
+		ApiExtensibility.Register(typeof(IClipboardExtension), _ => clipboard);
+		if (dataDevice is not null)
 		{
-			var clipboard = new WaylandClipboardExtension(dataDevice);
-			ApiExtensibility.Register(typeof(IClipboardExtension), _ => clipboard);
 			ApiExtensibility.Register<DragDropManager>(typeof(IDragDropExtension), manager => new WaylandDragDropExtension(manager, dataDevice));
 		}
 		if (WaylandImeTextBoxExtension.TryCreate(connection) is { } ime)

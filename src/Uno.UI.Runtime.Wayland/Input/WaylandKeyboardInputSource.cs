@@ -29,7 +29,7 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 	private Timer? _repeat;
 	private uint _repeatKey;
 	private int _generation, _rate = 25, _delay = 600;
-	private bool _focused, _disposed, _levelThree;
+	private bool _focused, _disposed, _levelThree, _hasCompositorKeymap;
 	public VirtualKeyModifiers Modifiers
 	{
 		get; private set;
@@ -41,44 +41,62 @@ internal sealed class WaylandKeyboardInputSource : IUnoKeyboardInputSource, IDis
 		_dispatch = dispatch;
 		_activate = activate;
 		_commitText = commitText ?? CommitFocusedText;
+		UseDefaultKeymap();
+	}
+
+	internal void UseDefaultKeymap()
+	{
+		if (!_disposed && (_state == 0 || _hasCompositorKeymap))
+		{
+			SetKeymap(null);
+		}
 	}
 
 	public void Keymap(uint format, int fd, uint size)
 	{
-		StopRepeat();
 		if (format != 1)
 		{
 			using var unused = new SafeFileHandle(fd, ownsHandle: true);
-			ClearKeymap();
+			UseDefaultKeymap();
 			return;
 		}
-		var text = WaylandXkb.ReadKeymap(fd, size);
+		SetKeymap(WaylandXkb.ReadKeymap(fd, size));
+	}
+
+	private void SetKeymap(string? text)
+	{
+		StopRepeat();
 		var context = WaylandXkb.ContextNew(0);
 		nint keymap = 0, state = 0;
+		WaylandKeyboardCompose? compose = null;
 		try
 		{
 			if (context == 0)
 			{
 				throw new InvalidOperationException("Cannot create XKB context.");
 			}
-			keymap = WaylandXkb.KeymapNew(context, text, 1, 0);
+			// A null RMLVO uses the system defaults, including XKB_DEFAULT_* environment overrides.
+			keymap = text is null ? WaylandXkb.KeymapNewFromNames(context, 0, 0) : WaylandXkb.KeymapNew(context, text, 1, 0);
 			if (keymap == 0)
 			{
-				throw new InvalidOperationException("Cannot compile compositor keymap.");
+				throw new InvalidOperationException("Cannot compile XKB keymap.");
 			}
 			state = WaylandXkb.StateNew(keymap);
 			if (state == 0)
 			{
 				throw new InvalidOperationException("Cannot create XKB state.");
 			}
+			compose = new WaylandKeyboardCompose(context, GetComposeLocale());
 			ClearKeymap();
 			_context = context;
 			_keymap = keymap;
 			_state = state;
-			_compose = new WaylandKeyboardCompose(context, GetComposeLocale());
+			_compose = compose;
+			_hasCompositorKeymap = text is not null;
 		}
 		catch
 		{
+			compose?.Dispose();
 			if (state != 0)
 			{
 				WaylandXkb.StateUnref(state);

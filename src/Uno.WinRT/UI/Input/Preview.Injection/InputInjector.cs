@@ -46,7 +46,7 @@ public partial class InputInjector
 	/// <summary>
 	/// Finds the first live target, pruning collected ones on the way so closed windows do not pile up.
 	/// </summary>
-	private static IInputInjectorTarget? FindTarget(bool activeOnly)
+	private static IInputInjectorTarget? FindTarget(bool activeOnly, bool keyboardOnly = false)
 	{
 		if (_inputManagers is { } managers)
 		{
@@ -58,7 +58,7 @@ public partial class InputInjector
 					continue;
 				}
 
-				if (!activeOnly || target.IsActive)
+				if ((!keyboardOnly || target.IsReadyForKeyboardInput) && (!activeOnly || target.IsActive))
 				{
 					return target;
 				}
@@ -430,17 +430,19 @@ public partial class InputInjector
 	/// </remarks>
 	private IInputInjectorTarget ResolveKeyboardTarget()
 	{
-		if (FindTarget(activeOnly: true) is { } target)
+		if (FindTarget(activeOnly: true, keyboardOnly: true) is { } target)
 		{
 			return target;
 		}
 
 		if (this.Log().IsEnabled(LogLevel.Debug))
 		{
-			this.Log().Debug("No active window found for keyboard injection; using the injector's original target.");
+			this.Log().Debug("No active window found for keyboard injection; using a visible window's input target.");
 		}
 
-		return _target;
+		// A headless compositor may never activate a surface. Startup roots and closed windows
+		// must not steal input from the live window that owns managed focus.
+		return FindTarget(activeOnly: false, keyboardOnly: true) ?? _target;
 	}
 
 	/// <summary>
