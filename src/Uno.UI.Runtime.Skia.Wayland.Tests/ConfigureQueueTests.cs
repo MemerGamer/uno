@@ -185,4 +185,30 @@ public sealed class ConfigureQueueTests
 		queue.AcknowledgeCurrent(acks.Add);
 		CollectionAssert.AreEqual(new uint[] { 11 }, acks);
 	}
+
+	[TestMethod]
+	public void DeferredApplyWaitsForTheRecordedLayout()
+	{
+		var queue = new WaylandConfigureQueue();
+		Assert.IsFalse(queue.DeferApply(), "Nothing is posted yet.");
+		Assert.IsTrue(Enqueue(queue));
+		var first = queue.TakePending()!;
+		Assert.IsFalse(queue.DeferApply(), "The current configure still awaits its frame.");
+		Assert.IsFalse(Enqueue(queue, 900), "A successor waits for the frame opportunity.");
+		Assert.IsFalse(queue.ResumeDeferredApply());
+
+		// The opportunity posts the successor, but the UI is still laying out the first configure.
+		Assert.IsTrue(queue.FrameOpportunity(first.Generation));
+		Assert.IsTrue(queue.DeferApply());
+		Assert.IsFalse(Enqueue(queue, 1000), "Newer configures coalesce into the posted slot.");
+		Assert.IsFalse(queue.FrameOpportunity(first.Generation), "The slot is already posted.");
+
+		// Once the layout is recorded, the newest size applies.
+		Assert.IsTrue(queue.ResumeDeferredApply());
+		Assert.IsFalse(queue.ResumeDeferredApply(), "Resuming is one-shot.");
+		var second = queue.TakePending()!;
+		Assert.AreEqual(1000, second.Layout.ContentWidth);
+		Assert.IsNull(queue.TakePending());
+		Assert.IsFalse(queue.DeferApply(), "Taking the configure clears the deferral.");
+	}
 }

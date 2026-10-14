@@ -141,6 +141,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			// Activation follows the configure activated state rather than keyboard focus.
 			hostConstructionStarted = true;
 			_host = new WaylandXamlRootHost(connection, _id, window, root, _surface, _viewport, static _ => { }, PreparePresentation, OnConfigureFrameOpportunity, SetRenderAttemptActive, DestroyProtocolObjects);
+			_host.LayoutRecorded = OnLayoutRecorded;
 			lock (display.SyncRoot)
 			{
 				// Scale events may precede host construction; publish their accumulated output state now.
@@ -905,28 +906,45 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 	}
 
-	// A rejected frame has no callback, and hidden surfaces may never receive one. Keep size
-	// application alive at the output cadence without spinning or waiting for layout/ack/buffer release.
-	private async Task ScheduleConfigureFallback(long generation)
+	// UI thread, after the host recorded the current configure's layout.
+	private void OnLayoutRecorded()
 	{
-		var interval = OutputInfo?.FrameInterval ?? TimeSpan.FromSeconds(1d / 60);
-		await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(interval.TotalMilliseconds))).ConfigureAwait(false);
-		Post(() => AdvanceConfigure(generation));
+		lock (_connection.Display.SyncRoot)
+		{
+			if (_closed || !_configures.ResumeDeferredApply())
+			{
+				return;
+			}
+		}
+		_connection.PostToUI(ApplyPendingConfigure);
 	}
 
-	// UI thread. Coalesced configures advance at frame opportunities, independently of presentation.
+	// UI thread. Coalesced configures advance at frame opportunities: the frame callback of the presented
+	// predecessor, or the render scheduler's stall interval when nothing can be presented. A successor
+	// waits until the UI has recorded the current layout, so a slow layout is never restarted mid-way.
 	private void ApplyPendingConfigure()
 	{
 		WaylandWindowConfigure configure;
 		lock (_connection.Display.SyncRoot)
 		{
-			if (_closed || _configures.TakePending() is not { } pending)
+			if (_closed)
+			{
+				return;
+			}
+			if (_host.IsLayoutPending && _configures.DeferApply())
+			{
+				if (WaylandDiagnostics.IsEnabled)
+				{
+					WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: configure apply deferred until layout is recorded"));
+				}
+				return;
+			}
+			if (_configures.TakePending() is not { } pending)
 			{
 				return;
 			}
 			configure = pending;
 		}
-		_ = ScheduleConfigureFallback(configure.Generation);
 		var layout = configure.Layout;
 		var states = configure.States;
 		ApplyConfigure(layout.ContentWidth, layout.ContentHeight, layout.TitleBarHeight, configure.Scale, states, configure.Generation);
@@ -948,16 +966,21 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			_clientDecorations?.Update(layout, _dispatchTitle, (states & WaylandToplevelStates.Activated) != 0,
 				(states & WaylandToplevelStates.Maximized) != 0, configure.PreferredScale, configure.IntegerScale);
 			// Pre-activation resizes update managed bounds, but buffers wait for the first configure.
-			if (configure.Configured)
+			if (!configure.Configured)
 			{
-				_host.Configure(layout.ContentWidth, layout.ContentHeight, configure.PreferredScale, configure.IntegerScale, configure.Generation);
-				if (_presentation.Generation == 0 || layout != _presentation.Layout || configure.Scale != _presentation.Scale)
-				{
-					return;
-				}
-				// Already presented geometry needs no frame callback, including on hidden surfaces.
-				_configures.AcknowledgeCurrent(AcknowledgeConfigure);
+				// Nothing is presented before the first configure, so release the slot right away.
+				AdvanceConfigure(configure.Generation);
+				return;
 			}
+			_host.Configure(layout.ContentWidth, layout.ContentHeight, configure.PreferredScale, configure.IntegerScale, configure.Generation);
+			if (_presentation.Generation == 0 || layout != _presentation.Layout || configure.Scale != _presentation.Scale)
+			{
+				return;
+			}
+			// Already presented geometry needs no frame callback, including on hidden surfaces: acknowledge
+			// it and let a successor apply without waiting for a presentation that never comes.
+			_configures.AcknowledgeCurrent(AcknowledgeConfigure);
+			AdvanceConfigure(configure.Generation);
 		});
 	}
 

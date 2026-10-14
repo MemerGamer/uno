@@ -183,6 +183,12 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 
 	internal void BeginConfigureUI(long generation) => _readiness.BeginConfigureUI(generation);
 
+	// UI thread: the current configure still waits for a frame recorded at its bounds.
+	internal bool IsLayoutPending => _readiness.IsLayoutPending;
+
+	// UI thread, after that frame was recorded (or the wait gave up).
+	internal Action? LayoutRecorded { get; set; }
+
 	// UI thread, after applying bounds and scale; Uno records their layout in a later frame.
 	internal void ConfigureUI(long generation, bool boundsChanged)
 	{
@@ -223,6 +229,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: layout recorded at {bounds.Width}x{bounds.Height}{(arranged ? "" : " (gave up waiting)")}"));
 			}
+			LayoutRecorded?.Invoke();
 		}
 		if (_readiness.IsLayoutPending && RootElement?.Visual.CompositionTarget is CompositionTarget target)
 		{
@@ -289,6 +296,20 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	private bool Draw(SKSurface target, GRContext? gpuContext)
 	{
 		_readiness.BeginFrame();
+		if (!_readiness.IsGenerationCurrent())
+		{
+			// The UI is still laying out a newer configure; replaying its last picture would be wasted,
+			// but Uno schedules its next UI frame from this request, so that frame must still be released.
+			if (RootElement?.Visual.CompositionTarget is CompositionTarget skippedTarget)
+			{
+				skippedTarget.OnNativePlatformFrameSkipped();
+			}
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: skip stale generation {_readiness.RenderGeneration} before drawing"));
+			}
+			return false;
+		}
 		RenderContent(gpuContext);
 		var canvas = target.Canvas;
 		var bounds = canvas.DeviceClipBounds;

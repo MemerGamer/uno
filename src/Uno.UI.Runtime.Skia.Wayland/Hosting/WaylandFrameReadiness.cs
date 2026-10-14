@@ -71,12 +71,15 @@ internal sealed class WaylandFrameReadiness
 	// can still have the old layout, even if the UI becomes ready while it is drawn.
 	internal void BeginFrame() => _frameUIGeneration = Interlocked.Read(ref _uiGeneration);
 
-	// Render thread, after BeginFrame. A generation mismatch has no safety valve: presenting it would acknowledge the wrong configure.
-	internal bool CanPresent(int canvasWidth, int canvasHeight, int bufferWidth, int bufferHeight)
-	{
-		return RenderGeneration == _frameUIGeneration
+	// Render thread, after BeginFrame: whether Uno's latest picture was recorded for the configured generation.
+	// Checked before drawing it, so a stale attempt costs no replay. A generation mismatch has no safety
+	// valve: presenting it would acknowledge the wrong configure.
+	internal bool IsGenerationCurrent()
+		=> RenderGeneration == _frameUIGeneration
 			&& RenderGeneration == Interlocked.Read(ref _appliedUIGeneration)
-			&& RenderGeneration == Interlocked.Read(ref _uiGeneration)
-			&& canvasWidth == bufferWidth && canvasHeight == bufferHeight;
-	}
+			&& RenderGeneration == Interlocked.Read(ref _uiGeneration);
+
+	// Render thread, after drawing.
+	internal bool CanPresent(int canvasWidth, int canvasHeight, int bufferWidth, int bufferHeight)
+		=> IsGenerationCurrent() && canvasWidth == bufferWidth && canvasHeight == bufferHeight;
 }

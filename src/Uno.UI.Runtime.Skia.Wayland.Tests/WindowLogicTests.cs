@@ -265,4 +265,28 @@ public sealed class WindowLogicTests
 		Assert.AreEqual((WaylandDecorationPart.Close, 0u), layout.HitTest(799, 31));
 		Assert.AreEqual((WaylandDecorationPart.None, 0u), layout.HitTest(400, 40));
 	}
+
+	[TestMethod]
+	public void StaleGenerationIsDetectedBeforeDrawing()
+	{
+		var readiness = new WaylandFrameReadiness();
+		Assert.IsFalse(readiness.ConfigureUI(1, boundsChanged: false));
+		readiness.ConfigureRender(1);
+		readiness.BeginFrame();
+		Assert.IsTrue(readiness.IsGenerationCurrent());
+
+		// The UI begins a newer configure: the render thread must not replay the old picture for it.
+		readiness.BeginConfigureUI(2);
+		readiness.BeginFrame();
+		Assert.IsFalse(readiness.IsGenerationCurrent());
+		Assert.IsTrue(readiness.ConfigureUI(2, boundsChanged: true));
+		readiness.ConfigureRender(2);
+		readiness.BeginFrame();
+		Assert.IsFalse(readiness.IsGenerationCurrent(), "The layout is not recorded yet.");
+		Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+		readiness.BeginFrame();
+		Assert.IsTrue(readiness.IsGenerationCurrent());
+		Assert.IsFalse(readiness.CanPresent(900, 700, 800, 600), "A current generation still needs matching buffer and canvas sizes.");
+		Assert.IsTrue(readiness.CanPresent(900, 700, 900, 700));
+	}
 }

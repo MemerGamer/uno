@@ -152,6 +152,15 @@ internal sealed class WaylandFrameScheduler : IDisposable
 		{
 			return;
 		}
+		if (_presented != _presentedWhenArmed && !_waitingForContentRetry)
+		{
+			// Frames are still being presented; keep watching the pending one.
+			ArmStallTimer();
+			return;
+		}
+		// Nothing was presented for a whole stall interval, so no frame callback will release the next
+		// configure: offer the opportunity here. The UI applies it only once its current layout is recorded.
+		_frameOpportunity(_callbackGeneration);
 		if (_waitingForContentRetry)
 		{
 			_waitingForContentRetry = false;
@@ -160,12 +169,6 @@ internal sealed class WaylandFrameScheduler : IDisposable
 			{
 				ArmStallTimer();
 			}
-			return;
-		}
-		if (_presented != _presentedWhenArmed)
-		{
-			// Frames are still being presented; keep watching the pending one.
-			ArmStallTimer();
 			return;
 		}
 		// Not re-armed here: the UI's next invalidation does that, so an idle UI stops producing frames.

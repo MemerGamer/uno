@@ -27,6 +27,7 @@ internal sealed class WaylandConfigureQueue
 	private bool _attemptActive;
 	private bool _opportunityDeferred;
 	private bool _posted;
+	private bool _applyDeferred;
 	private long _generation;
 	private long _serialSequence;
 	private long _ackedSequence;
@@ -55,10 +56,34 @@ internal sealed class WaylandConfigureQueue
 		}
 		_posted = false;
 		_opportunityDeferred = false;
+		_applyDeferred = false;
 		Current = _pending;
 		_pending = null;
 		_awaitingFrame = Current is not null;
 		return Current;
+	}
+
+	// UI thread: keep the posted successor until the UI has recorded the current configure's layout.
+	// Applying it mid-layout would restart the layout at yet another size.
+	internal bool DeferApply()
+	{
+		if (!_posted || _awaitingFrame)
+		{
+			return false;
+		}
+		_applyDeferred = true;
+		return true;
+	}
+
+	// UI thread, once the layout was recorded. Returns whether the deferred successor should now be applied.
+	internal bool ResumeDeferredApply()
+	{
+		if (!_applyDeferred)
+		{
+			return false;
+		}
+		_applyDeferred = false;
+		return _posted && !_awaitingFrame;
 	}
 
 	internal bool FrameOpportunity(long generation)
