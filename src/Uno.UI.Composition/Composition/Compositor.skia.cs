@@ -196,7 +196,11 @@ public partial class Compositor
 		return false;
 	}
 
-	internal void RenderRootVisual(SKCanvas canvas, ContainerVisual rootVisual, SKPath? damage = null)
+	// While set, visuals skip the per-visual damage region math (the whole frame is damaged anyway) but still
+	// refresh their damage fingerprints, so the next incremental frame only damages what changed after this one.
+	internal bool IsFullDamageFrame { get; private set; }
+
+	internal void RenderRootVisual(SKCanvas canvas, ContainerVisual rootVisual, SKPath? damage = null, bool fullDamage = false)
 	{
 		if (rootVisual is null)
 		{
@@ -228,7 +232,15 @@ public partial class Compositor
 		// re-requests below still run, so the scene stays live without producing pixels.
 		if (!SkipVisualTreePainting)
 		{
-			rootVisual.RenderRootVisual(canvas, null, damage);
+			IsFullDamageFrame = fullDamage && damage is not null;
+			try
+			{
+				rootVisual.RenderRootVisual(canvas, null, damage);
+			}
+			finally
+			{
+				IsFullDamageFrame = false;
+			}
 		}
 #if PRINT_FRAME_TIMES
 		var span = Stopwatch.GetElapsedTime(start);

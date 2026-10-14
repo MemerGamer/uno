@@ -24,11 +24,15 @@ internal sealed class WaylandFrameScheduler : IDisposable
 	private readonly WlSurface _surface;
 	private readonly Func<WaylandRenderResult> _render;
 	private readonly Action _stalled;
+	private readonly Func<long> _getGeneration;
+	private readonly Func<long, bool> _frameOpportunity;
+	private readonly Action<bool> _attemptActive;
+	private long _callbackGeneration;
 	private readonly Action<Action> _postToOwner;
 	private readonly Timer _stallTimer;
 	private WlCallback? _callback;
 	private bool _dirty;
-	// Rejection has no committed frame callback; invalidations must not bypass the wait or retry pace.
+	// Requests alone cannot resolve rejection; wait for availability, recorded content, or the fallback timer.
 	private bool _waitingForAvailability;
 	private bool _waitingForContentRetry;
 	private bool _stallArmed;
@@ -36,11 +40,14 @@ internal sealed class WaylandFrameScheduler : IDisposable
 	private int _presentedWhenArmed;
 	private bool _disposed;
 
-	public WaylandFrameScheduler(WlSurface surface, Func<WaylandRenderResult> render, Action stalled, Action<Action> postToOwner)
+	public WaylandFrameScheduler(WlSurface surface, Func<WaylandRenderResult> render, Action stalled, Action<Action> postToOwner, Func<long> getGeneration, Func<long, bool> frameOpportunity, Action<bool> attemptActive)
 	{
 		_surface = surface;
 		_render = render;
 		_stalled = stalled;
+		_getGeneration = getGeneration;
+		_frameOpportunity = frameOpportunity;
+		_attemptActive = attemptActive;
 		_postToOwner = postToOwner;
 		_stallTimer = new Timer(_ => _postToOwner(OnStallTimer));
 	}
@@ -66,6 +73,12 @@ internal sealed class WaylandFrameScheduler : IDisposable
 		TryRender();
 	}
 
+	public void ContentReady()
+	{
+		_waitingForContentRetry = false;
+		TryRender();
+	}
+
 	public void PresentationReady()
 	{
 		_waitingForAvailability = false;
@@ -80,8 +93,11 @@ internal sealed class WaylandFrameScheduler : IDisposable
 			return;
 		}
 		_dirty = false;
+		_callbackGeneration = _getGeneration();
 		_callback = _surface.Frame();
 		_callback.Done += OnDone;
+		// The attempt keeps its configure; a timer-driven opportunity waits for the attempt to end.
+		_attemptActive(true);
 		try
 		{
 			var result = _render();
@@ -97,7 +113,7 @@ internal sealed class WaylandFrameScheduler : IDisposable
 				_waitingForContentRetry = result == WaylandRenderResult.ContentRejected;
 				if (_waitingForContentRetry)
 				{
-					// No buffer was committed to drive the frame clock; bound retries with its stall timer.
+					// No frame callback can arrive; retry if neither a configure nor recorded content wakes us.
 					ArmStallTimer();
 				}
 				if (result == WaylandRenderResult.ContextRecovered)
@@ -112,6 +128,10 @@ internal sealed class WaylandFrameScheduler : IDisposable
 			CancelCallback();
 			_dirty = true;
 			throw;
+		}
+		finally
+		{
+			_attemptActive(false);
 		}
 	}
 
@@ -132,6 +152,15 @@ internal sealed class WaylandFrameScheduler : IDisposable
 		{
 			return;
 		}
+		if (_presented != _presentedWhenArmed && !_waitingForContentRetry)
+		{
+			// Frames are still being presented; keep watching the pending one.
+			ArmStallTimer();
+			return;
+		}
+		// Nothing was presented for a whole stall interval, so no frame callback will release the next
+		// configure: offer the opportunity here. The UI applies it only once its current layout is recorded.
+		_frameOpportunity(_callbackGeneration);
 		if (_waitingForContentRetry)
 		{
 			_waitingForContentRetry = false;
@@ -140,12 +169,6 @@ internal sealed class WaylandFrameScheduler : IDisposable
 			{
 				ArmStallTimer();
 			}
-			return;
-		}
-		if (_presented != _presentedWhenArmed)
-		{
-			// Frames are still being presented; keep watching the pending one.
-			ArmStallTimer();
 			return;
 		}
 		// Not re-armed here: the UI's next invalidation does that, so an idle UI stops producing frames.
@@ -162,7 +185,11 @@ internal sealed class WaylandFrameScheduler : IDisposable
 				return;
 			}
 			CancelCallback();
-			TryRender();
+			// Let the UI apply a pending configure before drawing again at the predecessor's size.
+			if (!_frameOpportunity(_callbackGeneration))
+			{
+				TryRender();
+			}
 		});
 	}
 

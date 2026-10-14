@@ -6,12 +6,35 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Private.Infrastructure;
 using Uno.UI.RuntimeTests.Helpers;
+using Uno.UI.Helpers;
+using Uno.UI.Xaml.Core;
+using Uno.UI.Xaml.Islands;
 
 namespace Uno.UI.RuntimeTests.Tests.Windows_UI_Xaml_Media;
 
 [TestClass]
 public class Given_CompositionTarget
 {
+	[TestMethod]
+	[RunsOnUIThread]
+	[DataRow(false)]
+	[DataRow(true)]
+	public void When_LcdRootCoverageIsOpaque(bool desktopRoot)
+	{
+		Panel root = desktopRoot ? new XamlIslandRoot() : new RootVisual(CoreServices.Instance);
+		root.Background = new SolidColorBrush(Colors.White);
+		root.Visual.Size = new(100, 100);
+		Assert.IsTrue(SkiaRenderHelper.HasLcdRootCoverage(root, 100, 100));
+		Assert.IsFalse(SkiaRenderHelper.HasLcdRootCoverage(root, 101, 100));
+		root.Background = new SolidColorBrush(Colors.Transparent);
+		Assert.IsFalse(SkiaRenderHelper.HasLcdRootCoverage(root, 100, 100));
+		root.Background = new SolidColorBrush(Colors.White) { Opacity = 0.5 };
+		Assert.IsFalse(SkiaRenderHelper.HasLcdRootCoverage(root, 100, 100));
+		root.Background = new SolidColorBrush(Colors.White);
+		root.Opacity = 0.5;
+		Assert.IsFalse(SkiaRenderHelper.HasLcdRootCoverage(root, 100, 100));
+	}
+
 	[TestMethod]
 	[RunsOnUIThread]
 	public async Task When_SkipVisualTreePainting()

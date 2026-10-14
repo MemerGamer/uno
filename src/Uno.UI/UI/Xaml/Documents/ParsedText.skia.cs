@@ -900,12 +900,12 @@ internal readonly struct ParsedText : IParsedText
 		static void DrawText(FontDetails fontInfo, Span<SKPoint> positions, Span<ushort> glyphs,
 			SKCanvas canvas, float y, SKPaint paint)
 		{
-			_textBlobBuilder.AddPositionedRun(glyphs, fontInfo.SKFont, positions);
+			_textBlobBuilder.AddPositionedRun(glyphs, FontDetails.GetRenderFont(fontInfo.SKFont, canvas, paint), positions);
 			// Roughly equivalent to:
 			//   using var textBlob = _textBlobBuilder.Build();
 			//   canvas.DrawText(textBlob, 0f, y, paint);
 			var textBlobHandle = UnoSkiaApi.sk_textblob_builder_make(_textBlobBuilder.Handle);
-			UnoSkiaApi.sk_canvas_draw_text_blob(canvas.Handle, textBlobHandle, 0f, y, paint.Handle);
+			UnoSkiaApi.sk_canvas_draw_text_blob(canvas.Handle, textBlobHandle, 0f, y, FontDetails.GetRenderPaint(paint).Handle);
 			UnoSkiaApi.sk_textblob_unref(textBlobHandle);
 		}
 	}

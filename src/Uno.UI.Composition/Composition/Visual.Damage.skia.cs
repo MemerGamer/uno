@@ -31,6 +31,11 @@ public partial class Visual
 		{
 			return;
 		}
+		if (Compositor.IsFullDamageFrame)
+		{
+			RecordFullDamageFingerprint(clip);
+			return;
+		}
 
 		var matrix = TotalMatrix;
 		var moved = !_hasLastRenderBounds || matrix != _lastRenderMatrix;
@@ -78,6 +83,47 @@ public partial class Visual
 			damage.UnionRect(_lastRenderBounds);
 			_hasLastRenderBounds = false;
 		}
+	}
+
+	// A frame that repaints everything (a resize) skips the path unions and intersections above, which dominate
+	// the UI thread during interactive resizes, but keeps the fingerprints current. The bounds are the rect
+	// estimate rather than the clipped content path: a superset, so a later mismatch over-damages, never under.
+	private void RecordFullDamageFingerprint(SKPath clip)
+	{
+		var clipRect = clip.Bounds;
+		_lastClipBounds = clipRect;
+		_lastRenderMatrix = TotalMatrix;
+		if (clip.IsEmpty)
+		{
+			_hasLastRenderBounds = false;
+			return;
+		}
+		if (TryGetLocalContentBounds(out var local))
+		{
+			if (local.IsEmpty)
+			{
+				_hasLastRenderBounds = false;
+				return;
+			}
+			var samplingMargin = DamageRegionSamplingMargin;
+			if (samplingMargin > 0)
+			{
+				local.Inflate(samplingMargin, samplingMargin);
+			}
+			var root = TotalMatrix.ToSKMatrix().MapRect(local);
+			root.Inflate(2, 2);
+			root = new SKRect(
+				(float)Math.Floor(root.Left),
+				(float)Math.Floor(root.Top),
+				(float)Math.Ceiling(root.Right),
+				(float)Math.Ceiling(root.Bottom));
+			var clipped = SKRect.Intersect(root, clipRect);
+			_hasLastRenderBounds = !clipped.IsEmpty;
+			_lastRenderBounds = clipped;
+			return;
+		}
+		_lastRenderBounds = clipRect;
+		_hasLastRenderBounds = true;
 	}
 
 	private bool TryGetPaintDamageRegion(SKPath clip, out SKRect bounds, out SKPath? regionPath)

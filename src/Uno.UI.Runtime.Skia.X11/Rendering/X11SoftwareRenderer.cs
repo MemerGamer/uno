@@ -57,8 +57,16 @@ namespace Uno.WinUI.Runtime.Skia.X11
 				bitmap_pad: BitmapPad,
 				bytes_per_line: 0); // 0 bytes per line assume contiguous lines i.e. pad * width
 
-			var info = new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
-			return SKSurface.Create(info, _bitmap.GetPixels(out _));
+			return CreateSurface();
+		}
+
+		protected override SKSurface UpdateSurfaceGeometry(SKSurface surface) => CreateSurface();
+
+		private SKSurface CreateSurface()
+		{
+			var info = new SKImageInfo(_width, _height, SKColorType.Bgra8888, SKAlphaType.Premul);
+			using var properties = new SKSurfaceProperties(PixelGeometry);
+			return SKSurface.Create(info, _bitmap!.GetPixels(out _), properties);
 		}
 
 		protected override void Flush()

@@ -31,7 +31,7 @@ internal sealed class WaylandRenderer : IDisposable
 	public event EventHandler? BackendChanged;
 
 	// Both frame paths validate the GPU context before the host draws its retained layer.
-	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Func<SKSurface, GRContext?, bool> draw, Action<GRContext?> produceUnpresentedFrame, Action releaseRetainedLayer, Action<Action> postToOwner, Func<Func<bool>, bool> prepareCommit, bool forceSoftware = false)
+	public WaylandRenderer(IntPtr display, WlSurface surface, WlShm shm, WpViewport? viewport, Func<SKSurface, GRContext?, bool> draw, Action<GRContext?> produceUnpresentedFrame, Action releaseRetainedLayer, Action<Action> postToOwner, Func<Func<bool>, bool> prepareCommit, Func<long> getGeneration, Func<long, bool> frameOpportunity, Action<bool> attemptActive, bool forceSoftware = false)
 	{
 		_surface = surface;
 		_shm = shm;
@@ -56,7 +56,7 @@ internal sealed class WaylandRenderer : IDisposable
 			{
 				UseSoftware();
 			}
-			_scheduler = new WaylandFrameScheduler(surface, Render, () => ProduceUnpresentedFrame(produceUnpresentedFrame), postToOwner);
+			_scheduler = new WaylandFrameScheduler(surface, Render, () => ProduceUnpresentedFrame(produceUnpresentedFrame), postToOwner, getGeneration, frameOpportunity, attemptActive);
 		}
 		catch
 		{
@@ -83,6 +83,8 @@ internal sealed class WaylandRenderer : IDisposable
 
 	public void Invalidate() => _scheduler.Invalidate();
 
+	public void ContentReady() => _scheduler.ContentReady();
+
 	public void PresentationReady() => _scheduler.PresentationReady();
 
 	public void ProduceUnpresentedFrame(Action<GRContext?> produce)
@@ -92,7 +94,7 @@ internal sealed class WaylandRenderer : IDisposable
 		{
 			try
 			{
-				var size = GetBufferSize();
+				var size = BufferSize;
 				egl.EnsureContext(size.Width, size.Height);
 			}
 			catch (Exception error) when (egl.IsContextLost)
@@ -117,7 +119,7 @@ internal sealed class WaylandRenderer : IDisposable
 		{
 			return WaylandRenderResult.BufferUnavailable;
 		}
-		var size = GetBufferSize();
+		var size = BufferSize;
 		if (_egl is { } egl)
 		{
 			try
@@ -133,7 +135,7 @@ internal sealed class WaylandRenderer : IDisposable
 		return _software!.Render(size.Width, size.Height, surface => _draw(surface, null), _prepareCommit);
 	}
 
-	private (int Width, int Height) GetBufferSize()
+	internal (int Width, int Height) BufferSize
 		=> (WaylandRenderScale.ToBufferPixels(Math.Max(_width, 1), Scale.EffectiveScale),
 			WaylandRenderScale.ToBufferPixels(Math.Max(_height, 1), Scale.EffectiveScale));
 

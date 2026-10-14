@@ -83,6 +83,90 @@ public sealed class WindowLogicTests
 	}
 
 	[TestMethod]
+	public void PendingConfiguresCoalesceUntilFrameOpportunity()
+	{
+		var queue = new WaylandConfigureQueue();
+		var first = new WaylandDecorationLayout(800, 600, 32, 8, WaylandCaptionButtons.Close);
+		queue.Receive(10);
+		Assert.IsTrue(queue.Enqueue(first, 1, 0, 1, WaylandToplevelStates.Resizing, configured: true, notifyActivation: true));
+		queue.Receive(11);
+		Assert.IsFalse(queue.Enqueue(first, 1, 0, 1, WaylandToplevelStates.Resizing, configured: true));
+		var active = queue.TakePending()!;
+		Assert.AreEqual(11u, active.Serial);
+		Assert.IsTrue(active.NotifyActivation, "Coalescing a scale or decoration update must preserve activation notification.");
+
+		for (uint serial = 12; serial <= 200; serial++)
+		{
+			queue.Receive(serial);
+			Assert.IsFalse(queue.Enqueue(first with { ContentWidth = (int)serial + 800 }, 2, 240, 2, WaylandToplevelStates.Resizing, configured: true));
+			Assert.IsNull(queue.TakePending(), "A newer configure must wait for a frame opportunity.");
+			Assert.AreSame(active, queue.Current);
+		}
+		Assert.IsFalse(queue.FrameOpportunity(active.Generation + 1));
+		Assert.IsTrue(queue.FrameOpportunity(active.Generation), "A frame opportunity must advance without submission or acknowledgement.");
+		Assert.IsFalse(queue.FrameOpportunity(active.Generation), "A repeated callback must not post a second UI configure.");
+		var acknowledgements = new List<uint>();
+		queue.AcknowledgeCurrent(acknowledgements.Add);
+		queue.AcknowledgeCurrent(acknowledgements.Add);
+		CollectionAssert.AreEqual(new uint[] { 11 }, acknowledgements, "Only the active geometry's serial may be acknowledged, exactly once.");
+		var newest = queue.TakePending()!;
+		Assert.IsFalse(queue.FrameOpportunity(active.Generation), "An old callback must not release the new generation.");
+		Assert.AreEqual(200u, newest.Serial);
+		Assert.AreEqual(1000, newest.Layout.ContentWidth);
+		Assert.AreEqual(2d, newest.Scale);
+		Assert.AreEqual(240u, newest.PreferredScale);
+		queue.AcknowledgeCurrent(acknowledgements.Add);
+		CollectionAssert.AreEqual(new uint[] { 11, 200 }, acknowledgements);
+		Assert.IsFalse(queue.FrameOpportunity(newest.Generation));
+		Assert.IsNull(queue.TakePending());
+	}
+
+	[TestMethod]
+	public void StateOnlyAcknowledgementCannotConsumeAnAppliedResizeSerial()
+	{
+		var queue = new WaylandConfigureQueue();
+		var presented = new WaylandDecorationLayout(800, 600, 0, 0, WaylandCaptionButtons.None);
+		var resizing = presented with { ContentWidth = 900 };
+		queue.Receive(1);
+		queue.Enqueue(resizing, 1, 0, 1, WaylandToplevelStates.Resizing, configured: true);
+		var active = queue.TakePending()!;
+		queue.Receive(2);
+		queue.Enqueue(presented, 1, 0, 1, WaylandToplevelStates.None, configured: true);
+		Assert.IsFalse(queue.CanAcknowledgeLatest(presented, 1), "Returning to the presented size must wait for the intervening resize.");
+		var acknowledgements = new List<uint>();
+		queue.AcknowledgeCurrent(acknowledgements.Add);
+		Assert.IsTrue(queue.FrameOpportunity(active.Generation));
+		Assert.IsFalse(queue.CanAcknowledgeLatest(presented, 1), "Opening a frame slot must not change the applied geometry.");
+		queue.TakePending();
+		Assert.IsTrue(queue.CanAcknowledgeLatest(presented, 1));
+		Assert.IsFalse(queue.CanAcknowledgeLatest(presented, 2), "Scale is part of the committed geometry.");
+		queue.Receive(3);
+		queue.AcknowledgeLatest(acknowledgements.Add);
+		queue.AcknowledgeCurrent(acknowledgements.Add);
+		CollectionAssert.AreEqual(new uint[] { 1, 3 }, acknowledgements, "An already consumed serial must never be acknowledged again.");
+	}
+
+	[TestMethod]
+	public void ConfigureAcknowledgementsFollowReceiptOrderAcrossSerialWraparound()
+	{
+		var queue = new WaylandConfigureQueue();
+		var layout = new WaylandDecorationLayout(800, 600, 0, 0, WaylandCaptionButtons.None);
+		var acknowledgements = new List<uint>();
+		queue.AcknowledgeLatest(acknowledgements.Add);
+		Assert.AreEqual(0, acknowledgements.Count, "A serial must be received before it can be acknowledged.");
+		foreach (var serial in new uint[] { uint.MaxValue - 1, uint.MaxValue, 0, 1 })
+		{
+			queue.Receive(serial);
+			Assert.IsTrue(queue.Enqueue(layout, 1, 0, 1, WaylandToplevelStates.None, configured: true));
+			var active = queue.TakePending()!;
+			queue.AcknowledgeCurrent(acknowledgements.Add);
+			queue.AcknowledgeLatest(acknowledgements.Add);
+			Assert.IsFalse(queue.FrameOpportunity(active.Generation));
+		}
+		CollectionAssert.AreEqual(new uint[] { uint.MaxValue - 1, uint.MaxValue, 0, 1 }, acknowledgements);
+	}
+
+	[TestMethod]
 	public void ResizeWaitsForFrameRecordedAfterLayout()
 	{
 		var readiness = new WaylandFrameReadiness();
@@ -151,7 +235,7 @@ public sealed class WindowLogicTests
 	}
 
 	[TestMethod]
-	public void WaitsHaveSafetyValves()
+	public void LayoutWaitHasSafetyValveButStaleSizesNeverPresent()
 	{
 		var readiness = new WaylandFrameReadiness();
 		readiness.ConfigureUI(1, boundsChanged: true);
@@ -163,17 +247,14 @@ public sealed class WindowLogicTests
 
 		readiness.ConfigureRender(1);
 		readiness.BeginFrame();
-		Assert.IsTrue(readiness.CanPresent(100, 100, 101, 101));
-		for (var i = 0; i < WaylandFrameReadiness.MaxStaleFrames; i++)
+		Assert.IsFalse(readiness.CanPresent(100, 100, 101, 101));
+		for (var i = 0; i < 2 * WaylandFrameReadiness.MaxStaleFrames; i++)
 		{
 			readiness.BeginFrame();
 			Assert.IsFalse(readiness.CanPresent(80, 80, 101, 101));
 		}
 		readiness.BeginFrame();
-		Assert.IsTrue(readiness.CanPresent(80, 80, 101, 101));
-		readiness.ConfigureRender(1);
-		readiness.BeginFrame();
-		Assert.IsFalse(readiness.CanPresent(80, 80, 101, 101));
+		Assert.IsTrue(readiness.CanPresent(101, 101, 101, 101));
 	}
 
 	[TestMethod]

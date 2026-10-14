@@ -11,6 +11,7 @@ using Uno.Foundation.Logging;
 using Uno.UI.Composition;
 using Uno.UI.Helpers;
 using Uno.UI.Hosting;
+using Uno.WinUI.Runtime.Skia.Linux;
 using Uno.WinUI.Runtime.Skia.Wayland.Input;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 using Uno.WinUI.Runtime.Skia.Wayland.Rendering;
@@ -37,17 +38,20 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	private SKSurface? _canvasSurface;
 	private int _frame;
 	private SKSizeI _canvasSize;
+	private SKPixelGeometry _outputGeometry;
+	private double _outputScale;
 	private readonly WaylandFrameReadiness _readiness = new();
 	private readonly Func<long, Func<bool>, bool> _preparePresentation;
 
 	// UI thread state.
 	private CompositionTarget? _frameTarget;
+	private bool _layoutRetryPosted;
 
 	// Dispatch thread state.
 	private WaylandCursor? _cursor;
 	private WlPointer? _cursorPointer;
 
-	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, Func<bool>, bool> preparePresentation, Action rollbackProtocolObjects)
+	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, Func<bool>, bool> preparePresentation, Func<long, bool> frameOpportunity, Action<bool> attemptActive, Action rollbackProtocolObjects)
 	{
 		_preparePresentation = preparePresentation;
 		_connection = connection;
@@ -63,7 +67,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				try
 				{
-					_renderer = new WaylandRenderer(connection.Display.NativeHandle, surface, connection.Shm, viewport, Draw, RenderContent, ReleaseRetainedLayer, _renderThread.Post, PrepareCommit);
+					_renderer = new WaylandRenderer(connection.Display.NativeHandle, surface, connection.Shm, viewport, Draw, RenderContent, ReleaseRetainedLayer, _renderThread.Post, PrepareCommit, () => _readiness.RenderGeneration, frameOpportunity, attemptActive);
 					_renderer.BackendChanged += (_, _) => OnBackendSelected();
 					OnBackendSelected();
 					initialized.TrySetResult();
@@ -136,6 +140,20 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 
 	internal void PresentationReady() => InvalidateRender(presentationReady: true);
 
+	// Dispatch thread publishes a conservative geometry for all entered outputs.
+	internal void SetOutputGeometry(SKPixelGeometry geometry, double scale)
+	{
+		_renderThread.Post(() =>
+		{
+			if (_outputGeometry != geometry || _outputScale != scale)
+			{
+				_outputGeometry = geometry;
+				_outputScale = scale;
+				_renderer?.Invalidate();
+			}
+		});
+	}
+
 	private void InvalidateRender(bool presentationReady)
 	{
 		if (!_disposed)
@@ -163,8 +181,15 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		}
 	}
 
-	// UI thread, after the configure's bounds and scale were applied. The canvas follows new bounds
-	// immediately, while Uno records the new layout only in a later frame.
+	internal void BeginConfigureUI(long generation) => _readiness.BeginConfigureUI(generation);
+
+	// UI thread: the current configure still waits for a frame recorded at its bounds.
+	internal bool IsLayoutPending => _readiness.IsLayoutPending;
+
+	// UI thread, after that frame was recorded (or the wait gave up).
+	internal Action? LayoutRecorded { get; set; }
+
+	// UI thread, after applying bounds and scale; Uno records their layout in a later frame.
 	internal void ConfigureUI(long generation, bool boundsChanged)
 	{
 		if (RootElement?.Visual.CompositionTarget is not CompositionTarget compositionTarget)
@@ -173,6 +198,11 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			_readiness.ConfigureUI(generation, boundsChanged: false);
 			return;
 		}
+		if (_frameTarget is null)
+		{
+			_frameTarget = compositionTarget;
+			compositionTarget.FrameRendered += OnFrameRendered;
+		}
 		var waits = _readiness.ConfigureUI(generation, boundsChanged);
 		if (WaylandDiagnostics.IsEnabled)
 		{
@@ -180,11 +210,6 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		}
 		if (waits)
 		{
-			if (_frameTarget is null)
-			{
-				_frameTarget = compositionTarget;
-				compositionTarget.FrameRendered += OnFrameRendered;
-			}
 			// Records a frame even when layout leaves the visuals unchanged.
 			((ICompositionTarget)compositionTarget).RequestNewFrame();
 		}
@@ -204,8 +229,37 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: layout recorded at {bounds.Width}x{bounds.Height}{(arranged ? "" : " (gave up waiting)")}"));
 			}
-			PresentationReady();
+			LayoutRecorded?.Invoke();
 		}
+		if (_readiness.IsLayoutPending && RootElement?.Visual.CompositionTarget is CompositionTarget target)
+		{
+			if (!_layoutRetryPosted)
+			{
+				_layoutRetryPosted = true;
+				_ = RetryLayoutFrame(target);
+			}
+		}
+		// A later picture can fix a canvas-size rejection even after this generation's layout became ready.
+		if (!_disposed)
+		{
+			_renderThread.Post(() => _renderer?.ContentReady());
+		}
+	}
+
+	private async Task RetryLayoutFrame(CompositionTarget target)
+	{
+		// A rejected native draw has no frame callback. Retry the UI recording at the liveness
+		// interval instead of creating an immediate record/reject loop.
+		await Task.Delay(WaylandFrameScheduler.StallInterval).ConfigureAwait(false);
+		_connection.PostToUI(() =>
+		{
+			_layoutRetryPosted = false;
+			if (!_disposed && _readiness.IsLayoutPending)
+			{
+				((ICompositionTarget)target).RequestNewFrame();
+				PresentationReady();
+			}
+		});
 	}
 
 	internal void Configure(int logicalWidth, int logicalHeight, uint preferredScale, int integerScale, long generation)
@@ -242,6 +296,20 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	private bool Draw(SKSurface target, GRContext? gpuContext)
 	{
 		_readiness.BeginFrame();
+		if (!_readiness.IsGenerationCurrent())
+		{
+			// The UI is still laying out a newer configure; replaying its last picture would be wasted,
+			// but Uno schedules its next UI frame from this request, so that frame must still be released.
+			if (RootElement?.Visual.CompositionTarget is CompositionTarget skippedTarget)
+			{
+				skippedTarget.OnNativePlatformFrameSkipped();
+			}
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: skip stale generation {_readiness.RenderGeneration} before drawing"));
+			}
+			return false;
+		}
 		RenderContent(gpuContext);
 		var canvas = target.Canvas;
 		var bounds = canvas.DeviceClipBounds;
@@ -292,21 +360,30 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		if (RootElement?.Visual.CompositionTarget is CompositionTarget compositionTarget)
 		{
 			var canvas = gpuContext is null ? _canvasSurface?.Canvas : _retainedLayer.Surface?.Canvas;
-			compositionTarget.OnNativePlatformFrameRequested(canvas, size =>
+			(int Width, int Height)? bufferSize = _renderer is { IsConfigured: true } renderer ? renderer.BufferSize : null;
+			if (bufferSize is { } configured && (_canvasSize.Width != configured.Width || _canvasSize.Height != configured.Height))
 			{
-				var width = Math.Max((int)size.Width, 1);
-				var height = Math.Max((int)size.Height, 1);
+				canvas = null;
+			}
+			var surfaceGeometry = LinuxTextRenderingExtension.Instance.Settings.GetSurfaceGeometry(_renderer!.Scale.EffectiveScale,
+				pixelPreserving: _outputGeometry != SKPixelGeometry.Unknown && _outputScale == _renderer.Scale.EffectiveScale);
+			compositionTarget.OnNativePlatformFrameRequested(canvas, (size, pixelGeometry) =>
+			{
+				// CompositionTarget rounds current XamlRoot bounds to even. The retained layer and
+				// wl_buffer instead share the configure's integer geometry and halves-up rounding.
+				var (width, height) = WaylandRenderScale.GetCanvasSize(bufferSize, size.Width, size.Height);
 				_canvasSize = new SKSizeI(width, height);
 				if (gpuContext is not null)
 				{
-					return _retainedLayer.EnsureSurface(gpuContext, width, height, SKColors.White).Canvas;
+					return _retainedLayer.EnsureSurface(gpuContext, width, height, SKColors.White, pixelGeometry).Canvas;
 				}
 				_canvasSurface?.Dispose();
-				_canvasSurface = SKSurface.Create(new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul))
+				using var properties = new SKSurfaceProperties(pixelGeometry);
+				_canvasSurface = SKSurface.Create(new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul), properties)
 					?? throw new InvalidOperationException("Skia raster surface creation failed.");
 				_canvasSurface.Canvas.Clear(SKColors.White);
 				return _canvasSurface.Canvas;
-			});
+			}, surfaceGeometry);
 		}
 	}
 

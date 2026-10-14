@@ -164,6 +164,12 @@ public partial class CompositionTarget
 	/// of repeated calls, even if no new invalidations are requested.
 	/// </summary>
 	internal SKPath OnNativePlatformFrameRequested(SKCanvas? canvas, Func<Size, SKCanvas> resizeFunc)
+		=> OnNativePlatformFrameRequestedCore(canvas, resizeFunc, SKPixelGeometry.Unknown, null);
+
+	internal SKPath OnNativePlatformFrameRequested(SKCanvas? canvas, Func<Size, SKPixelGeometry, SKCanvas> resizeFunc, SKPixelGeometry pixelGeometry)
+		=> OnNativePlatformFrameRequestedCore(canvas, null, pixelGeometry, resizeFunc);
+
+	private SKPath OnNativePlatformFrameRequestedCore(SKCanvas? canvas, Func<Size, SKCanvas>? resizeFunc, SKPixelGeometry pixelGeometry, Func<Size, SKPixelGeometry, SKCanvas>? resizeWithGeometry)
 	{
 		this.LogTrace()?.Trace($"CompositionTarget#{GetHashCode()}: {nameof(OnNativePlatformFrameRequested)}");
 
@@ -172,7 +178,19 @@ public partial class CompositionTarget
 			NativeDispatcher.Main.EnqueueRender(this, EnqueueRenderCallback);
 		}
 
-		return Draw(canvas, resizeFunc);
+		return Draw(canvas, resizeFunc, pixelGeometry, resizeWithGeometry);
+	}
+
+	/// <summary>
+	/// A host that declines to draw the current picture (for example because it was recorded for an
+	/// outdated window size) still has to release the next UI frame, or the UI never records the one it needs.
+	/// </summary>
+	internal void OnNativePlatformFrameSkipped()
+	{
+		if (Interlocked.Exchange(ref _shouldEnqueueRenderOnNextNativePlatformFrameRequested, false))
+		{
+			NativeDispatcher.Main.EnqueueRender(this, EnqueueRenderCallback);
+		}
 	}
 
 	internal void OnRenderFrameOpportunity()

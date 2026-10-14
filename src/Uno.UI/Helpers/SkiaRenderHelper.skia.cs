@@ -9,9 +9,11 @@ using System.Threading;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents.TextFormatting;
 using SkiaSharp;
 using Uno.UI.Composition;
 using Uno.UI.Xaml.Core;
+using Uno.UI.Xaml.Islands;
 using static Uno.UI.Helpers.SkiaRenderHelper;
 
 namespace Uno.UI.Helpers;
@@ -33,7 +35,57 @@ internal static class SkiaRenderHelper
 	internal static bool CanRecordPicture([NotNullWhen(true)] UIElement? rootElement) =>
 		rootElement is { IsArrangeDirtyOrArrangeDirtyPath: false, IsMeasureDirtyOrMeasureDirtyPath: false };
 
-	internal static (SKPicture picture, SKPath nativeClipPath, List<Visual> nativeVisualsInZOrder) RecordPictureAndReturnPath(float width, float height, ContainerVisual rootVisual, bool invertPath, SKPath? damage = null)
+	// The picture clears transparent, then this square root background covers the frame before text.
+	// Capture this on the UI thread with the picture; a host's initial clear is not an opacity contract.
+	internal static bool CanUseLcdRoot(UIElement rootElement, float width, float height)
+		=> FontDetails.UsesLcd && HasLcdRootCoverage(rootElement, width, height);
+
+	internal static bool HasLcdRootCoverage(UIElement rootElement, float width, float height)
+		=> (rootElement is RootVisual or XamlIslandRoot) && rootElement is Panel
+		{
+			Background: Microsoft.UI.Xaml.Media.SolidColorBrush { Color.A: 255, Opacity: 1 },
+			Opacity: 1,
+			Visibility: Visibility.Visible,
+			Clip: null,
+			RenderTransform: null,
+			CornerRadiusInternal: { TopLeft: 0, TopRight: 0, BottomLeft: 0, BottomRight: 0 },
+			BorderThicknessInternal: { Left: 0, Top: 0, Right: 0, Bottom: 0 },
+		} && rootElement.Visual.TotalMatrix.IsIdentity && rootElement.Visual.Opacity == 1 && rootElement.Visual.Clip is null
+		&& rootElement.Visual.Size.X >= width && rootElement.Visual.Size.Y >= height
+		&& (rootElement.Visual.LayoutClip is not { } clip || (clip.rect.X <= 0 && clip.rect.Y <= 0 && clip.rect.Right >= width && clip.rect.Bottom >= height))
+		&& HasOnlyAxisAlignedText(rootElement.Visual);
+
+	private static bool HasOnlyAxisAlignedText(Visual visual)
+	{
+		if (!visual.IsVisible || visual.Opacity == 0)
+		{
+			return true;
+		}
+		if (visual is TextVisual)
+		{
+			var matrix = visual.TotalMatrix.ToSKMatrix();
+			if (matrix.SkewX != 0 || matrix.SkewY != 0 || matrix.Persp0 != 0 || matrix.Persp1 != 0 || matrix.Persp2 != 1
+				|| !(matrix.ScaleX > 0 && matrix.ScaleY > 0) || !float.IsFinite(matrix.ScaleX) || !float.IsFinite(matrix.ScaleY))
+			{
+				return false;
+			}
+		}
+		// Cached child pictures use local matrices. Gate the whole frame so an ancestor rotation
+		// cannot replay an already-recorded LCD font into a surface with physical pixel geometry.
+		if (visual is ContainerVisual container)
+		{
+			foreach (var child in container.Children.InnerList)
+			{
+				if (!HasOnlyAxisAlignedText(child))
+				{
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	internal static (SKPicture picture, SKPath nativeClipPath, List<Visual> nativeVisualsInZOrder) RecordPictureAndReturnPath(float width, float height, ContainerVisual rootVisual, bool invertPath, SKPath? damage = null, bool fullDamage = false)
 	{
 		// Bounding the recording to the frame makes the picture's CullRect report the frame size
 		// (in logical pixels), which consumers of RenderingEventArgs.FrameData rely on.
@@ -41,7 +93,7 @@ internal static class SkiaRenderHelper
 		using var _ = new SKAutoCanvasRestore(canvas, true);
 		canvas.Clear(SKColors.Transparent);
 
-		rootVisual.Compositor.RenderRootVisual(canvas, rootVisual, damage);
+		rootVisual.Compositor.RenderRootVisual(canvas, rootVisual, damage, fullDamage);
 
 		var (path, nativeVisualsInZOrder) = !ContentPresenter.HasNativeElements() ?
 			(!invertPath ? _emptyClipPath : GetOrUpdateInvertedClippingPath(width, height), _emptyList) :

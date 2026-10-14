@@ -5,6 +5,7 @@
 using System;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Documents.TextFormatting;
 using Uno.ApplicationModel.Core;
 using Uno.ApplicationModel.DataTransfer;
 using Uno.Extensions.Storage.Pickers;
@@ -36,6 +37,7 @@ internal static class WaylandRegistrations
 		{
 			return;
 		}
+		ApiExtensibility.Register(typeof(ISkiaTextRenderingExtension), _ => LinuxTextRenderingExtension.Instance);
 		ApiExtensibility.Register(typeof(ICoreApplicationExtension), _ => coreApplication);
 		ApiExtensibility.Register(typeof(INativeWindowFactoryExtension), _ => new WaylandNativeWindowFactoryExtension(connection));
 		ApiExtensibility.Register(typeof(Windows.Graphics.Display.IDisplayInformationExtension), owner => new WaylandDisplayInformationExtension(owner, connection));
