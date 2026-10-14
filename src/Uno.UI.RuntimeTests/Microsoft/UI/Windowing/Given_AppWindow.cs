@@ -392,6 +392,143 @@ public class Given_AppWindow
 		}
 	}
 
+	[TestMethod]
+	[DataRow("Presenter")]
+	[DataRow("AppWindowSize")]
+	[DataRow("WindowSize")]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWayland)]
+	public async Task When_Closed_During_Configure_No_Notifications_Follow_Closed(string closeFrom)
+	{
+		var content = new Grid();
+		var window = new Window { Content = content };
+		var closed = false;
+		var closeReturned = false;
+		var notificationsAfterClose = new List<string>();
+		var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		window.Closed += (_, _) => closed = true;
+		try
+		{
+			window.AppWindow.Resize(new SizeInt32(320, 240));
+			await ActivateAndWaitForBounds(window, () => { });
+			var appWindow = window.AppWindow;
+			var originalBounds = window.Bounds;
+			var originalSize = appWindow.Size;
+			var root = content.XamlRoot;
+			void OnNotification(string notification)
+			{
+				if (closeReturned)
+				{
+					notificationsAfterClose.Add(notification);
+					return;
+				}
+				if (notification != closeFrom || completed.Task.IsCompleted)
+				{
+					return;
+				}
+				Exception failure = null;
+				try
+				{
+					Assert.AreEqual(OverlappedPresenterState.Maximized, ((OverlappedPresenter)appWindow.Presenter).State);
+					Assert.AreNotEqual(originalBounds, window.Bounds, "Presenter observers must see the configured bounds.");
+					Assert.AreNotEqual(originalSize, appWindow.Size, "Presenter observers must see the configured outer size.");
+					Assert.IsTrue(Math.Abs(window.Bounds.Width * root.RasterizationScale - appWindow.ClientSize.Width) <= 1);
+					Assert.IsTrue(Math.Abs(window.Bounds.Height * root.RasterizationScale - appWindow.ClientSize.Height) <= 1);
+				}
+				catch (Exception error)
+				{
+					failure = error;
+				}
+				window.Close();
+				closeReturned = true;
+				if (failure is null)
+				{
+					completed.TrySetResult(true);
+				}
+				else
+				{
+					completed.TrySetException(failure);
+				}
+			}
+			appWindow.Changed += (_, args) =>
+			{
+				if (args.DidPresenterChange)
+				{
+					OnNotification("Presenter");
+				}
+				if (args.DidSizeChange)
+				{
+					OnNotification("AppWindowSize");
+				}
+			};
+			window.SizeChanged += (_, _) => OnNotification("WindowSize");
+			window.Activated += (_, _) => OnNotification("Activation");
+			root.Changed += (_, _) => OnNotification("XamlRoot");
+			((OverlappedPresenter)appWindow.Presenter).Maximize();
+			await WaitWithTimeout(completed.Task);
+			await TestServices.WindowHelper.WaitForIdle();
+			Assert.IsTrue(closed);
+			Assert.AreEqual(0, notificationsAfterClose.Count, string.Join(", ", notificationsAfterClose));
+		}
+		finally
+		{
+			if (!closed)
+			{
+				window.Close();
+			}
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWayland)]
+	public async Task When_Scale_And_Presenter_Change_Together()
+	{
+#if __UNO__
+		var content = new Grid();
+		var window = new Window { Content = content };
+		try
+		{
+			await ActivateAndWaitForBounds(window, () => { });
+			var root = content.XamlRoot;
+			var scale = (float)(root.RasterizationScale + 0.5);
+			var wrapper = window.NativeWrapper;
+			var wrapperType = wrapper.GetType();
+			var applyConfigure = wrapperType.GetMethod("ApplyConfigure", BindingFlags.Instance | BindingFlags.NonPublic);
+			Assert.IsNotNull(applyConfigure);
+			var statesField = wrapperType.GetField("_uiStates", BindingFlags.Instance | BindingFlags.NonPublic);
+			Assert.IsNotNull(statesField);
+			var maximized = Convert.ToUInt32(Enum.Parse(statesField.FieldType, "Maximized"));
+			var states = Enum.ToObject(statesField.FieldType, Convert.ToUInt32(statesField.GetValue(wrapper)) ^ maximized);
+			var presenterChanges = 0;
+			var observedScale = 0.0;
+			var observedBounds = default(Windows.Foundation.Rect);
+			var observedClientSize = default(SizeInt32);
+			window.AppWindow.Changed += (_, args) =>
+			{
+				if (args.DidPresenterChange)
+				{
+					presenterChanges++;
+					observedScale = root.RasterizationScale;
+					observedBounds = window.Bounds;
+					observedClientSize = window.AppWindow.ClientSize;
+				}
+			};
+
+			// Inject one combined configure without relying on compositor-specific output scale controls.
+			applyConfigure.Invoke(wrapper, new object[] { 400, 300, 0, (double)scale, states, 0L });
+
+			Assert.AreEqual(1, presenterChanges);
+			Assert.AreEqual((double)scale, observedScale, "Presenter observers must see the configured XamlRoot scale.");
+			Assert.AreEqual(new Windows.Foundation.Rect(0, 0, 400, 300), observedBounds);
+			Assert.IsTrue(Math.Abs(observedBounds.Width * observedScale - observedClientSize.Width) <= 1);
+			Assert.IsTrue(Math.Abs(observedBounds.Height * observedScale - observedClientSize.Height) <= 1);
+		}
+		finally
+		{
+			window.Close();
+		}
+#endif
+	}
+
 	/// <summary>Records the initial activation sequence, including focus callbacks queued while content loads.</summary>
 	private static async Task<List<WindowActivationState>> ActivateAndWaitForBounds(Window window, Action assertBounds)
 	{

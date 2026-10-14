@@ -868,24 +868,34 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			_minimizeRequested = false;
 		}
-		if (WaylandToplevelStateParser.HasPresenterChanged(previousStates, states, wasMinimized, _minimizeRequested))
+		var presenterChanged = WaylandToplevelStateParser.HasPresenterChanged(previousStates, states, wasMinimized, _minimizeRequested);
+		_host.Scale = scale;
+		var bounds = new Rect(0, 0, width, height);
+		var client = new SizeInt32(WaylandRenderScale.ToBufferPixels(width, scale), WaylandRenderScale.ToBufferPixels(height, scale));
+		var outer = new SizeInt32(client.Width, WaylandRenderScale.ToBufferPixels(height + titleBarHeight, scale));
+		var changes = StageWindowConfiguration(bounds, bounds, outer, client, (float)scale);
+		NotifyWindowConfiguration(changes, () => !_closed);
+		if (_closed)
+		{
+			return;
+		}
+		if (presenterChanged)
 		{
 			Window?.AppWindow.OnAppWindowChanged(AppWindowChangedEventArgs.PresenterChangedEventArgs);
 		}
-		var scaleChanged = RasterizationScale != (float)scale;
-		RasterizationScale = (float)scale;
-		_host.Scale = scale;
-		var bounds = new Rect(0, 0, width, height);
-		var boundsChanged = Bounds != bounds;
-		var client = new SizeInt32(WaylandRenderScale.ToBufferPixels(width, scale), WaylandRenderScale.ToBufferPixels(height, scale));
-		var outer = new SizeInt32(client.Width, WaylandRenderScale.ToBufferPixels(height + titleBarHeight, scale));
-		SetSizes(outer, client);
-		SetBoundsAndVisibleBounds(bounds, bounds);
-		if (scaleChanged)
+		if (_closed)
+		{
+			return;
+		}
+		if (changes.ScaleChanged)
 		{
 			_displayInformation?.NotifyDpiChanged();
+			if (_closed)
+			{
+				return;
+			}
 		}
-		_host.ConfigureUI(generation, boundsChanged || scaleChanged);
+		_host.ConfigureUI(generation, changes.BoundsChanged || changes.ScaleChanged);
 		_host.InvalidateRender();
 	}
 

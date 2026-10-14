@@ -47,6 +47,8 @@ internal sealed class WaylandClientDecorations : IDisposable
 
 	private WaylandDecorationLayout _layout;
 	private string _title = string.Empty;
+	private readonly WaylandDecorationTitle _titleRun = new(() =>
+		FontProvider.Current.GetDefaultFont(FontWeights.Normal, FontStretch.Normal, FontStyle.Normal, TitleFontSize));
 	private bool _activated;
 	private bool _maximized;
 	private bool _shown;
@@ -279,10 +281,10 @@ internal sealed class WaylandClientDecorations : IDisposable
 			: (_activated ? Color.FromArgb(0xFF, 0x1A, 0x1A, 0x1A) : Color.FromArgb(0xFF, 0x8A, 0x8A, 0x8A));
 		session.DrawRect(bar, background);
 
-		var font = FontProvider.Current.GetDefaultFont(FontWeights.Normal, FontStretch.Normal, FontStyle.Normal, TitleFontSize);
-		var (glyphs, positions) = Ellipsize(font, _title, (float)(layout.ButtonsLeft - bar.Left - 24));
+		var (glyphs, positions) = _titleRun.GetRun(_title, (float)(layout.ButtonsLeft - bar.Left - 24));
 		if (glyphs.Length > 0)
 		{
+			var font = _titleRun.Font;
 			var baseline = (float)(bar.Top + bar.Height / 2) - (font.Ascent + font.Descent) / 2;
 			session.Save();
 			session.Translate((float)bar.Left + 12, 0);
@@ -352,29 +354,6 @@ internal sealed class WaylandClientDecorations : IDisposable
 		var builder = GeometryFactory.Current.CreatePrimitiveGeometryBuilder();
 		builder.AddRectangle(rect);
 		return builder.Build();
-	}
-
-	private static (ushort[] Glyphs, Vector2[] Positions) Ellipsize(IFont font, string title, float available)
-	{
-		if (available <= 0 || title.Length == 0)
-		{
-			return ([], []);
-		}
-		var run = GlyphRunRenderer.Layout(font, title, out var advance);
-		if (advance <= available)
-		{
-			return run;
-		}
-		const string ellipsis = "…";
-		for (var length = title.Length - 1; length > 0; length--)
-		{
-			run = GlyphRunRenderer.Layout(font, string.Concat(title.AsSpan(0, length), ellipsis), out advance);
-			if (advance <= available)
-			{
-				return run;
-			}
-		}
-		return ([], []);
 	}
 
 	private void OnSeatCapabilities(object? sender, WlSeat.CapabilitiesEventArgs args) => UpdatePointer(args.Capabilities);
