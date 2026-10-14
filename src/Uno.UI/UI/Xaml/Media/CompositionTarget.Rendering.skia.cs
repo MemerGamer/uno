@@ -60,6 +60,7 @@ public partial class CompositionTarget
 	private static SKPath? _lastNativeClipPath;
 	private float _lastRasterizationScale = 1;
 	private SKPixelGeometry _lastPixelGeometry;
+	private Size _lastRecordedSize;
 	private static SKPath? _lastScaledNativeClipPath;
 
 	private readonly SKPath _pendingDamage = new();
@@ -117,12 +118,25 @@ public partial class CompositionTarget
 		var rootElement = ContentRoot.VisualTree.RootElement;
 		var bounds = ContentRoot.VisualTree.Size;
 
+		// A new frame size repaints everything: skip the per-visual damage math that otherwise dominates
+		// interactive resizes and damage the whole frame instead.
+		var fullDamage = bounds != _lastRecordedSize;
+		_lastRecordedSize = bounds;
+		var frameRect = new SKRect(0, 0, (float)bounds.Width, (float)bounds.Height);
+
 		var (picture, path, nativeVisualsInZOrder) = SkiaRenderHelper.RecordPictureAndReturnPath(
 			(float)bounds.Width,
 			(float)bounds.Height,
 			rootElement.Visual,
 			invertPath: FrameRenderingOptions.invertNativeElementClipPath,
-			damage: _pendingDamage);
+			damage: _pendingDamage,
+			fullDamage: fullDamage);
+
+		if (fullDamage)
+		{
+			_pendingDamage.Rewind();
+			_pendingDamage.AddRect(frameRect);
+		}
 
 		if (_fpsHelper.TryGetDamageBounds(out var fpsBounds))
 		{
@@ -130,7 +144,6 @@ public partial class CompositionTarget
 		}
 
 		var framePicture = new FramePicture(picture);
-		var frameRect = new SKRect(0, 0, (float)bounds.Width, (float)bounds.Height);
 		var previousFrame = default((FramePicture picture, SKPath path, SKPath damage, bool canUseLcd)?);
 		SKPath damageSnapshot;
 		lock (_frameGate)

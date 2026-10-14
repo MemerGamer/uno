@@ -85,7 +85,7 @@ internal static class SkiaRenderHelper
 		return true;
 	}
 
-	internal static (SKPicture picture, SKPath nativeClipPath, List<Visual> nativeVisualsInZOrder) RecordPictureAndReturnPath(float width, float height, ContainerVisual rootVisual, bool invertPath, SKPath? damage = null)
+	internal static (SKPicture picture, SKPath nativeClipPath, List<Visual> nativeVisualsInZOrder) RecordPictureAndReturnPath(float width, float height, ContainerVisual rootVisual, bool invertPath, SKPath? damage = null, bool fullDamage = false)
 	{
 		// Bounding the recording to the frame makes the picture's CullRect report the frame size
 		// (in logical pixels), which consumers of RenderingEventArgs.FrameData rely on.
@@ -93,7 +93,7 @@ internal static class SkiaRenderHelper
 		using var _ = new SKAutoCanvasRestore(canvas, true);
 		canvas.Clear(SKColors.Transparent);
 
-		rootVisual.Compositor.RenderRootVisual(canvas, rootVisual, damage);
+		rootVisual.Compositor.RenderRootVisual(canvas, rootVisual, damage, fullDamage);
 
 		var (path, nativeVisualsInZOrder) = !ContentPresenter.HasNativeElements() ?
 			(!invertPath ? _emptyClipPath : GetOrUpdateInvertedClippingPath(width, height), _emptyList) :
