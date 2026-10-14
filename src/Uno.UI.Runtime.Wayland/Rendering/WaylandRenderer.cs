@@ -144,11 +144,11 @@ internal sealed class WaylandRenderer : IDisposable, ISwapChain
 	GraphicsContextKind IGraphicsContext.Kind => _context.Kind;
 	bool ISwapChain.PreservesContents => _context.PreservesContents;
 
-	// Even the bounded layout fallback must draw into a buffer matching the configure being acknowledged.
 	IRenderTarget ISwapChain.AcquireRenderTarget(int width, int height)
-		=> _configured
-			? _context.AcquireRenderTarget(WaylandRenderScale.ToBufferPixels(_width, Scale.EffectiveScale), WaylandRenderScale.ToBufferPixels(_height, Scale.EffectiveScale))
-			: _context.AcquireRenderTarget(width, height);
+	{
+		var size = WaylandRenderTargetSize.GetSize(_configured, _width, _height, Scale.EffectiveScale, width, height);
+		return _context.AcquireRenderTarget(size.Width, size.Height);
+	}
 
 	void ISwapChain.Present() => _context.Present();
 

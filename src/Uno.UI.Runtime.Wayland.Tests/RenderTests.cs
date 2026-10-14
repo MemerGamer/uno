@@ -3,9 +3,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using Microsoft.UI.Xaml;
-using Uno.UI.Composition.Drawing;
-using Uno.UI.Hosting;
 using Uno.UI.Runtime.Wayland;
 using Uno.UI.Runtime.Wayland.Protocols;
 using Uno.UI.Runtime.Wayland.Rendering;
@@ -181,48 +178,19 @@ public sealed partial class DisplayTests
 	}
 
 	[TestMethod]
-	public void RenderTargetUsesAppliedConfigureSizeEvenWhenCanvasSizeIsStale()
+	[DataRow(1602, 1202)]
+	[DataRow(800, 600)]
+	public void RenderTargetUsesAppliedConfigureSizeEvenWhenCanvasSizeIsStale(int canvasWidth, int canvasHeight)
 	{
-		using var peer = new ProtocolPeer();
-		using var display = peer.Connect();
-		using var compositor = (WlCompositor)display.Bind(WlCompositor.ProtocolName, WlCompositor.MaximumVersion);
-		using var surface = compositor.CreateSurface();
-		var scale = new WaylandRenderScale(surface, null);
-		scale.SetIntegerScale(2);
-		using var renderer = new WaylandRenderer(new EmptyHost(), new EmptyFrameGate(), scale, new SizeContext(), null!, surface, _ => { });
-		renderer.Configure(801, 601);
-		using var target = ((ISwapChain)renderer).AcquireRenderTarget(800, 600);
-		Assert.AreEqual((1602, 1202), (target.Width, target.Height));
+		var size = WaylandRenderTargetSize.GetSize(configured: true, logicalWidth: 801, logicalHeight: 601, scale: 2, canvasWidth: canvasWidth, canvasHeight: canvasHeight);
+		Assert.AreEqual((1602, 1202), size);
 	}
 
-	private sealed class EmptyHost : IXamlRootHost
+	[TestMethod]
+	public void RenderTargetUsesCanvasSizeBeforeConfigure()
 	{
-		public UIElement? RootElement => null;
-		public void InvalidateRender() { }
-	}
-
-	private sealed class EmptyFrameGate : IWaylandFrameGate
-	{
-		public void BeginFrame() { }
-		public bool CanPresent(int frameWidth, int frameHeight, int bufferWidth, int bufferHeight) => true;
-		public void EndFrame() { }
-	}
-
-	private sealed class SizeContext : IWaylandGraphicsContext
-	{
-		public GraphicsContextKind Kind => GraphicsContextKind.Software;
-		public bool Committed => false;
-		public IRenderTarget AcquireRenderTarget(int width, int height) => new SizeTarget(width, height);
-		public void Present() { }
-		public void Dispose() { }
-	}
-
-	private sealed class SizeTarget(int width, int height) : IRenderTarget
-	{
-		public int Width => width;
-		public int Height => height;
-		public GraphicsColorFormat ColorFormat => GraphicsColorFormat.Bgra8888;
-		public void Dispose() { }
+		var size = WaylandRenderTargetSize.GetSize(configured: false, logicalWidth: 0, logicalHeight: 0, scale: 2, canvasWidth: 800, canvasHeight: 600);
+		Assert.AreEqual((800, 600), size);
 	}
 
 	[TestMethod]
