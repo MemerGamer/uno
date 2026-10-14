@@ -747,7 +747,8 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		WaylandWindowConfiguration configuration;
 		lock (_connection.Display.SyncRoot)
 		{
-			if (_configures.Current is not { } current || !PreparePresentationCore(generation, current))
+			if (_closed || !_configures.PreparePresentation(generation, _xdgSurface.AckConfigure,
+				PreparePresentationCore, out var current))
 			{
 				return false;
 			}
@@ -764,12 +765,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		});
 	}
 
-	private bool PreparePresentationCore(long generation, WaylandWindowConfiguration configuration)
+	private bool PreparePresentationCore(WaylandWindowConfiguration configuration)
 	{
-		if (_closed || !configuration.CanPresent || generation != configuration.Generation)
-		{
-			return false;
-		}
+		var generation = configuration.Generation;
 		if (_clientDecorations is { } decorations)
 		{
 			if (decorations.HasPendingState && (decorations.PendingLayout != configuration.Layout || decorations.PendingScale != configuration.Scale))
@@ -796,7 +794,6 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			return true;
 		}
-		_configures.Acknowledge(configuration, _xdgSurface.AckConfigure);
 		var layout = configuration.Layout;
 		_xdgSurface.SetWindowGeometry(0, layout.GeometryY, layout.ContentWidth, layout.GeometryHeight);
 		return true;

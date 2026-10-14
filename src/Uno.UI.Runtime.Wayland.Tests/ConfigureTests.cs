@@ -13,6 +13,123 @@ public sealed class ConfigureTests
 			1.25, 150, 1, WaylandToplevelStates.Resizing, "captured title", true, (uint)generation, generation);
 
 	[TestMethod]
+	public async Task SecondaryWindowFirstMapAcknowledgesBeforeDecorationAndContentBuffers()
+	{
+		var primaryUI = new Queue<Action>();
+		var secondaryUI = new Queue<Action>();
+		var primary = new WaylandConfigureScheduler(primaryUI.Enqueue, _ => { });
+		WaylandConfigureScheduler? secondary = null;
+		secondary = new WaylandConfigureScheduler(secondaryUI.Enqueue, configuration =>
+		{
+			if (!configuration.CanPresent)
+			{
+				// Match ApplyConfigurationUI: provisional bounds have no frame to complete them.
+				secondary!.Complete(configuration.Generation, presented: false);
+			}
+		});
+		var requests = new List<string>();
+		uint? primaryAck = null;
+		uint? secondaryAck = null;
+		var coordinator = new WaylandPresentationCoordinator(new object(), (command, _) => command(), () => { });
+		using var primaryPresenting = new ManualResetEventSlim();
+		using var releasePrimary = new ManualResetEventSlim();
+		using var secondaryRequested = new ManualResetEventSlim();
+
+		primary.Enqueue(Configuration(54));
+		primaryUI.Dequeue()();
+		secondary.Enqueue(Configuration(0) with { Configured = false, Serial = null, SerialSequence = 0 });
+		secondaryUI.Dequeue()();
+
+		var first = Task.Run(() => coordinator.Submit(() => primary.PreparePresentation(54, serial =>
+		{
+			primaryAck = serial;
+			requests.Add($"primary ack {serial}");
+		}, configuration =>
+		{
+			Assert.AreEqual(configuration.Serial, primaryAck);
+			requests.Add("primary CSD attach/commit");
+			primaryPresenting.Set();
+			Assert.IsTrue(releasePrimary.Wait(TimeSpan.FromSeconds(5)));
+			requests.Add("primary content attach/commit");
+			return true;
+		}, out _)));
+		Task<bool>? second = null;
+		try
+		{
+			Assert.IsTrue(primaryPresenting.Wait(TimeSpan.FromSeconds(5)));
+			Assert.IsFalse(secondary.PreparePresentation(0, _ => Assert.Fail("Provisional serial was acknowledged."),
+				_ => throw new AssertFailedException("Provisional buffers were attached."), out _));
+			// The initial configure arrives while the other window is presenting. Receipt sequences are per-window.
+			secondary.Enqueue(Configuration(1) with
+			{
+				Serial = 55,
+				Layout = new(1024, 640, 32, 8, WaylandCaptionButtons.Close),
+				Scale = 1,
+				PreferredScale = 0
+			});
+			Assert.AreEqual(1, secondaryUI.Count, "Completing provisional bounds must schedule the initial configure.");
+			secondaryUI.Dequeue()();
+			Assert.IsFalse(secondary.PreparePresentation(0, _ => Assert.Fail("A stale generation was acknowledged."),
+				_ => throw new AssertFailedException("Stale buffers were attached."), out _));
+			second = Task.Run(() =>
+			{
+				secondaryRequested.Set();
+				return coordinator.Submit(() => secondary.PreparePresentation(1, serial =>
+				{
+					secondaryAck = serial;
+					requests.Add($"secondary ack {serial}");
+				}, configuration =>
+				{
+					Assert.AreEqual(55u, secondaryAck, "The initial ack must precede the first CSD attachment.");
+					requests.Add("secondary CSD attach/commit");
+					Assert.AreEqual(configuration.Serial, secondaryAck, "Content must use this surface's ack.");
+					requests.Add("secondary content attach/commit");
+					return true;
+				}, out _));
+			});
+			Assert.IsTrue(secondaryRequested.Wait(TimeSpan.FromSeconds(5)));
+			Assert.IsNull(secondaryAck, "The other window still owns the presentation opportunity.");
+		}
+		finally
+		{
+			releasePrimary.Set();
+			await Task.WhenAll(first, second ?? Task.FromResult(false)).WaitAsync(TimeSpan.FromSeconds(5));
+		}
+		Assert.IsTrue(await first);
+		Assert.IsTrue(await second!);
+		CollectionAssert.AreEqual(new[]
+		{
+			"primary ack 54", "primary CSD attach/commit", "primary content attach/commit",
+			"secondary ack 55", "secondary CSD attach/commit", "secondary content attach/commit"
+		}, requests);
+	}
+
+	[TestMethod]
+	public void DecorationPreparationRetryDoesNotAcknowledgeInitialConfigureTwice()
+	{
+		var ui = new Queue<Action>();
+		var scheduler = new WaylandConfigureScheduler(ui.Enqueue, _ => { });
+		var acknowledgements = new List<uint>();
+		scheduler.Enqueue(Configuration(1) with { Serial = 55 });
+		ui.Dequeue()();
+		Assert.IsFalse(scheduler.PreparePresentation(1, acknowledgements.Add, configuration =>
+		{
+			CollectionAssert.AreEqual(new uint[] { 55 }, acknowledgements, "Ack must precede even a deferred CSD draw.");
+			scheduler.HoldPresentation(configuration.Generation);
+			return false;
+		}, out _));
+		scheduler.Enqueue(Configuration(2) with { Serial = 56 });
+		scheduler.Complete(1, presented: false);
+		Assert.AreEqual(0, ui.Count);
+		Assert.IsTrue(scheduler.PreparePresentation(1, acknowledgements.Add, _ => true, out _));
+		CollectionAssert.AreEqual(new uint[] { 55 }, acknowledgements);
+		scheduler.Complete(1);
+		ui.Dequeue()();
+		Assert.IsTrue(scheduler.PreparePresentation(2, acknowledgements.Add, _ => true, out _));
+		CollectionAssert.AreEqual(new uint[] { 55, 56 }, acknowledgements);
+	}
+
+	[TestMethod]
 	public void ProvisionalSnapshotCannotMapWhenInitialConfigureArrivesDuringApplication()
 	{
 		var ui = new Queue<Action>();

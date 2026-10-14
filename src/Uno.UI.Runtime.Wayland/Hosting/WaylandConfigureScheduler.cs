@@ -1,6 +1,7 @@
 #nullable enable
 
 using System;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Uno.UI.Runtime.Wayland;
 
@@ -138,6 +139,19 @@ internal sealed class WaylandConfigureScheduler(Action<Action> postToUI, Action<
 				Acknowledge(configuration, acknowledge);
 			}
 		}
+	}
+
+	internal bool PreparePresentation(long generation, Action<uint> acknowledge, Func<WaylandWindowConfiguration, bool> prepare,
+		[NotNullWhen(true)] out WaylandWindowConfiguration? configuration)
+	{
+		configuration = Current;
+		if (configuration is null || !configuration.CanPresent || configuration.Generation != generation)
+		{
+			return false;
+		}
+		// Preparation can attach a synchronized CSD buffer before the content buffer is submitted.
+		Acknowledge(configuration, acknowledge);
+		return prepare(configuration);
 	}
 
 	// Sequence numbers follow receipt order, independent of uint serial wraparound and local scale changes.
