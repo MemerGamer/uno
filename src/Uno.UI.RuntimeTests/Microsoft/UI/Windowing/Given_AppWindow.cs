@@ -449,6 +449,9 @@ public class Given_AppWindow
 					completed.TrySetException(failure);
 				}
 			}
+			// Maximize() notifies synchronously before Wayland applies the request.
+			// Subscribe before yielding so the close is triggered by the configure callback.
+			((OverlappedPresenter)appWindow.Presenter).Maximize();
 			appWindow.Changed += (_, args) =>
 			{
 				if (args.DidPresenterChange)
@@ -463,7 +466,6 @@ public class Given_AppWindow
 			window.SizeChanged += (_, _) => OnNotification("WindowSize");
 			window.Activated += (_, _) => OnNotification("Activation");
 			root.Changed += (_, _) => OnNotification("XamlRoot");
-			((OverlappedPresenter)appWindow.Presenter).Maximize();
 			await WaitWithTimeout(completed.Task);
 			await TestServices.WindowHelper.WaitForIdle();
 			Assert.IsTrue(closed);
