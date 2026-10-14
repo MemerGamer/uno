@@ -161,7 +161,7 @@ public sealed class WindowLogicTests
 	}
 
 	[TestMethod]
-	public void WaitsHaveSafetyValves()
+	public void LayoutWaitHasSafetyValveButStaleSizesNeverPresent()
 	{
 		var readiness = new WaylandFrameReadiness();
 		readiness.ConfigureUI(1, boundsChanged: true);
@@ -173,17 +173,50 @@ public sealed class WindowLogicTests
 
 		readiness.ConfigureRender(1);
 		readiness.BeginFrame();
-		Assert.IsTrue(readiness.CanPresent(100, 100, 101, 101));
-		for (var i = 0; i < WaylandFrameReadiness.MaxStaleFrames; i++)
+		Assert.IsFalse(readiness.CanPresent(100, 100, 101, 101));
+		for (var i = 0; i < 2 * WaylandFrameReadiness.MaxStaleFrames; i++)
 		{
 			readiness.BeginFrame();
 			Assert.IsFalse(readiness.CanPresent(80, 80, 101, 101));
 		}
 		readiness.BeginFrame();
-		Assert.IsTrue(readiness.CanPresent(80, 80, 101, 101));
+		Assert.IsTrue(readiness.CanPresent(101, 101, 101, 101));
+	}
+
+	[TestMethod]
+	public void OnePixelResizeInvalidatesAnAlreadyStartedNativeDraw()
+	{
+		var readiness = new WaylandFrameReadiness();
+		readiness.ConfigureUI(1, boundsChanged: false);
 		readiness.ConfigureRender(1);
 		readiness.BeginFrame();
-		Assert.IsFalse(readiness.CanPresent(80, 80, 101, 101));
+		readiness.BeginConfigureUI(2);
+		// The log's 1280x799 content must not commit to the previous 1280x800 buffer.
+		Assert.IsFalse(readiness.CanPresent(1280, 799, 1280, 800));
+		Assert.IsFalse(readiness.CanPresent(1280, 800, 1280, 800));
+		readiness.ConfigureUI(2, boundsChanged: true);
+		readiness.BeginFrame();
+		Assert.IsFalse(readiness.CanPresent(1280, 800, 1280, 800));
+		readiness.ConfigureRender(2);
+		Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+		readiness.BeginFrame();
+		Assert.IsTrue(readiness.CanPresent(1280, 799, 1280, 799));
+	}
+
+	[TestMethod]
+	public void SupersedingConfiguresDoNotRestartLayoutFallback()
+	{
+		var readiness = new WaylandFrameReadiness();
+		for (var i = 1; i <= WaylandFrameReadiness.MaxStaleFrames; i++)
+		{
+			readiness.ConfigureUI(i, boundsChanged: true);
+			Assert.IsFalse(readiness.OnFrameRecorded(arrangedAtBounds: false));
+		}
+		readiness.ConfigureUI(20, boundsChanged: true);
+		Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: false));
+		readiness.ConfigureRender(20);
+		readiness.BeginFrame();
+		Assert.IsTrue(readiness.CanPresent(1280, 799, 1280, 799));
 	}
 
 	[TestMethod]

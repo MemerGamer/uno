@@ -24,6 +24,10 @@ internal sealed class WaylandFrameScheduler : IDisposable
 	private readonly WlSurface _surface;
 	private readonly Func<WaylandRenderResult> _render;
 	private readonly Action _stalled;
+	private readonly Func<long> _getGeneration;
+	private readonly Func<long, bool> _frameOpportunity;
+	private readonly Action<bool> _attemptActive;
+	private long _callbackGeneration;
 	private readonly Action<Action> _postToOwner;
 	private readonly Timer _stallTimer;
 	private WlCallback? _callback;
@@ -36,11 +40,14 @@ internal sealed class WaylandFrameScheduler : IDisposable
 	private int _presentedWhenArmed;
 	private bool _disposed;
 
-	public WaylandFrameScheduler(WlSurface surface, Func<WaylandRenderResult> render, Action stalled, Action<Action> postToOwner)
+	public WaylandFrameScheduler(WlSurface surface, Func<WaylandRenderResult> render, Action stalled, Action<Action> postToOwner, Func<long> getGeneration, Func<long, bool> frameOpportunity, Action<bool> attemptActive)
 	{
 		_surface = surface;
 		_render = render;
 		_stalled = stalled;
+		_getGeneration = getGeneration;
+		_frameOpportunity = frameOpportunity;
+		_attemptActive = attemptActive;
 		_postToOwner = postToOwner;
 		_stallTimer = new Timer(_ => _postToOwner(OnStallTimer));
 	}
@@ -86,8 +93,11 @@ internal sealed class WaylandFrameScheduler : IDisposable
 			return;
 		}
 		_dirty = false;
+		_callbackGeneration = _getGeneration();
 		_callback = _surface.Frame();
 		_callback.Done += OnDone;
+		// The attempt keeps its configure; a timer-driven opportunity waits for the attempt to end.
+		_attemptActive(true);
 		try
 		{
 			var result = _render();
@@ -118,6 +128,10 @@ internal sealed class WaylandFrameScheduler : IDisposable
 			CancelCallback();
 			_dirty = true;
 			throw;
+		}
+		finally
+		{
+			_attemptActive(false);
 		}
 	}
 
@@ -168,7 +182,11 @@ internal sealed class WaylandFrameScheduler : IDisposable
 				return;
 			}
 			CancelCallback();
-			TryRender();
+			// Let the UI apply a pending configure before drawing again at the predecessor's size.
+			if (!_frameOpportunity(_callbackGeneration))
+			{
+				TryRender();
+			}
 		});
 	}
 

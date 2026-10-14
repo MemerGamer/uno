@@ -62,6 +62,10 @@ internal sealed class WaylandRenderScale
 	public static int ToBufferPixels(double logical, double scale)
 		=> checked((int)Math.Floor(logical * scale + 0.5));
 
+	// A configured canvas uses the buffer's integer geometry, not independently rounded XamlRoot bounds.
+	internal static (int Width, int Height) GetCanvasSize((int Width, int Height)? bufferSize, double requestedWidth, double requestedHeight)
+		=> bufferSize ?? (Math.Max(ToBufferPixels(requestedWidth, 1), 1), Math.Max(ToBufferPixels(requestedHeight, 1), 1));
+
 	public static double Compute(bool hasViewport, uint preferredScale, int integerScale)
 		=> hasViewport && preferredScale != 0 ? preferredScale / 120d : Math.Max(integerScale, 1);
 }

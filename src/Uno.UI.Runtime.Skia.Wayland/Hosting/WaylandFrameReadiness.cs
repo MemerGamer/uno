@@ -2,7 +2,6 @@
 
 #nullable enable
 
-using System;
 using System.Threading;
 
 namespace Uno.WinUI.Runtime.Skia.Wayland;
@@ -15,6 +14,7 @@ internal sealed class WaylandFrameReadiness
 	internal const int MaxStaleFrames = 8;
 
 	private long _uiGeneration;
+	private long _appliedUIGeneration;
 
 	// UI thread state.
 	private bool _layoutPending;
@@ -22,19 +22,30 @@ internal sealed class WaylandFrameReadiness
 	private int _layoutFrames;
 
 	// Render thread state.
-	private int _staleFrames;
 	private long _frameUIGeneration;
 
 	internal long RenderGeneration { get; private set; }
+	internal bool IsLayoutPending => _layoutPending;
+
+	// Invalidate before changing bounds: a native draw may already be in progress.
+	internal void BeginConfigureUI(long generation)
+	{
+		Interlocked.Exchange(ref _uiGeneration, long.MinValue);
+		Interlocked.Exchange(ref _appliedUIGeneration, generation);
+	}
 
 	// UI thread. Returns whether the generation waits for a frame recorded after layout.
 	internal bool ConfigureUI(long generation, bool boundsChanged)
 	{
+		BeginConfigureUI(generation);
 		if (boundsChanged || _layoutPending)
 		{
+			if (!_layoutPending)
+			{
+				_layoutFrames = 0;
+			}
 			_layoutPending = true;
 			_layoutGeneration = generation;
-			_layoutFrames = 0;
 			return true;
 		}
 		Interlocked.Exchange(ref _uiGeneration, generation);
@@ -54,11 +65,7 @@ internal sealed class WaylandFrameReadiness
 	}
 
 	// Render thread.
-	internal void ConfigureRender(long generation)
-	{
-		RenderGeneration = generation;
-		_staleFrames = 0;
-	}
+	internal void ConfigureRender(long generation) => RenderGeneration = generation;
 
 	// Render thread, before drawing Uno's latest picture. A picture taken before the UI became ready
 	// can still have the old layout, even if the UI becomes ready while it is drawn.
@@ -67,17 +74,9 @@ internal sealed class WaylandFrameReadiness
 	// Render thread, after BeginFrame. A generation mismatch has no safety valve: presenting it would acknowledge the wrong configure.
 	internal bool CanPresent(int canvasWidth, int canvasHeight, int bufferWidth, int bufferHeight)
 	{
-		if (RenderGeneration != _frameUIGeneration)
-		{
-			return false;
-		}
-		// One pixel of tolerance: Uno rounds the canvas size half to even, buffers round half up.
-		if ((Math.Abs(canvasWidth - bufferWidth) > 1 || Math.Abs(canvasHeight - bufferHeight) > 1)
-			&& ++_staleFrames <= MaxStaleFrames)
-		{
-			return false;
-		}
-		_staleFrames = 0;
-		return true;
+		return RenderGeneration == _frameUIGeneration
+			&& RenderGeneration == Interlocked.Read(ref _appliedUIGeneration)
+			&& RenderGeneration == Interlocked.Read(ref _uiGeneration)
+			&& canvasWidth == bufferWidth && canvasHeight == bufferHeight;
 	}
 }

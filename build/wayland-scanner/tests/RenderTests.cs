@@ -40,7 +40,7 @@ public sealed partial class DisplayTests
 		{
 			renders++;
 			return WaylandRenderResult.Presented;
-		}, () => stalls++, owner.Add);
+		}, () => stalls++, owner.Add, () => 0, _ => false, _ => { });
 		scheduler.Invalidate();
 		scheduler.Invalidate();
 		Assert.AreEqual(1, renders, "The second frame must wait for the frame callback.");
@@ -64,7 +64,7 @@ public sealed partial class DisplayTests
 		using var surface = compositor.CreateSurface();
 		var owner = new BlockingCollection<Action>();
 		var stalls = 0;
-		using var scheduler = new WaylandFrameScheduler(surface, () => WaylandRenderResult.Presented, () => stalls++, owner.Add);
+		using var scheduler = new WaylandFrameScheduler(surface, () => WaylandRenderResult.Presented, () => stalls++, owner.Add, () => 0, _ => false, _ => { });
 		scheduler.Invalidate();
 		Assert.IsFalse(owner.TryTake(out _, WaylandFrameScheduler.StallInterval * 3));
 		Assert.AreEqual(0, stalls);
@@ -96,7 +96,7 @@ public sealed partial class DisplayTests
 			}
 			submissions++;
 			return WaylandRenderResult.Presented;
-		}, () => Assert.Fail("New content must resume presentation before the fallback is needed."), owner.Add);
+		}, () => Assert.Fail("New content must resume presentation before the fallback is needed."), owner.Add, () => readiness.RenderGeneration, _ => false, _ => { });
 		scheduler.PresentationReady();
 		Assert.AreEqual(1, draws);
 		Assert.AreEqual(0, submissions);
@@ -147,7 +147,7 @@ public sealed partial class DisplayTests
 			}
 			submissions++;
 			return WaylandRenderResult.Presented;
-		}, () => Assert.Fail("Active resize must not wait for the stall fallback."), owner.Add);
+		}, () => Assert.Fail("Active resize must not wait for the stall fallback."), owner.Add, () => readiness.RenderGeneration, _ => false, _ => { });
 		for (var generation = 1; generation <= 10; generation++)
 		{
 			configuredSize += 10;
@@ -194,6 +194,8 @@ public sealed partial class DisplayTests
 		var canvasHeight = 0;
 		var draws = 0;
 		var presentations = 0;
+		var opportunities = 0;
+		long presentedGeneration = 0;
 		var framePending = false;
 		var presentedOlderConfigure = false;
 		uint latestSerial = 0;
@@ -212,6 +214,17 @@ public sealed partial class DisplayTests
 			{
 				apply();
 			}
+		}
+		bool FrameOpportunity(long generation)
+		{
+			Assert.AreEqual(presentedGeneration, generation, "A callback must carry the generation of its submitted frame.");
+			opportunities++;
+			if (!configures.FrameOpportunity(generation))
+			{
+				return false;
+			}
+			ui.Enqueue(ApplyPending);
+			return true;
 		}
 		using var frameScheduler = new WaylandFrameScheduler(surface, () =>
 		{
@@ -237,36 +250,47 @@ public sealed partial class DisplayTests
 			});
 			surface.Commit();
 			presentations++;
+			presentedGeneration = configure.Generation;
 			framePending = true;
-			if (configures.Complete(configure.Generation))
-			{
-				ui.Enqueue(ApplyPending);
-			}
 			return WaylandRenderResult.Presented;
-		}, () => Assert.Fail("Continuous resize must not need the liveness fallback."), owner.Add);
+		}, () => Assert.Fail("Continuous resize must not need the liveness fallback."), owner.Add, () => readiness.RenderGeneration, FrameOpportunity,
+			active =>
+			{
+				if (configures.SetAttemptActive(active))
+				{
+					ui.Enqueue(ApplyPending);
+				}
+			});
 		scheduler = frameScheduler;
 		display.StartDispatch();
 
 		void PresentFrame()
 		{
-			var waitingForCallback = framePending;
 			var before = presentations;
-			Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
-			canvasWidth = bufferConfigure!.Layout.ContentWidth * scale;
-			canvasHeight = bufferConfigure.Layout.ContentHeight * scale;
-			scheduler.ContentReady();
-			if (waitingForCallback)
+			if (framePending)
 			{
+				scheduler.Invalidate();
+				scheduler.ContentReady();
 				Assert.AreEqual(before, presentations, "Recorded content must respect the display's frame callback.");
+				var previousOpportunities = opportunities;
+				var previousDraws = draws;
 				framePending = false;
 				peer.CompleteFrame();
 				var deadline = Stopwatch.StartNew();
-				while (presentations == before && deadline.Elapsed < TimeSpan.FromSeconds(5))
+				while (opportunities == previousOpportunities && deadline.Elapsed < TimeSpan.FromSeconds(5))
 				{
 					Assert.IsTrue(owner.TryTake(out var callback, TimeSpan.FromSeconds(5)), "Frame callback did not reach the owner.");
 					callback();
 				}
+				Assert.AreEqual(previousOpportunities + 1, opportunities);
+				Assert.AreEqual(previousDraws, draws, "The callback must yield to the pending UI configure before drawing.");
+				Assert.AreEqual(before, presentations);
+				DrainUI();
 			}
+			Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+			canvasWidth = bufferConfigure!.Layout.ContentWidth * scale;
+			canvasHeight = bufferConfigure.Layout.ContentHeight * scale;
+			scheduler.ContentReady();
 			Assert.AreEqual(before + 1, presentations, "Each frame opportunity must present exactly once, even while configures keep arriving.");
 			var after = draws;
 			scheduler.ContentReady();
@@ -296,6 +320,7 @@ public sealed partial class DisplayTests
 		}
 		Assert.AreEqual(200, received.Count);
 		Assert.AreEqual(refreshRate, presentations, "Configure traffic must not reduce presentation below the simulated refresh rate.");
+		Assert.AreEqual(refreshRate - 1, opportunities);
 		Assert.IsTrue(presentedOlderConfigure, "A completed layout must present even after a newer configure arrives.");
 		if (acknowledgements[^1] != latestSerial)
 		{
@@ -306,9 +331,86 @@ public sealed partial class DisplayTests
 	}
 
 	[TestMethod]
+	public void FrameCallbackKeepsSubmittedGenerationAfterConfigureFallback()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		using var compositor = (WlCompositor)display.Bind(WlCompositor.ProtocolName, WlCompositor.MaximumVersion);
+		using var surface = compositor.CreateSurface();
+		var owner = new BlockingCollection<Action>();
+		var ui = new Queue<Action>();
+		var configures = new WaylandConfigureQueue();
+		var callbackGenerations = new List<long>();
+		var presentedGenerations = new List<long>();
+		var layout = new WaylandDecorationLayout(800, 600, 0, 0, WaylandCaptionButtons.None);
+		WaylandFrameScheduler scheduler = null!;
+		void ApplyPending()
+		{
+			Assert.IsNotNull(configures.TakePending());
+			scheduler.PresentationReady();
+		}
+		bool FrameOpportunity(long generation)
+		{
+			callbackGenerations.Add(generation);
+			if (!configures.FrameOpportunity(generation))
+			{
+				return false;
+			}
+			ui.Enqueue(ApplyPending);
+			return true;
+		}
+		using var frameScheduler = new WaylandFrameScheduler(surface, () =>
+		{
+			presentedGenerations.Add(configures.Current!.Generation);
+			surface.Commit();
+			return WaylandRenderResult.Presented;
+		}, () => Assert.Fail("Completing frame callbacks must not need the stall fallback."), owner.Add,
+			() => configures.Current!.Generation, FrameOpportunity, _ => { });
+		scheduler = frameScheduler;
+		display.StartDispatch();
+
+		Assert.IsTrue(configures.Enqueue(layout, 1, 120, 1, WaylandToplevelStates.Resizing, configured: true));
+		ApplyPending();
+		var firstGeneration = configures.Current!.Generation;
+		Assert.IsFalse(configures.Enqueue(layout with { ContentWidth = 900 }, 1, 120, 1, WaylandToplevelStates.Resizing, configured: true));
+		// Simulate the output-period fallback applying a successor before the first callback arrives.
+		Assert.IsTrue(configures.FrameOpportunity(firstGeneration));
+		ApplyPending();
+		var secondGeneration = configures.Current!.Generation;
+		Assert.IsFalse(configures.Enqueue(layout with { ContentWidth = 1000 }, 1, 120, 1, WaylandToplevelStates.Resizing, configured: true));
+
+		void CompleteFrame()
+		{
+			var before = callbackGenerations.Count;
+			peer.CompleteFrame();
+			var deadline = Stopwatch.StartNew();
+			while (callbackGenerations.Count == before && deadline.Elapsed < TimeSpan.FromSeconds(5))
+			{
+				Assert.IsTrue(owner.TryTake(out var callback, TimeSpan.FromSeconds(5)), "Frame callback did not reach the owner.");
+				callback();
+			}
+			Assert.AreEqual(before + 1, callbackGenerations.Count);
+		}
+		CompleteFrame();
+		CollectionAssert.AreEqual(new long[] { firstGeneration }, callbackGenerations);
+		CollectionAssert.AreEqual(new long[] { firstGeneration, secondGeneration }, presentedGenerations);
+		Assert.AreEqual(0, ui.Count, "An old callback must not open the newer configure's slot.");
+		Assert.IsNull(configures.TakePending());
+
+		CompleteFrame();
+		CollectionAssert.AreEqual(new long[] { firstGeneration, secondGeneration }, callbackGenerations);
+		Assert.AreEqual(2, presentedGenerations.Count, "A callback scheduling a successor must yield before drawing again.");
+		Assert.AreEqual(1, ui.Count);
+		ui.Dequeue()();
+		Assert.AreEqual(3, presentedGenerations.Count);
+		Assert.AreEqual(configures.Current!.Generation, presentedGenerations[^1]);
+		display.StopDispatch();
+	}
+
+	[TestMethod]
 	[DataRow(true)]
 	[DataRow(false)]
-	public void ContentRejectionResumesOnFallbackTicksWithoutReadinessWakeups(bool contentBecomesReady)
+	public void ContentRejectionResumesOnFallbackTicksWithoutReadinessWakeups(bool contentBecomesReadyEarly)
 	{
 		using var peer = new ProtocolPeer();
 		using var display = peer.Connect();
@@ -337,7 +439,7 @@ public sealed partial class DisplayTests
 			}
 			submissions++;
 			return WaylandRenderResult.Presented;
-		}, () => Assert.Fail("Content rejection must retry presentation on the paced tick."), owner.Add);
+		}, () => Assert.Fail("Content rejection must retry presentation on the paced tick."), owner.Add, () => readiness.RenderGeneration, _ => false, _ => { });
 		scheduler.Invalidate();
 		Assert.AreEqual(1, draws);
 		Assert.AreEqual(0, submissions);
@@ -347,9 +449,10 @@ public sealed partial class DisplayTests
 		}
 		Assert.AreEqual(1, draws, "Invalidations must not bypass content retry pacing.");
 		var ticks = 0;
-		while (submissions == 0 && ticks < WaylandFrameReadiness.MaxStaleFrames)
+		var readyAfterTicks = contentBecomesReadyEarly ? 2 : 2 * WaylandFrameReadiness.MaxStaleFrames;
+		while (submissions == 0 && ticks <= readyAfterTicks)
 		{
-			if (contentBecomesReady && ticks == 2)
+			if (ticks == readyAfterTicks)
 			{
 				canvasSize = 100;
 			}
@@ -358,9 +461,13 @@ public sealed partial class DisplayTests
 			tick();
 			ticks++;
 			Assert.AreEqual(previousDraws + 1, draws, "Each paced tick must retry only once.");
+			if (canvasSize != 100)
+			{
+				Assert.AreEqual(0, submissions, "Repeated retries must never present stale-sized content.");
+			}
 		}
-		Assert.AreEqual(1, submissions, "Correct content or the stale-size safety valve must resume presentation.");
-		Assert.AreEqual(contentBecomesReady ? 3 : WaylandFrameReadiness.MaxStaleFrames, ticks);
+		Assert.AreEqual(1, submissions, "Only matching content may resume presentation.");
+		Assert.AreEqual(readyAfterTicks + 1, ticks);
 		Assert.IsFalse(owner.TryTake(out _, WaylandFrameScheduler.StallInterval * 3), "Successful presentation must stop content retries.");
 		scheduler.Invalidate();
 		Assert.AreEqual(ticks + 1, draws, "Presentation must resume normal frame callback pacing.");
@@ -387,7 +494,7 @@ public sealed partial class DisplayTests
 			}
 			draws++;
 			return WaylandRenderResult.Presented;
-		}, () => stalls++, owner.Add);
+		}, () => stalls++, owner.Add, () => 0, _ => false, _ => { });
 		scheduler.Invalidate();
 		scheduler.ContentReady();
 		Assert.AreEqual(1, attempts, "Recorded content must not bypass buffer availability.");
@@ -439,7 +546,7 @@ public sealed partial class DisplayTests
 				return true;
 			});
 			return presented ? WaylandRenderResult.Presented : WaylandRenderResult.BufferUnavailable;
-		}, () => stalls++, owner.Add);
+		}, () => stalls++, owner.Add, () => 0, _ => false, _ => { });
 		scheduler.Invalidate();
 		if (recoverContext)
 		{
@@ -490,6 +597,13 @@ public sealed partial class DisplayTests
 		Assert.AreEqual(2, WaylandOutput.GetIntegerScale([low, high], 1));
 		Assert.AreEqual(1, WaylandOutput.GetIntegerScale([low], 2));
 		Assert.AreEqual(2, WaylandOutput.GetIntegerScale([], 2), "Without outputs the previous scale is kept.");
+	}
+
+	[TestMethod]
+	public void ConfigureFallbackUsesOutputRefreshPeriod()
+	{
+		Assert.AreEqual(1000d / 165, (WaylandOutputInfo.Unknown with { RefreshMilliHz = 165000 }).FrameInterval.TotalMilliseconds, 0.0001);
+		Assert.AreEqual(1000d / 60, WaylandOutputInfo.Unknown.FrameInterval.TotalMilliseconds, 0.0001);
 	}
 
 	[TestMethod]

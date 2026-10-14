@@ -42,12 +42,13 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 
 	// UI thread state.
 	private CompositionTarget? _frameTarget;
+	private bool _layoutRetryPosted;
 
 	// Dispatch thread state.
 	private WaylandCursor? _cursor;
 	private WlPointer? _cursorPointer;
 
-	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, Func<bool>, bool> preparePresentation, Action rollbackProtocolObjects)
+	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, Func<bool>, bool> preparePresentation, Func<long, bool> frameOpportunity, Action<bool> attemptActive, Action rollbackProtocolObjects)
 	{
 		_preparePresentation = preparePresentation;
 		_connection = connection;
@@ -63,7 +64,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				try
 				{
-					_renderer = new WaylandRenderer(connection.Display.NativeHandle, surface, connection.Shm, viewport, Draw, RenderContent, ReleaseRetainedLayer, _renderThread.Post, PrepareCommit);
+					_renderer = new WaylandRenderer(connection.Display.NativeHandle, surface, connection.Shm, viewport, Draw, RenderContent, ReleaseRetainedLayer, _renderThread.Post, PrepareCommit, () => _readiness.RenderGeneration, frameOpportunity, attemptActive);
 					_renderer.BackendChanged += (_, _) => OnBackendSelected();
 					OnBackendSelected();
 					initialized.TrySetResult();
@@ -163,8 +164,9 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		}
 	}
 
-	// UI thread, after the configure's bounds and scale were applied. The canvas follows new bounds
-	// immediately, while Uno records the new layout only in a later frame.
+	internal void BeginConfigureUI(long generation) => _readiness.BeginConfigureUI(generation);
+
+	// UI thread, after applying bounds and scale; Uno records their layout in a later frame.
 	internal void ConfigureUI(long generation, bool boundsChanged)
 	{
 		if (RootElement?.Visual.CompositionTarget is not CompositionTarget compositionTarget)
@@ -205,11 +207,35 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 				WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: layout recorded at {bounds.Width}x{bounds.Height}{(arranged ? "" : " (gave up waiting)")}"));
 			}
 		}
+		if (_readiness.IsLayoutPending && RootElement?.Visual.CompositionTarget is CompositionTarget target)
+		{
+			if (!_layoutRetryPosted)
+			{
+				_layoutRetryPosted = true;
+				_ = RetryLayoutFrame(target);
+			}
+		}
 		// A later picture can fix a canvas-size rejection even after this generation's layout became ready.
 		if (!_disposed)
 		{
 			_renderThread.Post(() => _renderer?.ContentReady());
 		}
+	}
+
+	private async Task RetryLayoutFrame(CompositionTarget target)
+	{
+		// A rejected native draw has no frame callback. Retry the UI recording at the liveness
+		// interval instead of creating an immediate record/reject loop.
+		await Task.Delay(WaylandFrameScheduler.StallInterval).ConfigureAwait(false);
+		_connection.PostToUI(() =>
+		{
+			_layoutRetryPosted = false;
+			if (!_disposed && _readiness.IsLayoutPending)
+			{
+				((ICompositionTarget)target).RequestNewFrame();
+				PresentationReady();
+			}
+		});
 	}
 
 	internal void Configure(int logicalWidth, int logicalHeight, uint preferredScale, int integerScale, long generation)
@@ -296,10 +322,16 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		if (RootElement?.Visual.CompositionTarget is CompositionTarget compositionTarget)
 		{
 			var canvas = gpuContext is null ? _canvasSurface?.Canvas : _retainedLayer.Surface?.Canvas;
+			(int Width, int Height)? geometry = _renderer is { IsConfigured: true } renderer ? renderer.BufferSize : null;
+			if (geometry is { } configured && (_canvasSize.Width != configured.Width || _canvasSize.Height != configured.Height))
+			{
+				canvas = null;
+			}
 			compositionTarget.OnNativePlatformFrameRequested(canvas, size =>
 			{
-				var width = Math.Max((int)size.Width, 1);
-				var height = Math.Max((int)size.Height, 1);
+				// CompositionTarget rounds current XamlRoot bounds to even. The retained layer and
+				// wl_buffer instead share the configure's integer geometry and halves-up rounding.
+				var (width, height) = WaylandRenderScale.GetCanvasSize(geometry, size.Width, size.Height);
 				_canvasSize = new SKSizeI(width, height);
 				if (gpuContext is not null)
 				{

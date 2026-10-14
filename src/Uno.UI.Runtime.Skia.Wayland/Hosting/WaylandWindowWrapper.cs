@@ -139,7 +139,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			}
 			// Activation follows the configure activated state rather than keyboard focus.
 			hostConstructionStarted = true;
-			_host = new WaylandXamlRootHost(connection, _id, window, root, _surface, _viewport, static _ => { }, PreparePresentation, DestroyProtocolObjects);
+			_host = new WaylandXamlRootHost(connection, _id, window, root, _surface, _viewport, static _ => { }, PreparePresentation, OnConfigureFrameOpportunity, SetRenderAttemptActive, DestroyProtocolObjects);
 			NonClientPointerSource = new WaylandNonClientPointerSource(connection, _toplevel, window, _id, _host, () => Scale, Post);
 			connection.AddWindow(this);
 			RasterizationScale = 1;
@@ -506,7 +506,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		if (acknowledged)
 		{
 			// State-only changes need no new buffer; hidden surfaces may receive no frame callbacks.
-			_configures.AcknowledgeLatest(_xdgSurface.AckConfigure);
+			_configures.AcknowledgeLatest(AcknowledgeConfigure);
 		}
 		_configured = true;
 		var activated = (_states & WaylandToplevelStates.Activated) != 0;
@@ -749,15 +749,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			}
 			return submitted;
 		});
-		if (committed)
+		if (committed && WaylandDiagnostics.IsEnabled)
 		{
-			lock (_connection.Display.SyncRoot)
-			{
-				if (_configures.Complete(generation))
-				{
-					_connection.PostToUI(ApplyPendingConfigure);
-				}
-			}
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: presented generation {generation} serial={configure.Serial} buffer geometry {configure.Layout.ContentWidth}x{configure.Layout.ContentHeight}"));
 		}
 		return committed;
 	}
@@ -781,7 +775,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			return true;
 		}
-		_configures.AcknowledgeCurrent(_xdgSurface.AckConfigure);
+		_configures.AcknowledgeCurrent(AcknowledgeConfigure);
 		var layout = configure.Layout;
 		_xdgSurface.SetWindowGeometry(0, layout.GeometryY, layout.ContentWidth, layout.GeometryHeight);
 		return true;
@@ -816,7 +810,62 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 	}
 
-	// UI thread. An applied configure owns the layout and buffer size until its first successful submission.
+	private void AcknowledgeConfigure(uint serial)
+	{
+		_xdgSurface.AckConfigure(serial);
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: ack configure serial={serial}"));
+		}
+	}
+
+	// Render thread: a compositor callback opens the next configure slot.
+	private bool OnConfigureFrameOpportunity(long generation)
+	{
+		lock (_connection.Display.SyncRoot)
+		{
+			if (_closed || !_configures.FrameOpportunity(generation))
+			{
+				return false;
+			}
+			_connection.PostToUI(ApplyPendingConfigure);
+			return true;
+		}
+	}
+
+	// Render thread: the attempt keeps its configure until it ends, even if the fallback timer fires.
+	private void SetRenderAttemptActive(bool active)
+	{
+		lock (_connection.Display.SyncRoot)
+		{
+			if (!_closed && _configures.SetAttemptActive(active))
+			{
+				_connection.PostToUI(ApplyPendingConfigure);
+			}
+		}
+	}
+
+	private void AdvanceConfigure(long generation)
+	{
+		lock (_connection.Display.SyncRoot)
+		{
+			if (!_closed && _configures.FrameOpportunity(generation))
+			{
+				_connection.PostToUI(ApplyPendingConfigure);
+			}
+		}
+	}
+
+	// A rejected frame has no callback, and hidden surfaces may never receive one. Keep size
+	// application alive at the output cadence without spinning or waiting for layout/ack/buffer release.
+	private async Task ScheduleConfigureFallback(long generation)
+	{
+		var interval = OutputInfo?.FrameInterval ?? TimeSpan.FromSeconds(1d / 60);
+		await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(interval.TotalMilliseconds))).ConfigureAwait(false);
+		Post(() => AdvanceConfigure(generation));
+	}
+
+	// UI thread. Coalesced configures advance at frame opportunities, independently of presentation.
 	private void ApplyPendingConfigure()
 	{
 		WaylandWindowConfigure configure;
@@ -828,6 +877,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			}
 			configure = pending;
 		}
+		_ = ScheduleConfigureFallback(configure.Generation);
 		var layout = configure.Layout;
 		var states = configure.States;
 		ApplyConfigure(layout.ContentWidth, layout.ContentHeight, layout.TitleBarHeight, configure.Scale, states, configure.Generation);
@@ -842,6 +892,10 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 		Post(() =>
 		{
+			if (_configures.Current?.Generation != configure.Generation)
+			{
+				return;
+			}
 			_clientDecorations?.Update(layout, _dispatchTitle, (states & WaylandToplevelStates.Activated) != 0,
 				(states & WaylandToplevelStates.Maximized) != 0, configure.PreferredScale, configure.IntegerScale);
 			// Pre-activation resizes update managed bounds, but buffers wait for the first configure.
@@ -853,11 +907,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 					return;
 				}
 				// Already presented geometry needs no frame callback, including on hidden surfaces.
-				_configures.AcknowledgeCurrent(_xdgSurface.AckConfigure);
-			}
-			if (_configures.Complete(configure.Generation))
-			{
-				_connection.PostToUI(ApplyPendingConfigure);
+				_configures.AcknowledgeCurrent(AcknowledgeConfigure);
 			}
 		});
 	}
@@ -869,6 +919,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			return;
 		}
+		_host.BeginConfigureUI(generation);
 		var previousStates = _uiStates;
 		var wasMinimized = _minimizeRequested;
 		_uiStates = states;

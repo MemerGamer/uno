@@ -13,6 +13,10 @@ internal sealed record WaylandOutputInfo(string Name, string Description, int Pi
 {
 	internal static readonly WaylandOutputInfo Unknown = new(string.Empty, string.Empty, 0, 0, 0, 0, 1);
 
+	internal int RefreshMilliHz { get; init; }
+
+	internal TimeSpan FrameInterval => TimeSpan.FromSeconds(RefreshMilliHz > 0 ? 1000d / RefreshMilliHz : 1d / 60);
+
 	internal double? DiagonalSizeInInches
 		=> PhysicalWidthMm > 0 && PhysicalHeightMm > 0
 			? Math.Sqrt((double)PhysicalWidthMm * PhysicalWidthMm + (double)PhysicalHeightMm * PhysicalHeightMm) / 25.4
@@ -42,7 +46,7 @@ internal sealed class WaylandOutput : IDisposable
 		{
 			if ((e.Flags & ModeCurrent) != 0)
 			{
-				Update(_pending with { PixelWidth = e.Width, PixelHeight = e.Height });
+				Update(_pending with { PixelWidth = e.Width, PixelHeight = e.Height, RefreshMilliHz = e.Refresh });
 			}
 		};
 		proxy.Scale += (_, e) => Update(_pending with { Scale = Math.Max(e.Factor, 1) });

@@ -18,11 +18,14 @@ internal sealed record WaylandWindowConfigure(
 	long SerialSequence,
 	uint? Serial);
 
-// Serialized by the display's SyncRoot. Keep applied geometry until submission, and only the newest successor.
+// Serialized by the display's SyncRoot. Apply only the newest successor at each frame opportunity,
+// never while a draw/commit attempt is using the current configure.
 internal sealed class WaylandConfigureQueue
 {
 	private WaylandWindowConfigure? _pending;
-	private bool _inFlight;
+	private bool _awaitingFrame;
+	private bool _attemptActive;
+	private bool _opportunityDeferred;
 	private bool _posted;
 	private long _generation;
 	private long _serialSequence;
@@ -46,29 +49,50 @@ internal sealed class WaylandConfigureQueue
 
 	internal WaylandWindowConfigure? TakePending()
 	{
-		if (!_posted || _inFlight)
+		if (!_posted || _awaitingFrame)
 		{
 			return null;
 		}
 		_posted = false;
+		_opportunityDeferred = false;
 		Current = _pending;
 		_pending = null;
-		_inFlight = Current is not null;
+		_awaitingFrame = Current is not null;
 		return Current;
 	}
 
-	internal bool Complete(long generation)
+	internal bool FrameOpportunity(long generation)
 	{
-		if (!_inFlight || Current?.Generation != generation)
+		if (!_awaitingFrame || Current?.Generation != generation)
 		{
 			return false;
 		}
-		_inFlight = false;
+		if (_attemptActive)
+		{
+			// Superseding Current mid-draw would reject the frame; the attempt's end releases the slot.
+			_opportunityDeferred = true;
+			return false;
+		}
+		_awaitingFrame = false;
+		return Schedule();
+	}
+
+	// Brackets a draw/commit attempt, which keeps its configure until it finishes. Returns whether
+	// a deferred opportunity now releases a pending successor.
+	internal bool SetAttemptActive(bool active)
+	{
+		_attemptActive = active;
+		if (active || !_opportunityDeferred)
+		{
+			return false;
+		}
+		_opportunityDeferred = false;
+		_awaitingFrame = false;
 		return Schedule();
 	}
 
 	internal bool CanAcknowledgeLatest(WaylandDecorationLayout layout, double scale)
-		=> !_inFlight || (Current is { } current && current.Layout == layout && current.Scale == scale);
+		=> Current is null || (Current.Layout == layout && Current.Scale == scale);
 
 	internal void AcknowledgeLatest(Action<uint> acknowledge) => Acknowledge(_serialSequence, _serial, acknowledge);
 
@@ -92,7 +116,7 @@ internal sealed class WaylandConfigureQueue
 
 	private bool Schedule()
 	{
-		if (_inFlight || _posted || _pending is null)
+		if (_awaitingFrame || _posted || _pending is null)
 		{
 			return false;
 		}
