@@ -181,6 +181,18 @@ public partial class CompositionTarget
 		return Draw(canvas, resizeFunc, pixelGeometry, resizeWithGeometry);
 	}
 
+	/// <summary>
+	/// A host that declines to draw the current picture (for example because it was recorded for an
+	/// outdated window size) still has to release the next UI frame, or the UI never records the one it needs.
+	/// </summary>
+	internal void OnNativePlatformFrameSkipped()
+	{
+		if (Interlocked.Exchange(ref _shouldEnqueueRenderOnNextNativePlatformFrameRequested, false))
+		{
+			NativeDispatcher.Main.EnqueueRender(this, EnqueueRenderCallback);
+		}
+	}
+
 	internal void OnRenderFrameOpportunity()
 	{
 		// If we get an opportunity to get call Render earlier than EnqueuePaintCallback, then we do that
