@@ -1012,7 +1012,7 @@ internal readonly partial struct UnicodeText : IParsedText
 			foreach (var (font, (glyphs, positions)) in fontToGlyphs)
 			{
 				textBlobBuilder.AddPositionedRun(CollectionsMarshal.AsSpan(glyphs), FontDetails.GetRenderFont(font, session.Canvas, _spareDrawPaint), CollectionsMarshal.AsSpan(positions));
-				session.Canvas.DrawText(textBlobBuilder.Build(), 0, 0, _spareDrawPaint); // SKTextBlobBuilder::Build resets the builder
+				session.Canvas.DrawText(textBlobBuilder.Build(), 0, 0, FontDetails.GetRenderPaint(_spareDrawPaint)); // SKTextBlobBuilder::Build resets the builder
 			}
 		}
 

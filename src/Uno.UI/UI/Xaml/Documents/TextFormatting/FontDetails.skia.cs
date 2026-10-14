@@ -23,6 +23,9 @@ internal record FontDetails(SKFont SKFont, float SKFontSize, float SKFontScaleX,
 	internal static SKFont GetRenderFont(SKFont font, SKCanvas canvas, SKPaint paint)
 		=> _textRendering.Value?.GetRenderFont(font, canvas.TotalMatrix, paint) ?? font;
 
+	internal static SKPaint GetRenderPaint(SKPaint paint)
+		=> _textRendering.Value?.GetRenderPaint(paint) ?? paint;
+
 	internal float LineHeight => SKFontMetrics.Descent - SKFontMetrics.Ascent;
 
 	internal SKFont SKFont { get; } = SKFont;
