@@ -8,7 +8,12 @@ namespace Uno.WinUI.Runtime.Skia.Linux;
 // A startup snapshot: cached fonts and recorded pictures cannot follow live fontconfig changes.
 internal sealed record LinuxFontRenderingSettings(bool Antialias, SKFontHinting Hinting, SKPixelGeometry PixelGeometry, int LcdFilter, bool ForceAutoHinting)
 {
-	internal static readonly LinuxFontRenderingSettings Default = new(true, SKFontHinting.Slight, SKPixelGeometry.Unknown, 1, false);
+	internal static readonly LinuxFontRenderingSettings Default = new(true, SKFontHinting.Normal, SKPixelGeometry.Unknown, 1, false);
+
+	internal static readonly LinuxFontRenderingSettings Unavailable = Default with { HasFontConfig = false };
+
+	internal bool HasFontConfig { get; init; } = true;
+	internal bool HintingOverridden { get; init; }
 
 	internal SKFontEdging Edging => !Antialias ? SKFontEdging.Alias
 		: PixelGeometry == SKPixelGeometry.Unknown ? SKFontEdging.Antialias : SKFontEdging.SubpixelAntialias;
@@ -38,6 +43,7 @@ internal sealed record LinuxFontRenderingSettings(bool Antialias, SKFontHinting 
 	internal LinuxFontRenderingSettings WithOverrides(string? hinting, string? rgba)
 		=> this with
 		{
+			HintingOverridden = HintingOverridden || hinting?.Trim().ToLowerInvariant() is "none" or "slight" or "normal" or "full",
 			Hinting = hinting?.Trim().ToLowerInvariant() switch
 			{
 				"none" => SKFontHinting.None,

@@ -515,6 +515,26 @@ internal static partial class X11Helper
 	[LibraryImport(libX11Randr)]
 	public unsafe static partial int XRRGetCrtcTransform(IntPtr dpy, IntPtr crtc, ref XRRCrtcTransformAttributes* attributes);
 
+	[LibraryImport(libX11Randr)]
+	public static partial void XRRSelectInput(IntPtr dpy, IntPtr window, int mask);
+
+	[LibraryImport(libX11Randr)]
+	public unsafe static partial XRRPanning* XRRGetPanning(IntPtr dpy, XRRScreenResources* resources, IntPtr crtc);
+
+	[LibraryImport(libX11Randr)]
+	public unsafe static partial void XRRFreePanning(XRRPanning* panning);
+
+	[StructLayout(LayoutKind.Sequential)]
+#pragma warning disable CA1815 // Override equals and operator equals on value types
+	public struct XRRPanning
+#pragma warning restore CA1815 // Override equals and operator equals on value types
+	{
+		public IntPtr timestamp;
+		public uint left, top, width, height;
+		public uint track_left, track_top, track_width, track_height;
+		public int border_left, border_top, border_right, border_bottom;
+	}
+
 	[StructLayout(LayoutKind.Sequential)]
 #pragma warning disable CA1815 // Override equals and operator equals on value types
 	public struct XRROutputInfo

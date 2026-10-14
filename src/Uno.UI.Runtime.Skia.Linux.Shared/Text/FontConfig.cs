@@ -17,18 +17,18 @@ internal static partial class FontConfig
 			var config = FcConfigGetCurrent(); // Borrowed: never destroy the config or call FcFini.
 			if (config == 0)
 			{
-				return LinuxFontRenderingSettings.Default;
+				return LinuxFontRenderingSettings.Unavailable;
 			}
 			var pattern = FcPatternCreate();
 			if (pattern == 0)
 			{
-				return LinuxFontRenderingSettings.Default;
+				return LinuxFontRenderingSettings.Unavailable;
 			}
 			try
 			{
 				if (FcConfigSubstitute(config, pattern, 0 /* FcMatchPattern */) == 0)
 				{
-					return LinuxFontRenderingSettings.Default;
+					return LinuxFontRenderingSettings.Unavailable;
 				}
 				FcDefaultSubstitute(pattern);
 				// Default-pattern rules only; per-face/size substitutions are deliberately not matched.
@@ -42,7 +42,7 @@ internal static partial class FontConfig
 		}
 		catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
 		{
-			return LinuxFontRenderingSettings.Default;
+			return LinuxFontRenderingSettings.Unavailable;
 		}
 	}
 

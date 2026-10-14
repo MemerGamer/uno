@@ -30,15 +30,21 @@ internal sealed class LinuxTextRenderingExtension : ISkiaTextRenderingExtension
 		if (this.Log().IsEnabled(LogLevel.Debug))
 		{
 			// SkiaSharp has no LCD filter setter: Skia's own FreeType library uses FT_LCD_FILTER_DEFAULT.
-			this.Log().Debug($"Linux text: antialias={Settings.Antialias}, hinting={Settings.Hinting}, geometry={Settings.PixelGeometry}, autohint={Settings.ForceAutoHinting}, fontconfig lcdfilter={Settings.LcdFilter} (Skia uses default).");
+			this.Log().Debug($"Linux text: fontconfig={Settings.HasFontConfig}, antialias={Settings.Antialias}, hinting={Settings.Hinting}, geometry={Settings.PixelGeometry}, autohint={Settings.ForceAutoHinting}, fontconfig lcdfilter={Settings.LcdFilter} (Skia uses default).");
 		}
 	}
 
 	public void Apply(SKFont font)
 	{
-		font.Hinting = Settings.Hinting;
+		if (Settings.HasFontConfig || Settings.HintingOverridden)
+		{
+			font.Hinting = Settings.Hinting;
+		}
 		font.Edging = Settings.Edging;
-		font.ForceAutoHinting = Settings.ForceAutoHinting;
+		if (Settings.HasFontConfig)
+		{
+			font.ForceAutoHinting = Settings.ForceAutoHinting;
+		}
 	}
 
 	public SKFont GetRenderFont(SKFont font, SKMatrix matrix, SKPaint paint)

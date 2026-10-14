@@ -16,6 +16,9 @@ internal partial class X11XamlRootHost
 		(1 << (int)XiEventType.XI_ButtonRelease) |
 		(1 << (int)XiEventType.XI_Motion);
 
+	private int _randrEventBase = -1;
+	internal bool TracksOutputGeometry => _randrEventBase >= 0;
+
 	private static int _seqNumber;
 	private readonly int _id = Interlocked.Increment(ref _seqNumber) - 1;
 
@@ -85,6 +88,12 @@ internal partial class X11XamlRootHost
 		_displayInformationExtension = extension;
 	}
 
+	private void InvalidateTextPixelGeometry()
+	{
+		_renderer?.InvalidateOutputGeometry();
+		((IXamlRootHost)this).InvalidateRender();
+	}
+
 	private unsafe void Run(X11Window x11Window)
 	{
 		var fds = stackalloc X11Helper.Pollfd[1];
@@ -148,6 +157,13 @@ internal partial class X11XamlRootHost
 
 			foreach (var @event in GetEvents(x11Window.Display))
 			{
+				if (x11Window == RootX11Window && _randrEventBase >= 0
+					&& ((int)@event.type == _randrEventBase + (int)RandrEvent.RRScreenChangeNotify
+						|| (int)@event.type == _randrEventBase + (int)RandrEvent.RRNotify))
+				{
+					InvalidateTextPixelGeometry();
+					continue;
+				}
 				_ = XLib.XQueryTree(x11Window.Display, x11Window.Window, out IntPtr root, out _, out var children, out _);
 				_ = XLib.XFree(children);
 				if (@event.AnyEvent.window == root)
@@ -197,6 +213,7 @@ internal partial class X11XamlRootHost
 							}
 							break;
 						case XEventName.ConfigureNotify:
+							InvalidateTextPixelGeometry();
 							RaiseConfigureCallback();
 							break;
 						case XEventName.FocusIn:

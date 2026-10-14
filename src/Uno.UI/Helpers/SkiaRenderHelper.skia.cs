@@ -13,6 +13,7 @@ using Microsoft.UI.Xaml.Documents.TextFormatting;
 using SkiaSharp;
 using Uno.UI.Composition;
 using Uno.UI.Xaml.Core;
+using Uno.UI.Xaml.Islands;
 using static Uno.UI.Helpers.SkiaRenderHelper;
 
 namespace Uno.UI.Helpers;
@@ -37,7 +38,10 @@ internal static class SkiaRenderHelper
 	// The picture clears transparent, then this square root background covers the frame before text.
 	// Capture this on the UI thread with the picture; a host's initial clear is not an opacity contract.
 	internal static bool CanUseLcdRoot(UIElement rootElement, float width, float height)
-		=> FontDetails.UsesLcd && rootElement is RootVisual
+		=> FontDetails.UsesLcd && HasLcdRootCoverage(rootElement, width, height);
+
+	internal static bool HasLcdRootCoverage(UIElement rootElement, float width, float height)
+		=> (rootElement is RootVisual or XamlIslandRoot) && rootElement is Panel
 		{
 			Background: Microsoft.UI.Xaml.Media.SolidColorBrush { Color.A: 255, Opacity: 1 },
 			Opacity: 1,

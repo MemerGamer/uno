@@ -540,6 +540,8 @@ internal partial class X11XamlRootHost : IXamlRootHost
 		XLib.XSelectInput(RootX11Window.Display, RootX11Window.Window, RootEventsMask);
 		// to update dpi when X resources change
 		XLib.XSelectInput(RootX11Window.Display, rootXWindow, (IntPtr)EventMask.PropertyChangeMask);
+		_randrEventBase = X11TextPixelGeometry.SelectChanges(RootX11Window.Display, rootXWindow);
+		_renderer.InvalidateOutputGeometry();
 		// We make sure not to select events that will be handled by a corresponding XI2 event
 		XLib.XSelectInput(TopX11Window.Display, TopX11Window.Window, usingXi2 ? TopEventsMask & ~EventsHandledByXI2Mask : TopEventsMask);
 

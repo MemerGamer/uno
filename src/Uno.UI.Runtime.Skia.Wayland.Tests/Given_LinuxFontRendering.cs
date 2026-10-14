@@ -14,9 +14,40 @@ public sealed class Given_LinuxFontRendering
 	{
 		Assert.AreEqual(LinuxFontRenderingSettings.Default, LinuxFontRenderingSettings.FromPattern(null, null, null, null, null, null));
 		var settings = LinuxFontRenderingSettings.FromPattern(null, null, 99, 99, null, null);
-		Assert.AreEqual(SKFontHinting.Slight, settings.Hinting);
+		Assert.AreEqual(SKFontHinting.Normal, settings.Hinting);
 		Assert.AreEqual(SKPixelGeometry.Unknown, settings.PixelGeometry);
 		Assert.AreEqual(SKFontEdging.Antialias, settings.Edging);
+	}
+
+	[TestMethod]
+	public void When_FontconfigIsUnavailable()
+	{
+		var extension = new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Unavailable);
+		using var font = new SKFont { Subpixel = true, BaselineSnap = true };
+		extension.Apply(font);
+		Assert.IsFalse(extension.Settings.HasFontConfig);
+		Assert.AreEqual(SKFontHinting.Normal, font.Hinting);
+		Assert.AreEqual(SKFontEdging.Antialias, font.Edging);
+		Assert.IsTrue(font.Subpixel);
+		Assert.IsTrue(font.BaselineSnap);
+		font.Hinting = SKFontHinting.Full;
+		font.ForceAutoHinting = true;
+		extension.Apply(font);
+		Assert.AreEqual(SKFontHinting.Full, font.Hinting);
+		Assert.IsTrue(font.ForceAutoHinting);
+	}
+
+	[TestMethod]
+	public void When_FontconfigIsUnavailableAndHintingIsOverridden()
+	{
+		using var font = new SKFont { ForceAutoHinting = true };
+		new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Unavailable.WithOverrides(" slight ", null)).Apply(font);
+		Assert.AreEqual(SKFontHinting.Slight, font.Hinting);
+		Assert.AreEqual(SKFontEdging.Antialias, font.Edging);
+		Assert.IsTrue(font.ForceAutoHinting);
+		font.Hinting = SKFontHinting.Full;
+		new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Unavailable.WithOverrides("invalid", null)).Apply(font);
+		Assert.AreEqual(SKFontHinting.Full, font.Hinting);
 	}
 
 	[TestMethod]

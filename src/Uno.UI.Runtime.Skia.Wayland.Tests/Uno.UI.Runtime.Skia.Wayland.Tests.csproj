@@ -10,6 +10,7 @@
 	</PropertyGroup>
 	<Import Project="../targetframework-override.props" />
 	<ItemGroup>
+		<Compile Include="../Uno.UI.Runtime.Skia.X11/Rendering/X11TextPixelGeometryPolicy.cs" Link="X11TextPixelGeometryPolicy.cs" />
 		<PackageReference Include="MSTest" />
 		<ProjectReference Include="..\Uno.UI.Runtime.Skia.Wayland\Uno.UI.Runtime.Skia.Wayland.csproj" />
 		<ProjectReference Include="..\Uno.UWP\Uno.Skia.csproj" />
