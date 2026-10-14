@@ -2,7 +2,7 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Uno.Foundation.Logging;
 using Uno.UI.Runtime.Wayland.Native;
@@ -10,15 +10,15 @@ using Uno.UI.Runtime.Wayland.Protocols;
 
 namespace Uno.UI.Runtime.Wayland;
 
-// A selection or drag-and-drop offer. Data is received through a pipe on a worker thread, once per MIME type.
+// A selection or drag-and-drop offer. Same-MIME getters share a pipe transfer on a worker thread.
 internal sealed class WaylandDataOffer
 {
-	// Total time allowed for a transfer.
+	// Longest pause the source may make between writes.
 	private static readonly TimeSpan _readTimeout = TimeSpan.FromSeconds(5);
 
 	private readonly WlDataOffer _offer;
 	private readonly List<string> _mimeTypes = new();
-	private readonly Dictionary<string, Task<byte[]?>> _reads = new();
+	private readonly WaylandDataOfferReads _reads;
 	private readonly WaylandDropNegotiation _negotiation = new();
 	private bool _destroyed;
 
@@ -26,6 +26,7 @@ internal sealed class WaylandDataOffer
 	internal WaylandDataOffer(WlDataOffer offer)
 	{
 		_offer = offer;
+		_reads = new(Read);
 		offer.Offer += (_, e) =>
 		{
 			lock (_mimeTypes)
@@ -64,31 +65,13 @@ internal sealed class WaylandDataOffer
 	}
 
 	/// <summary>Receives the offered data for <paramref name="mimeType"/>; null if the offer is gone or the source fails to send it.</summary>
-	internal Task<byte[]?> ReadAsync(string mimeType)
-	{
-		lock (_reads)
-		{
-			if (!_reads.TryGetValue(mimeType, out var read))
-			{
-				_reads[mimeType] = read = Task.Run(() => Read(mimeType));
-			}
-			return read;
-		}
-	}
+	internal Task<byte[]?> ReadAsync(string mimeType, CancellationToken cancellationToken)
+		=> _reads.ReadAsync(mimeType, cancellationToken);
 
 	/// <summary>Completes once every read started so far has finished.</summary>
-	internal async Task<bool> WhenReadsCompleted()
-	{
-		Task<byte[]?>[] reads;
-		lock (_reads)
-		{
-			reads = _reads.Values.ToArray();
-		}
-		var results = await Task.WhenAll(reads);
-		return results.All(result => result is not null);
-	}
+	internal Task<bool> WhenReadsCompleted() => _reads.WhenReadsCompleted();
 
-	private byte[]? Read(string mimeType)
+	private byte[]? Read(string mimeType, CancellationToken cancellationToken)
 	{
 		var read = -1;
 		var write = -1;
@@ -97,7 +80,7 @@ internal sealed class WaylandDataOffer
 			(read, write) = WaylandPipe.Create();
 			lock (_offer.Display.SyncRoot)
 			{
-				if (_destroyed)
+				if (_destroyed || cancellationToken.IsCancellationRequested)
 				{
 					return null;
 				}
@@ -107,7 +90,12 @@ internal sealed class WaylandDataOffer
 			write = -1;
 			var ownedRead = read;
 			read = -1;
-			return WaylandPipe.ReadToEnd(ownedRead, _readTimeout);
+			var data = WaylandPipe.ReadToEnd(ownedRead, _readTimeout, cancellationToken: cancellationToken);
+			if (data is null && !cancellationToken.IsCancellationRequested && this.Log().IsEnabled(LogLevel.Warning))
+			{
+				this.Log().Warn($"The Wayland data source for {mimeType} stalled or exceeded {WaylandPipe.MaximumTransferSize} bytes.");
+			}
+			return data;
 		}
 		catch (Exception error)
 		{
@@ -169,6 +157,7 @@ internal sealed class WaylandDataOffer
 			if (!_destroyed)
 			{
 				_destroyed = true;
+				_reads.Dispose();
 				_offer.Destroy();
 			}
 		}

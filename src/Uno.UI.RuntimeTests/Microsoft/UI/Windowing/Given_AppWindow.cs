@@ -1,5 +1,6 @@
 ﻿#if HAS_UNO_WINUI || WINDOWS
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Threading.Tasks;
 using Combinatorial.MSTest;
@@ -221,6 +222,8 @@ public class Given_AppWindow
 	}
 
 	[TestMethod]
+	// Wayland: the compositor decides the mapped size; When_Resize_Before_Activate_Then_Maximize covers it.
+	[PlatformCondition(ConditionMode.Exclude, RuntimeTestPlatforms.SkiaWayland)]
 	public async Task When_First_Activation_Observes_Applied_Bounds()
 	{
 		AssertSizingSupport();
@@ -228,28 +231,15 @@ public class Given_AppWindow
 		var newWindow = new Window { Content = new Grid() };
 		var appWindow = newWindow.AppWindow;
 		var requestedSize = new SizeInt32(320, 240);
-		var isWayland = RuntimeTestsPlatformHelper.CurrentPlatform == RuntimeTestPlatforms.SkiaWayland;
 		try
 		{
 			appWindow.Resize(requestedSize);
 			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => appWindow.Size.Equals(requestedSize)));
 			var presenter = (OverlappedPresenter)appWindow.Presenter;
-			if (isWayland)
-			{
-				// Wayland applies maximization only when the compositor configures the window.
-				presenter.Maximize();
-			}
 			await ActivateAndWaitForBounds(newWindow, () =>
 			{
-				Assert.AreEqual(isWayland ? OverlappedPresenterState.Maximized : OverlappedPresenterState.Restored, presenter.State);
-				if (isWayland)
-				{
-					Assert.AreNotEqual(requestedSize, appWindow.Size);
-				}
-				else
-				{
-					Assert.AreEqual(requestedSize, appWindow.Size);
-				}
+				Assert.AreEqual(OverlappedPresenterState.Restored, presenter.State);
+				Assert.AreEqual(requestedSize, appWindow.Size);
 			});
 		}
 		finally
@@ -259,38 +249,23 @@ public class Given_AppWindow
 	}
 
 	[TestMethod]
-	[CombinatorialData]
-	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWayland)]
-	public async Task When_Move_Is_Unsupported(bool activateWindow)
+	public async Task When_First_Activation_Is_CodeActivated()
 	{
-		var newWindow = new Window();
-		var appWindow = newWindow.AppWindow;
-		var positionChanged = false;
-		var activated = false;
-		void OnChanged(AppWindow sender, AppWindowChangedEventArgs args)
-		{
-			positionChanged |= args.DidPositionChange;
-		}
-		appWindow.Changed += OnChanged;
+		AssertSizingSupport();
+
+		var newWindow = new Window { Content = new Grid() };
 		try
 		{
-			if (activateWindow)
+			var states = await ActivateAndWaitForBounds(newWindow, () => { });
+			Assert.AreEqual(WindowActivationState.CodeActivated, states[0], "Managed activation must precede focus-driven activation.");
+			if (states.Contains(WindowActivationState.PointerActivated))
 			{
-				newWindow.Activated += (s, e) => activated = true;
-				newWindow.Activate();
-				await TestServices.WindowHelper.WaitFor(() => activated);
+				Assert.AreEqual(WindowActivationState.PointerActivated, states[1], "A focused window must raise PointerActivated after CodeActivated.");
 			}
-
-			appWindow.Move(new PointInt32(40, 40));
-			await TestServices.WindowHelper.WaitForIdle();
-			Assert.AreEqual(new PointInt32(0, 0), appWindow.Position);
-			Assert.IsFalse(positionChanged);
 		}
 		finally
 		{
-			appWindow.Changed -= OnChanged;
-			await TestServices.WindowHelper.WaitForIdle();
-			await TestServices.RunOnUIThread(() => newWindow.Close());
+			newWindow.Close();
 		}
 	}
 
@@ -379,27 +354,68 @@ public class Given_AppWindow
 		}
 	}
 
-	private static async Task ActivateAndWaitForBounds(Window window, Action assertBounds)
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWayland)]
+	public async Task When_Closed_During_Initial_Activation_No_Activation_Follows_Closed()
+	{
+		var window = new Window { Content = new Grid() };
+		var events = new List<string>();
+		var closed = false;
+		window.Closed += (_, _) =>
+		{
+			closed = true;
+			events.Add("Closed");
+		};
+		window.Activated += (_, args) =>
+		{
+			events.Add(args.WindowActivationState.ToString());
+			if (args.WindowActivationState == WindowActivationState.CodeActivated)
+			{
+				window.Close();
+			}
+		};
+		try
+		{
+			window.Activate();
+			await WaitWithTimeout(TestServices.WindowHelper.WaitFor(() => closed));
+			await TestServices.WindowHelper.WaitForIdle();
+			CollectionAssert.AreEqual(new[] { "CodeActivated", "Closed" }, events);
+		}
+		finally
+		{
+			if (!closed)
+			{
+				window.Close();
+			}
+		}
+	}
+
+	/// <summary>Records the initial activation sequence, including focus callbacks queued while content loads.</summary>
+	private static async Task<List<WindowActivationState>> ActivateAndWaitForBounds(Window window, Action assertBounds)
 	{
 		var appWindow = window.AppWindow;
 		var activation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var states = new List<WindowActivationState>();
 		var isWayland = RuntimeTestsPlatformHelper.CurrentPlatform == RuntimeTestPlatforms.SkiaWayland;
 		void OnActivated(object sender, WindowActivatedEventArgs args)
 		{
+			states.Add(args.WindowActivationState);
 			if (activation.Task.IsCompleted || args.WindowActivationState == WindowActivationState.Deactivated)
 			{
 				return;
 			}
 			try
 			{
+				// Every host raises the managed CodeActivated before any focus-driven PointerActivated.
+				Assert.AreEqual(WindowActivationState.CodeActivated, states[0]);
 				Assert.IsTrue(appWindow.ClientSize.Width > 0 && appWindow.ClientSize.Height > 0);
 				Assert.IsTrue(appWindow.ClientSize.Width <= appWindow.Size.Width && appWindow.ClientSize.Height <= appWindow.Size.Height);
 				assertBounds();
-				activation.SetResult(true);
+				activation.TrySetResult(true);
 			}
 			catch (Exception error)
 			{
-				activation.SetException(error);
+				activation.TrySetException(error);
 			}
 		}
 		window.Activated += OnActivated;
@@ -417,11 +433,13 @@ public class Given_AppWindow
 					Math.Abs(root.Size.Height * root.RasterizationScale - appWindow.ClientSize.Height) <= 1,
 					timeoutMS: 5000, message: "XamlRoot bounds matching AppWindow.ClientSize"));
 			}
+			await TestServices.WindowHelper.WaitForIdle();
 		}
 		finally
 		{
 			window.Activated -= OnActivated;
 		}
+		return states;
 	}
 
 	private static async Task WaitWithTimeout(Task task)

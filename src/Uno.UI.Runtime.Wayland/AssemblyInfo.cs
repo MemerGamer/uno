@@ -3,4 +3,3 @@
 using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("Uno.UI.Runtime.Wayland.Tests")]
-[assembly: InternalsVisibleTo("Uno.UI.RuntimeTests")]

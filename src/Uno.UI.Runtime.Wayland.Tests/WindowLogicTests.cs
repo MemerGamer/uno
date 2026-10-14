@@ -2,6 +2,7 @@
 
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Uno.UI.Runtime.Wayland;
+using Windows.UI.Core;
 
 namespace Uno.UI.Runtime.Wayland.Tests;
 
@@ -18,6 +19,28 @@ public sealed class WindowLogicTests
 			BitConverter.TryWriteBytes(bytes.AsSpan(i * 4), values[i]);
 		}
 		return bytes;
+	}
+
+	[TestMethod]
+	public void InitialActivationRaisesCodeActivatedBeforePointerActivated()
+	{
+		CollectionAssert.AreEqual(
+			new[] { CoreWindowActivationState.CodeActivated, CoreWindowActivationState.PointerActivated },
+			WaylandToplevelStateParser.GetActivationSequence(WaylandToplevelStates.Activated, initialActivation: true).ToArray());
+		CollectionAssert.AreEqual(
+			new[] { CoreWindowActivationState.CodeActivated },
+			WaylandToplevelStateParser.GetActivationSequence(WaylandToplevelStates.None, initialActivation: true).ToArray());
+	}
+
+	[TestMethod]
+	public void LaterConfiguresOnlyFollowCompositorFocus()
+	{
+		CollectionAssert.AreEqual(
+			new[] { CoreWindowActivationState.PointerActivated },
+			WaylandToplevelStateParser.GetActivationSequence(WaylandToplevelStates.Activated | WaylandToplevelStates.Maximized, initialActivation: false).ToArray());
+		CollectionAssert.AreEqual(
+			new[] { CoreWindowActivationState.Deactivated },
+			WaylandToplevelStateParser.GetActivationSequence(WaylandToplevelStates.None, initialActivation: false).ToArray());
 	}
 
 	[TestMethod]

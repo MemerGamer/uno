@@ -105,7 +105,7 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 		};
 		EventHandler<WlKeyboard.EnterEventArgs> enter = (_, e) => { if (_ownsSurface(e.Surface)) { Trace($"input: keyboard enter"); sink.Enter(MemoryMarshal.Cast<byte, uint>(e.Keys.AsSpan())); } };
 		EventHandler<WlKeyboard.LeaveEventArgs> leave = (_, e) => { if (_ownsSurface(e.Surface)) { Trace($"input: keyboard leave"); sink.Leave(); } };
-		EventHandler<WlKeyboard.KeyEventArgs> key = (_, e) => { Trace($"input: key {e.Key} state={e.State}"); sink.Key(e.Key, e.State); };
+		EventHandler<WlKeyboard.KeyEventArgs> key = (_, e) => { if (WaylandDiagnostics.IsVerbose) { WaylandDiagnostics.TraceVerbose(FormattableString.Invariant($"input: key {e.Key} state={e.State}")); } sink.Key(e.Key, e.State); };
 		EventHandler<WlKeyboard.ModifiersEventArgs> modifiers = (_, e) => { Trace($"input: modifiers depressed=0x{e.ModsDepressed:x} locked=0x{e.ModsLocked:x} group={e.Group}"); sink.UpdateModifiers(e.ModsDepressed, e.ModsLatched, e.ModsLocked, e.Group); };
 		EventHandler<WlKeyboard.RepeatInfoEventArgs> repeat = (_, e) => { Trace($"input: repeat rate={e.Rate} delay={e.Delay}"); sink.RepeatInfo(e.Rate, e.Delay); };
 		proxy.Keymap += keymap;

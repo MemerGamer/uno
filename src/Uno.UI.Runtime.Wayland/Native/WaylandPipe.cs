@@ -30,18 +30,21 @@ internal static unsafe class WaylandPipe
 		return (fds[0], fds[1]);
 	}
 
-	/// <summary>Reads until end of file. Returns null when the size limit or total <paramref name="timeout"/> is exceeded.</summary>
-	internal static byte[]? ReadToEnd(int fd, TimeSpan timeout, int maximumSize = MaximumTransferSize)
+	/// <summary>
+	/// Reads until end of file. Returns null when the size limit is exceeded or the writer makes no progress
+	/// for <paramref name="timeout"/>, or the caller cancels the transfer.
+	/// </summary>
+	internal static byte[]? ReadToEnd(int fd, TimeSpan timeout, int maximumSize = MaximumTransferSize, CancellationToken cancellationToken = default)
 	{
 		try
 		{
 			SetNonblocking(fd);
-			var deadline = Stopwatch.StartNew();
+			var idle = Stopwatch.StartNew();
 			using var buffer = new MemoryStream();
 			var chunk = new byte[64 * 1024];
 			while (true)
 			{
-				if (!Wait(fd, PollIn, timeout - deadline.Elapsed))
+				if (!Wait(fd, PollIn, timeout - idle.Elapsed, cancellationToken))
 				{
 					return null;
 				}
@@ -68,6 +71,7 @@ internal static unsafe class WaylandPipe
 					return null;
 				}
 				buffer.Write(chunk, 0, (int)count);
+				idle.Restart();
 			}
 		}
 		finally
@@ -76,13 +80,13 @@ internal static unsafe class WaylandPipe
 		}
 	}
 
-	/// <summary>Writes all of <paramref name="data"/>. Returns false when the reader went away or stopped reading.</summary>
+	/// <summary>Writes all of <paramref name="data"/>. Returns false when the reader went away or stopped reading for <paramref name="timeout"/>.</summary>
 	internal static bool WriteAll(int fd, ReadOnlySpan<byte> data, TimeSpan timeout, CancellationToken cancellationToken = default)
 	{
 		try
 		{
 			SetNonblocking(fd);
-			var deadline = Stopwatch.StartNew();
+			var idle = Stopwatch.StartNew();
 			if (data.Length > MaximumTransferSize)
 			{
 				return false;
@@ -92,7 +96,7 @@ internal static unsafe class WaylandPipe
 				var written = 0;
 				while (written < data.Length)
 				{
-					if (!Wait(fd, PollOut, timeout - deadline.Elapsed, cancellationToken))
+					if (!Wait(fd, PollOut, timeout - idle.Elapsed, cancellationToken))
 					{
 						return false;
 					}
@@ -108,6 +112,7 @@ internal static unsafe class WaylandPipe
 						return false;
 					}
 					written += (int)count;
+					idle.Restart();
 				}
 			}
 			return true;

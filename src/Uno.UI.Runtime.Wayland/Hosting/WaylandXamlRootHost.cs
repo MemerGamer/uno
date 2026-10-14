@@ -27,6 +27,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 	private readonly WaylandProtocolInputConnection? _input;
 	private readonly WaylandSeat? _seat;
 	private readonly WaylandFrameReadiness _readiness = new();
+	private readonly WaylandRenderErrorThrottle _renderErrors = new();
 	private readonly Func<long, Func<bool>, bool> _preparePresentation;
 	private volatile bool _disposed;
 
@@ -353,9 +354,15 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 	private void OnRenderError(Exception error)
 	{
 		// The host reports compositor failure once when its dispatch loop stops.
-		if (_connection.Display.DispatchError is null && this.Log().IsEnabled(LogLevel.Error))
+		if (_connection.Display.DispatchError is not null || !this.Log().IsEnabled(LogLevel.Error))
 		{
-			this.Log().Error($"Wayland rendering failed for window {_id}.", error);
+			return;
+		}
+		if (_renderErrors.ShouldReport(Environment.TickCount64, out var suppressed))
+		{
+			this.Log().Error(suppressed == 0
+				? $"Wayland rendering failed for window {_id}."
+				: $"Wayland rendering failed for window {_id} ({suppressed} further failures since the last report).", error);
 		}
 	}
 

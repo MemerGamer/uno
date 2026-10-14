@@ -166,6 +166,8 @@ public sealed partial class Window_DesktopScenarios : Page
 	private void OnLoaded(object sender, RoutedEventArgs e)
 	{
 #if __SKIA__
+		// CI lifecycle smoke: a timer-driven state machine that exercises window states and closes the
+		// window; build/test-scripts/linux-skia-runtime-tests.sh enables it and reads its console output.
 		if (Environment.GetEnvironmentVariable("UNO_WAYLAND_LIFECYCLE_SMOKE") != "1" || _smokeTimer is not null)
 		{
 			return;

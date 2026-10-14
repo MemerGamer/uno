@@ -13,7 +13,8 @@ using Windows.UI.Core;
 
 namespace Uno.UI.Runtime.Wayland;
 
-public sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, IDisposable
+// Created through WaylandHostBuilder; nothing outside the assembly constructs or consumes it.
+internal sealed class WaylandApplicationHost : UnoPlatformHost, IApplicationHost, IDisposable
 {
 	private const int ShutdownTimeoutMilliseconds = 5000;
 
