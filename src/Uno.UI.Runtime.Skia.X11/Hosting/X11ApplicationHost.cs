@@ -22,6 +22,7 @@ using Uno.UI.Runtime.Skia;
 using Uno.UI.Runtime.Skia.Extensions.System;
 using Uno.UI.Xaml.Controls;
 using Uno.WinUI.Runtime.Skia.Linux;
+using Microsoft.UI.Xaml.Documents.TextFormatting;
 using Windows.Storage.Pickers;
 using Windows.UI.Core;
 using Uno.Media.Playback;
@@ -63,6 +64,7 @@ public partial class X11ApplicationHost : SkiaHost, ISkiaApplicationHost, IDispo
 
 	static X11ApplicationHost()
 	{
+		ApiExtensibility.Register(typeof(ISkiaTextRenderingExtension), _ => LinuxTextRenderingExtension.Instance);
 		// This seems to be necessary to run on WSL, but not necessary on the X.org implementation.
 		// We therefore wrap every x11 call with XLockDisplay and XUnlockDisplay
 		_ = X11Helper.XInitThreads();

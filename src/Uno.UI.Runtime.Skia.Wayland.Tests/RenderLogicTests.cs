@@ -3,6 +3,7 @@
 #nullable enable
 
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using SkiaSharp;
 using Uno.WinUI.Runtime.Skia.Wayland;
 using Uno.WinUI.Runtime.Skia.Wayland.Rendering;
 
@@ -51,6 +52,32 @@ public sealed class RenderLogicTests
 	{
 		Assert.AreEqual(1000d / 165, (WaylandOutputInfo.Unknown with { RefreshMilliHz = 165000 }).FrameInterval.TotalMilliseconds, 0.0001);
 		Assert.AreEqual(1000d / 60, WaylandOutputInfo.Unknown.FrameInterval.TotalMilliseconds, 0.0001);
+	}
+
+	[TestMethod]
+	[DataRow(2, SKPixelGeometry.RgbHorizontal)]
+	[DataRow(3, SKPixelGeometry.BgrHorizontal)]
+	[DataRow(4, SKPixelGeometry.RgbVertical)]
+	[DataRow(5, SKPixelGeometry.BgrVertical)]
+	public void TextGeometrySupportsEachPhysicalOrder(int subpixel, SKPixelGeometry geometry)
+	{
+		var output = WaylandOutputInfo.Unknown with { Subpixel = subpixel, Transform = 0 };
+		Assert.AreEqual(geometry, WaylandWindowWrapper.GetTextPixelGeometry([output], geometry, 1));
+	}
+
+	[TestMethod]
+	public void TextGeometryRequiresMatchingUntransformedOutputsAndIntegerPresentation()
+	{
+		var rgb = WaylandOutputInfo.Unknown with { Subpixel = 2, Transform = 0 };
+		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([rgb], SKPixelGeometry.RgbHorizontal, 1));
+		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([rgb with { Scale = 2 }], SKPixelGeometry.RgbHorizontal, 2));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([], SKPixelGeometry.RgbHorizontal, 1));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb, rgb with { Subpixel = 3 }], SKPixelGeometry.RgbHorizontal, 1));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb with { Subpixel = 0 }], SKPixelGeometry.RgbHorizontal, 1));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb with { Transform = 1 }], SKPixelGeometry.RgbHorizontal, 1));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb], SKPixelGeometry.RgbHorizontal, 1.25));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb, rgb with { Scale = 2 }], SKPixelGeometry.RgbHorizontal, 2));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb], SKPixelGeometry.Unknown, 1));
 	}
 
 	[TestMethod]

@@ -14,6 +14,8 @@ internal sealed record WaylandOutputInfo(string Name, string Description, int Pi
 	internal static readonly WaylandOutputInfo Unknown = new(string.Empty, string.Empty, 0, 0, 0, 0, 1);
 
 	internal int RefreshMilliHz { get; init; }
+	internal int Subpixel { get; init; }
+	internal int Transform { get; init; } = -1;
 
 	internal TimeSpan FrameInterval => TimeSpan.FromSeconds(RefreshMilliHz > 0 ? 1000d / RefreshMilliHz : 1d / 60);
 
@@ -39,6 +41,8 @@ internal sealed class WaylandOutput : IDisposable
 		{
 			PhysicalWidthMm = e.PhysicalWidth,
 			PhysicalHeightMm = e.PhysicalHeight,
+			Subpixel = e.Subpixel,
+			Transform = e.Transform,
 			// wl_output v4 sends a stable connector name; older versions only identify the monitor model.
 			Name = proxy.Version >= 4 ? _pending.Name : e.Model,
 		});

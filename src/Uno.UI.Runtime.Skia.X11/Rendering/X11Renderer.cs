@@ -5,6 +5,7 @@ using SkiaSharp;
 using Uno.Foundation.Logging;
 using Uno.UI.Helpers;
 using Uno.UI.Hosting;
+using Uno.WinUI.Runtime.Skia.Linux;
 
 namespace Uno.WinUI.Runtime.Skia.X11;
 
@@ -29,6 +30,8 @@ internal abstract class X11Renderer : IDisposable
 	protected virtual bool UsesRetainedLayer => false;
 
 	protected virtual GRContext? GpuContext => null;
+
+	protected SKPixelGeometry PixelGeometry { get; private set; }
 
 	protected void DisposeRetainedLayer() => _retainedLayer.Dispose();
 
@@ -55,15 +58,17 @@ internal abstract class X11Renderer : IDisposable
 		var useLayer = UsesRetainedLayer;
 		var renderCanvas = useLayer ? _retainedLayer.Surface?.Canvas : _surface?.Canvas;
 
-		var nativeElementClipPath = ((CompositionTarget)_host.RootElement!.Visual.CompositionTarget!).OnNativePlatformFrameRequested(renderCanvas, size =>
+		var requestedGeometry = LinuxTextRenderingExtension.Instance.Settings.GetSurfaceGeometry(_host.RootElement!.XamlRoot!.RasterizationScale);
+		var nativeElementClipPath = ((CompositionTarget)_host.RootElement.Visual.CompositionTarget!).OnNativePlatformFrameRequested(renderCanvas, (size, pixelGeometry) =>
 		{
+			PixelGeometry = pixelGeometry;
 			_surface?.Dispose();
 			SKSurface renderSurface;
 			using (X11Helper.XLock(display))
 			{
 				_surface = UpdateSize((int)size.Width, (int)size.Height);
 				renderSurface = useLayer
-					? _retainedLayer.EnsureSurface(GpuContext!, (int)size.Width, (int)size.Height, _background)
+					? _retainedLayer.EnsureSurface(GpuContext!, (int)size.Width, (int)size.Height, _background, pixelGeometry)
 					: _surface;
 			}
 			if (!useLayer)
@@ -73,7 +78,7 @@ internal abstract class X11Renderer : IDisposable
 			_airspaceHelper?.Dispose();
 			_airspaceHelper = new X11AirspaceRenderHelper(display, window, (int)size.Width, (int)size.Height);
 			return renderSurface.Canvas;
-		});
+		}, requestedGeometry);
 
 		if (useLayer && _surface is { } surface)
 		{

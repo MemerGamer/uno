@@ -11,6 +11,7 @@ using Uno.Foundation.Logging;
 using Uno.UI.Composition;
 using Uno.UI.Helpers;
 using Uno.UI.Hosting;
+using Uno.WinUI.Runtime.Skia.Linux;
 using Uno.WinUI.Runtime.Skia.Wayland.Input;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 using Uno.WinUI.Runtime.Skia.Wayland.Rendering;
@@ -37,6 +38,8 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	private SKSurface? _canvasSurface;
 	private int _frame;
 	private SKSizeI _canvasSize;
+	private SKPixelGeometry _outputGeometry;
+	private double _outputScale;
 	private readonly WaylandFrameReadiness _readiness = new();
 	private readonly Func<long, Func<bool>, bool> _preparePresentation;
 
@@ -136,6 +139,20 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 	public void InvalidateRender() => InvalidateRender(presentationReady: false);
 
 	internal void PresentationReady() => InvalidateRender(presentationReady: true);
+
+	// Dispatch thread publishes a conservative geometry for all entered outputs.
+	internal void SetOutputGeometry(SKPixelGeometry geometry, double scale)
+	{
+		_renderThread.Post(() =>
+		{
+			if (_outputGeometry != geometry || _outputScale != scale)
+			{
+				_outputGeometry = geometry;
+				_outputScale = scale;
+				_renderer?.Invalidate();
+			}
+		});
+	}
 
 	private void InvalidateRender(bool presentationReady)
 	{
@@ -322,27 +339,30 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 		if (RootElement?.Visual.CompositionTarget is CompositionTarget compositionTarget)
 		{
 			var canvas = gpuContext is null ? _canvasSurface?.Canvas : _retainedLayer.Surface?.Canvas;
-			(int Width, int Height)? geometry = _renderer is { IsConfigured: true } renderer ? renderer.BufferSize : null;
-			if (geometry is { } configured && (_canvasSize.Width != configured.Width || _canvasSize.Height != configured.Height))
+			(int Width, int Height)? bufferSize = _renderer is { IsConfigured: true } renderer ? renderer.BufferSize : null;
+			if (bufferSize is { } configured && (_canvasSize.Width != configured.Width || _canvasSize.Height != configured.Height))
 			{
 				canvas = null;
 			}
-			compositionTarget.OnNativePlatformFrameRequested(canvas, size =>
+			var surfaceGeometry = LinuxTextRenderingExtension.Instance.Settings.GetSurfaceGeometry(_renderer!.Scale.EffectiveScale,
+				pixelPreserving: _outputGeometry != SKPixelGeometry.Unknown && _outputScale == _renderer.Scale.EffectiveScale);
+			compositionTarget.OnNativePlatformFrameRequested(canvas, (size, pixelGeometry) =>
 			{
 				// CompositionTarget rounds current XamlRoot bounds to even. The retained layer and
 				// wl_buffer instead share the configure's integer geometry and halves-up rounding.
-				var (width, height) = WaylandRenderScale.GetCanvasSize(geometry, size.Width, size.Height);
+				var (width, height) = WaylandRenderScale.GetCanvasSize(bufferSize, size.Width, size.Height);
 				_canvasSize = new SKSizeI(width, height);
 				if (gpuContext is not null)
 				{
-					return _retainedLayer.EnsureSurface(gpuContext, width, height, SKColors.White).Canvas;
+					return _retainedLayer.EnsureSurface(gpuContext, width, height, SKColors.White, pixelGeometry).Canvas;
 				}
 				_canvasSurface?.Dispose();
-				_canvasSurface = SKSurface.Create(new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul))
+				using var properties = new SKSurfaceProperties(pixelGeometry);
+				_canvasSurface = SKSurface.Create(new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul), properties)
 					?? throw new InvalidOperationException("Skia raster surface creation failed.");
 				_canvasSurface.Canvas.Clear(SKColors.White);
 				return _canvasSurface.Canvas;
-			});
+			}, surfaceGeometry);
 		}
 	}
 

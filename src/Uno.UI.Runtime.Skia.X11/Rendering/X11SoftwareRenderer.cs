@@ -58,7 +58,8 @@ namespace Uno.WinUI.Runtime.Skia.X11
 				bytes_per_line: 0); // 0 bytes per line assume contiguous lines i.e. pad * width
 
 			var info = new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
-			return SKSurface.Create(info, _bitmap.GetPixels(out _));
+			using var properties = new SKSurfaceProperties(PixelGeometry);
+			return SKSurface.Create(info, _bitmap.GetPixels(out _), properties);
 		}
 
 		protected override void Flush()

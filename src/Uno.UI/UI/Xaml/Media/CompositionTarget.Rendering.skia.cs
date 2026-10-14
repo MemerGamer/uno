@@ -59,6 +59,7 @@ public partial class CompositionTarget
 	private Size _lastCanvasSize = Size.Empty;
 	private static SKPath? _lastNativeClipPath;
 	private float _lastRasterizationScale = 1;
+	private SKPixelGeometry _lastPixelGeometry;
 	private static SKPath? _lastScaledNativeClipPath;
 
 	private readonly SKPath _pendingDamage = new();
@@ -69,7 +70,7 @@ public partial class CompositionTarget
 	private readonly Stack<SKPath> _damageSnapshotPool = new();
 
 	// only set on the UI thread and under _frameGate, only read under _frameGate
-	private (FramePicture picture, SKPath nativeElementClipPath, SKPath damage)? _lastRenderedFrame;
+	private (FramePicture picture, SKPath nativeElementClipPath, SKPath damage, bool canUseLcd)? _lastRenderedFrame;
 	// only set and read under _xamlRootBoundsGate
 	private Size _xamlRootBounds;
 	// only set and read under _xamlRootBoundsGate
@@ -130,7 +131,7 @@ public partial class CompositionTarget
 
 		var framePicture = new FramePicture(picture);
 		var frameRect = new SKRect(0, 0, (float)bounds.Width, (float)bounds.Height);
-		var previousFrame = default((FramePicture picture, SKPath path, SKPath damage)?);
+		var previousFrame = default((FramePicture picture, SKPath path, SKPath damage, bool canUseLcd)?);
 		SKPath damageSnapshot;
 		lock (_frameGate)
 		{
@@ -148,7 +149,7 @@ public partial class CompositionTarget
 			damageSnapshot.AddPath(_pendingDamage);
 			_pendingDamage.Rewind();
 
-			_lastRenderedFrame = (framePicture, path, damageSnapshot);
+			_lastRenderedFrame = (framePicture, path, damageSnapshot, SkiaRenderHelper.CanUseLcdRoot(rootElement, (float)bounds.Width, (float)bounds.Height));
 
 			// The previous frame is being superseded in place (it wasn't borrowed for present, since the
 			// slot was non-null); its snapshot is no longer referenced, so recycle it for the next frame.
@@ -248,7 +249,7 @@ public partial class CompositionTarget
 		canvas.DrawPath(damage, _damageOverlayStroke);
 	}
 
-	private SKPath Draw(SKCanvas? canvas, Func<Size, SKCanvas> resizeFunc)
+	private SKPath Draw(SKCanvas? canvas, Func<Size, SKCanvas>? resizeFunc, SKPixelGeometry requestedGeometry = SKPixelGeometry.Unknown, Func<Size, SKPixelGeometry, SKCanvas>? resizeWithGeometry = null)
 	{
 		this.LogTrace()?.Trace($"CompositionTarget#{GetHashCode()}: {nameof(Draw)}");
 
@@ -259,7 +260,7 @@ public partial class CompositionTarget
 			RunRenderJobs(canvas.Context as GRContext);
 		}
 
-		(FramePicture picture, SKPath nativeElementClipPath, SKPath damage)? lastRenderedFrameNullable;
+		(FramePicture picture, SKPath nativeElementClipPath, SKPath damage, bool canUseLcd)? lastRenderedFrameNullable;
 		lock (_frameGate)
 		{
 			lastRenderedFrameNullable = _lastRenderedFrame;
@@ -291,10 +292,13 @@ public partial class CompositionTarget
 				// the canvas to 0x0 which may crash on some targets
 				return lastRenderedFrame.nativeElementClipPath;
 			}
-			var canvasRecreated = canvas is null || _lastCanvasSize != xamlRootBounds || _lastRasterizationScale != rasterizationScale;
+			var pixelGeometry = lastRenderedFrame.canUseLcd ? requestedGeometry : SKPixelGeometry.Unknown;
+			var canvasRecreated = canvas is null || _lastCanvasSize != xamlRootBounds || _lastRasterizationScale != rasterizationScale || _lastPixelGeometry != pixelGeometry;
 			if (canvasRecreated)
 			{
-				canvas = resizeFunc(new Size(Math.Round(xamlRootBounds.Width * rasterizationScale), Math.Round(xamlRootBounds.Height * rasterizationScale)));
+				var size = new Size(Math.Round(xamlRootBounds.Width * rasterizationScale), Math.Round(xamlRootBounds.Height * rasterizationScale));
+				canvas = resizeWithGeometry is null ? resizeFunc!(size) : resizeWithGeometry(size, pixelGeometry);
+				_lastPixelGeometry = pixelGeometry;
 				_lastCanvasSize = xamlRootBounds;
 				_lastRasterizationScale = rasterizationScale;
 				_lastScaledNativeClipPath = null;
@@ -439,7 +443,7 @@ public partial class CompositionTarget
 		public void Fail() => _tcs.TrySetResult(false);
 	}
 
-	private void ReturnFrame((FramePicture picture, SKPath path, SKPath damage) frame)
+	private void ReturnFrame((FramePicture picture, SKPath path, SKPath damage, bool canUseLcd) frame)
 	{
 		var releasedPicture = default(FramePicture);
 

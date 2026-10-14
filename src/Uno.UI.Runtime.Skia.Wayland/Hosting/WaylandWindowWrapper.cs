@@ -12,6 +12,7 @@ using SkiaSharp;
 using Uno.Disposables;
 using Uno.Foundation.Logging;
 using Uno.UI.Xaml.Controls;
+using Uno.WinUI.Runtime.Skia.Linux;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 using Uno.WinUI.Runtime.Skia.Wayland.Rendering;
 using Windows.ApplicationModel.Core;
@@ -140,6 +141,11 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			// Activation follows the configure activated state rather than keyboard focus.
 			hostConstructionStarted = true;
 			_host = new WaylandXamlRootHost(connection, _id, window, root, _surface, _viewport, static _ => { }, PreparePresentation, OnConfigureFrameOpportunity, SetRenderAttemptActive, DestroyProtocolObjects);
+			lock (display.SyncRoot)
+			{
+				// Scale events may precede host construction; publish their accumulated output state now.
+				UpdateTextPixelGeometry();
+			}
 			NonClientPointerSource = new WaylandNonClientPointerSource(connection, _toplevel, window, _id, _host, () => Scale, Post);
 			connection.AddWindow(this);
 			RasterizationScale = 1;
@@ -547,6 +553,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	private void OnScaleChanged()
 	{
+		UpdateTextPixelGeometry();
 		if (_configured && !_closed)
 		{
 			ApplyGeometry();
@@ -625,6 +632,48 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 				OnScaleChanged();
 			}
 		}
+		UpdateTextPixelGeometry();
+	}
+
+	private void UpdateTextPixelGeometry()
+	{
+		if (_closed || _host is not { } host)
+		{
+			return;
+		}
+		var infos = new List<WaylandOutputInfo>(_enteredOutputs.Count);
+		foreach (var output in _enteredOutputs)
+		{
+			infos.Add(output.Info);
+		}
+		var scale = EffectiveScale;
+		var preference = LinuxTextRenderingExtension.Instance.Settings.GetSurfaceGeometry(scale);
+		host.SetOutputGeometry(GetTextPixelGeometry(infos, preference, scale), scale);
+	}
+
+	internal static SKPixelGeometry GetTextPixelGeometry(IReadOnlyCollection<WaylandOutputInfo> entered, SKPixelGeometry preference, double scale)
+	{
+		if (entered.Count == 0 || preference == SKPixelGeometry.Unknown || !double.IsFinite(scale) || scale < 1 || scale != Math.Truncate(scale))
+		{
+			return SKPixelGeometry.Unknown;
+		}
+		foreach (var output in entered)
+		{
+			var geometry = output.Subpixel switch
+			{
+				2 => SKPixelGeometry.RgbHorizontal,
+				3 => SKPixelGeometry.BgrHorizontal,
+				4 => SKPixelGeometry.RgbVertical,
+				5 => SKPixelGeometry.BgrVertical,
+				_ => SKPixelGeometry.Unknown,
+			};
+			// No LCD if the compositor may rotate/resample, or entered outputs disagree with the preference.
+			if (output.Transform != 0 || output.Scale != scale || geometry != preference)
+			{
+				return SKPixelGeometry.Unknown;
+			}
+		}
+		return preference;
 	}
 
 	private void OnToplevelClose(object? sender, XdgToplevel.CloseEventArgs args)

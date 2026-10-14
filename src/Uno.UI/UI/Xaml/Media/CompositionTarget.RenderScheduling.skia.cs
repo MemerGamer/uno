@@ -164,6 +164,12 @@ public partial class CompositionTarget
 	/// of repeated calls, even if no new invalidations are requested.
 	/// </summary>
 	internal SKPath OnNativePlatformFrameRequested(SKCanvas? canvas, Func<Size, SKCanvas> resizeFunc)
+		=> OnNativePlatformFrameRequestedCore(canvas, resizeFunc, SKPixelGeometry.Unknown, null);
+
+	internal SKPath OnNativePlatformFrameRequested(SKCanvas? canvas, Func<Size, SKPixelGeometry, SKCanvas> resizeFunc, SKPixelGeometry pixelGeometry)
+		=> OnNativePlatformFrameRequestedCore(canvas, null, pixelGeometry, resizeFunc);
+
+	private SKPath OnNativePlatformFrameRequestedCore(SKCanvas? canvas, Func<Size, SKCanvas>? resizeFunc, SKPixelGeometry pixelGeometry, Func<Size, SKPixelGeometry, SKCanvas>? resizeWithGeometry)
 	{
 		this.LogTrace()?.Trace($"CompositionTarget#{GetHashCode()}: {nameof(OnNativePlatformFrameRequested)}");
 
@@ -172,7 +178,7 @@ public partial class CompositionTarget
 			NativeDispatcher.Main.EnqueueRender(this, EnqueueRenderCallback);
 		}
 
-		return Draw(canvas, resizeFunc);
+		return Draw(canvas, resizeFunc, pixelGeometry, resizeWithGeometry);
 	}
 
 	internal void OnRenderFrameOpportunity()
