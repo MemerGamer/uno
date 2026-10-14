@@ -222,11 +222,14 @@ jobs:
 
   runtime:
     needs: [detect, runtime-build]
+    name: Runtime (${{ matrix.host }}, group ${{ matrix.group }})
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
+        host: [wayland, x11]
+        group: ${{ fromJSON(inputs.full_suite && '[0,1,2,3,4,5]' || '[0]') }}
         include:
           - host: wayland
             use_xvfb: 'false'
@@ -279,19 +282,24 @@ jobs:
           dotnet build src/SourceGenerators/Uno.UI.SourceGenerators/Uno.UI.SourceGenerators.csproj -c Debug -p:UnoTargetFrameworkOverride=net10.0
           dotnet build src/Uno.UI.RemoteControl.Host/Uno.UI.RemoteControl.Host.csproj -c Debug -p:UnoTargetFrameworkOverride=net10.0
       - name: Run Uno runtime harness
+        # Leave time for result gating and artifact upload after a hung group.
+        timeout-minutes: 270
         env:
           USE_XVFB: ${{ matrix.use_xvfb }}
           USE_WESTON: ${{ matrix.use_weston }}
           RUNTIME_HOST: ${{ matrix.host }}
           INPUT_FILTER: ${{ inputs.filter || 'Given_Wayland|Given_AppWindow|Given_Window|Given_InputNonClientPointerSource|Given_TextBox|Given_RichEditBox|Given_Clipboard|Given_DragView' }}
           FULL_SUITE: ${{ inputs.full_suite || false }}
+          UITEST_RUNTIME_TEST_GROUP: ${{ matrix.group }}
+          UITEST_RUNTIME_TEST_GROUP_COUNT: ${{ inputs.full_suite && 6 || 1 }}
           UNO_WAYLAND_RENDERER: Software
           LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
           export BUILD_SOURCESDIRECTORY="$PWD"
           export SamplesAppArtifactName=samplesapp-desktop-skia
           export SamplesAppArtifactPath="$PWD/build/$SamplesAppArtifactName"
-          export UNO_TEST_RESULT_LABEL="-$RUNTIME_HOST"
+          export UNO_TEST_RESULT_LABEL="-$RUNTIME_HOST-group-$UITEST_RUNTIME_TEST_GROUP"
+          mkdir -p build/uitests-failure-results
           # The Uno runner consumes base64-encoded | separated substrings.
           if [[ "$FULL_SUITE" == true ]]; then
             export UITEST_RUNTIME_TESTS_FILTER=
@@ -300,21 +308,24 @@ jobs:
           fi
           unset WAYLAND_DISPLAY DISPLAY UNO_EXPECT_HOST
           # Exactly the useXvfb/useWeston pair in Uno's desktop-linux template.
-          bash build/test-scripts/linux-skia-runtime-tests.sh "$USE_XVFB" "$USE_WESTON"
+          bash build/test-scripts/linux-skia-runtime-tests.sh "$USE_XVFB" "$USE_WESTON" 2>&1 \
+            | tee "build/uitests-failure-results/runtime-$RUNTIME_HOST-group-$UITEST_RUNTIME_TEST_GROUP.log"
       - name: Gate runtime results (the Uno script itself only rejects empty XML)
         if: always()
         env:
           RUNTIME_HOST: ${{ matrix.host }}
+          RUNTIME_GROUP: ${{ matrix.group }}
         run: |
           python3 ../ci-tools/build/wayland-ci/compare-results.py \
-            --check "build/skia-linux-$RUNTIME_HOST-runtime-tests-results.xml" >> "$GITHUB_STEP_SUMMARY"
+            --check "build/skia-linux-$RUNTIME_HOST-group-$RUNTIME_GROUP-runtime-tests-results.xml" \
+            --logs-dir build/uitests-failure-results >> "$GITHUB_STEP_SUMMARY"
       - name: Upload runtime XML and harness logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wayland-runtime-${{ matrix.host }}
+          name: wayland-runtime-${{ matrix.host }}-group-${{ matrix.group }}
           path: |
-            source/build/skia-linux-${{ matrix.host }}-runtime-tests-results.xml
+            source/build/skia-linux-${{ matrix.host }}-group-${{ matrix.group }}-runtime-tests-results.xml
             source/build/uitests-failure-results/
           if-no-files-found: error
           retention-days: 14
@@ -340,7 +351,9 @@ jobs:
           pattern: wayland-runtime-*
           path: results
       - name: Compare Wayland with X11, including failed runs
+        if: always()
+        env:
+          RUNTIME_GROUP_COUNT: ${{ inputs.full_suite && 6 || 1 }}
         run: |
           python3 ci-tools/build/wayland-ci/compare-results.py \
-            results/wayland-runtime-wayland/skia-linux-wayland-runtime-tests-results.xml \
-            results/wayland-runtime-x11/skia-linux-x11-runtime-tests-results.xml >> "$GITHUB_STEP_SUMMARY"
+            --results-dir results --group-count "$RUNTIME_GROUP_COUNT" >> "$GITHUB_STEP_SUMMARY"

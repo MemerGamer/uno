@@ -42,9 +42,30 @@ uses `UNO_WAYLAND_RENDERER=Software` and includes the harness's lifecycle smoke.
 Both hosts receive the same base64-encoded filter. The default covers Wayland,
 windowing, text input, clipboard and drag-view classes. Dispatch `filter` accepts
 class / method substrings separated by `|`; `full_suite=true` clears the filter.
-Each host fails on missing / empty results or failed tests. The comparison lists
-Wayland-only failures with their X11 outcome, shared failures and coverage gaps;
-X11 skips / missing cases are not presented as passing baseline evidence.
+Full-suite dispatches run a host × group matrix: six groups per host (0–5), twelve
+runtime jobs total. Filtered dispatches and automatic push / PR runs keep one
+group per host (0 of 1). Both paths pass `UITEST_RUNTIME_TEST_GROUP` and
+`UITEST_RUNTIME_TEST_GROUP_COUNT` to Uno's runner. Groups use the same frozen
+source SHA and SamplesApp artifact, with `fail-fast: false` so one failure does
+not cancel the other groups. Each job has a 300-minute budget; the harness step
+has 270 minutes, leaving time for result gating and artifact upload.
+
+Every group fails on missing / empty results or failed tests and uploads
+`wayland-runtime-HOST-group-N`, containing its group-labelled NUnit XML and
+`uitests-failure-results/` logs. Shell stdout / stderr is captured for both hosts;
+Wayland also retains the app's live log, including when it never reaches the
+harness's final log dump. The summary merges all expected groups per host before
+listing Wayland-only failures with their X11 outcome, shared failures, X11-only
+failures and coverage gaps. Duplicate cases preserve any failure. X11 skips /
+missing cases are not presented as passing baseline evidence.
+
+Missing XML is reported by host and group as crashed / incomplete, with the last
+`Running test` line from that group's logs. Empty or malformed XML is reported
+alongside missing XML. If a group never reaches the harness or its artifact was
+not uploaded, the summary explicitly says no last-test line is available. It
+still compares available results but marks host-only failures and coverage gaps
+as provisional and fails the summary for incomplete groups. A missing XML alone
+does not distinguish an app crash from a timeout or an earlier setup failure.
 
 ## Dispatch
 
@@ -92,6 +113,13 @@ allow the pinned GitHub actions and the release job's `contents: write` token.
 Land these files on the maintained branches as described above; leave `master`
 unchanged. Check the hosted Linux restore / strict-build behavior, TRX reporter,
 SamplesApp output directory, Weston lifecycle smoke, filter coverage and Xvfb
-comparison on the first run. Full-suite runs have a 180-minute runtime budget.
+comparison on the first run. For a full-suite dispatch, verify twelve runtime
+jobs, groups 0–5 of 6 in the app logs on each host, twelve separately named
+artifacts, and merged case counts consistent with the full suite. Grouping is
+Uno's deterministic method partition, so duration may be uneven; check the
+slowest group fits the 270-minute harness / 300-minute job budgets. For a filtered
+run, verify two runtime jobs and unchanged filter coverage with group 0 of 1.
+On any crashed / timed-out group, verify the always-run upload preserves the
+app / harness log and the summary names the group and its last running test.
 After reviewing packages, commit LinuxFiles pins and publish the draft; verify
 an anonymous fetch and clean LinuxFiles restore against those pins.
