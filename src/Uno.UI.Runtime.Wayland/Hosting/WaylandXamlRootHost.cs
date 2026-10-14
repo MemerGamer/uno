@@ -29,7 +29,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 	private readonly WaylandFrameReadiness _readiness = new();
 	private readonly WaylandRenderErrorThrottle _renderErrors = new();
 	private readonly Func<long, Func<bool>, bool> _preparePresentation;
-	private readonly Action<long> _frameConsumed;
+	private readonly Action<long, bool> _frameConsumed;
 	private volatile bool _disposed;
 
 	// Render thread state.
@@ -44,7 +44,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 	private WaylandCursor? _cursor;
 	private WlPointer? _cursorPointer;
 
-	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, Func<bool>, bool> preparePresentation, Action<long> frameConsumed, Action rollbackProtocolObjects)
+	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, Func<bool>, bool> preparePresentation, Action<long, bool> frameConsumed, Action rollbackProtocolObjects)
 	{
 		_connection = connection;
 		_id = id;
@@ -335,6 +335,17 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 		}
 	}
 
+	// Record the configured layout before asking the render thread to draw it. Otherwise a rejected draw
+	// must first request a UI frame, adding a native frame (or the stall interval) to every resize.
+	internal void RecordConfigureFrame()
+	{
+		if (RootElement?.Visual.CompositionTarget is CompositionTarget compositionTarget)
+		{
+			_xamlRoot.VisualTree.RootElement.UpdateLayout();
+			compositionTarget.OnRenderFrameOpportunity(forceRecord: true);
+		}
+	}
+
 	// Called after the configure was staged on the dispatch thread.
 	internal void Configure(int logicalWidth, int logicalHeight, uint preferredScale, int integerScale, long generation)
 	{
@@ -357,11 +368,13 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 	// Render thread, before Uno draws its latest recorded frame.
 	void IWaylandFrameGate.BeginFrame() => _readiness.BeginFrame();
 
-	void IWaylandFrameGate.EndFrame()
+	void IWaylandFrameGate.FrameOpportunity() => _frameConsumed(_readiness.RenderGeneration, false);
+
+	void IWaylandFrameGate.EndFrame(bool presented)
 	{
 		if (_readiness.IsFrameReady)
 		{
-			_frameConsumed(_readiness.RenderGeneration);
+			_frameConsumed(_readiness.RenderGeneration, presented);
 		}
 	}
 

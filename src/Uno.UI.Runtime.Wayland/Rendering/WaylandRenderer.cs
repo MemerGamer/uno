@@ -20,7 +20,10 @@ internal interface IWaylandFrameGate
 	bool CanPresent(int frameWidth, int frameHeight, int bufferWidth, int bufferHeight);
 
 	/// <summary>Called after a frame was committed or consumed by the liveness fallback.</summary>
-	void EndFrame();
+	void EndFrame(bool presented);
+
+	/// <summary>Called at a display callback or liveness opportunity, independently of layout readiness.</summary>
+	void FrameOpportunity();
 }
 
 /// <summary>
@@ -47,7 +50,7 @@ internal sealed class WaylandRenderer : IDisposable, ISwapChain
 		Scale = scale;
 		_context = context;
 		_drawingFactory = drawingFactory;
-		_scheduler = new WaylandFrameScheduler(surface, Render, ProduceUnpresentedFrame, postToOwner);
+		_scheduler = new WaylandFrameScheduler(surface, Render, ProduceUnpresentedFrame, postToOwner, _gate.FrameOpportunity);
 		Attach(context);
 	}
 
@@ -126,7 +129,7 @@ internal sealed class WaylandRenderer : IDisposable, ISwapChain
 		_gate.BeginFrame();
 		if (_host.RootElement?.Visual.CompositionTarget is not CompositionTarget compositionTarget)
 		{
-			_gate.EndFrame();
+			_gate.EndFrame(false);
 			return false;
 		}
 		_commitAllowed = commit;
@@ -136,7 +139,7 @@ internal sealed class WaylandRenderer : IDisposable, ISwapChain
 		var presented = commit && _context.Committed;
 		if (presented || !commit)
 		{
-			_gate.EndFrame();
+			_gate.EndFrame(presented);
 		}
 		return presented;
 	}

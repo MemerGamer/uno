@@ -6,16 +6,22 @@ namespace Uno.UI.Runtime.Wayland;
 
 internal sealed record WaylandWindowConfiguration(
 	long Generation, WaylandDecorationLayout Layout, double Scale, uint PreferredScale, int IntegerScale,
-	WaylandToplevelStates States, string Title, bool NotifyActivation, uint? Serial, long SerialSequence);
+	WaylandToplevelStates States, string Title, bool NotifyActivation, uint? Serial, long SerialSequence, bool Configured = true)
+{
+	internal bool CanPresent => Configured && Serial is not null;
+}
 
-// Keep the applied configure stable until its frame is consumed; later arrivals occupy a single pending slot.
-internal sealed class WaylandConfigureScheduler(Action<Action> postToUI, Action<WaylandWindowConfiguration> apply)
+// Geometry advances at frame opportunities; state notifications have an independent coalesced UI turn.
+internal sealed class WaylandConfigureScheduler(Action<Action> postToUI, Action<WaylandWindowConfiguration> apply, Action<WaylandWindowConfiguration>? applyState = null)
 {
 	private readonly object _gate = new();
 	private WaylandWindowConfiguration? _pending;
 	private WaylandWindowConfiguration? _current;
 	private bool _posted;
 	private bool _inFlight;
+	private bool _statePosted;
+	private WaylandWindowConfiguration? _pendingState;
+	private long? _heldPresentation;
 	private long _acknowledgedSequence;
 
 	internal WaylandWindowConfiguration? Current
@@ -32,8 +38,12 @@ internal sealed class WaylandConfigureScheduler(Action<Action> postToUI, Action<
 	internal void Enqueue(WaylandWindowConfiguration configuration)
 	{
 		bool post;
+		bool postState;
 		lock (_gate)
 		{
+			_pendingState = configuration with { NotifyActivation = configuration.NotifyActivation || _pendingState?.NotifyActivation == true };
+			postState = applyState is not null && !_statePosted;
+			_statePosted |= postState;
 			_pending = configuration with { NotifyActivation = configuration.NotifyActivation || _pending?.NotifyActivation == true };
 			post = Schedule();
 		}
@@ -41,11 +51,27 @@ internal sealed class WaylandConfigureScheduler(Action<Action> postToUI, Action<
 		{
 			postToUI(ApplyPending);
 		}
+		if (postState)
+		{
+			postToUI(ApplyState);
+		}
+	}
+
+	private void ApplyState()
+	{
+		WaylandWindowConfiguration configuration;
+		lock (_gate)
+		{
+			configuration = _pendingState!;
+			_pendingState = null;
+			_statePosted = false;
+		}
+		applyState!(configuration);
 	}
 
 	private bool Schedule()
 	{
-		if (!_posted && !_inFlight && _pending is not null)
+		if (!_posted && !_inFlight && _heldPresentation is null && _pending is not null)
 		{
 			_posted = true;
 			return true;
@@ -59,7 +85,11 @@ internal sealed class WaylandConfigureScheduler(Action<Action> postToUI, Action<
 		lock (_gate)
 		{
 			_posted = false;
-			configuration = _pending!;
+			if (_heldPresentation is not null || _pending is null)
+			{
+				return;
+			}
+			configuration = _pending;
 			_pending = null;
 			_current = configuration;
 			_inFlight = true;
@@ -67,21 +97,46 @@ internal sealed class WaylandConfigureScheduler(Action<Action> postToUI, Action<
 		apply(configuration);
 	}
 
-	internal void Complete(long generation)
+	// A synchronized decoration buffer must be paired with this configure's content, even after a fallback.
+	internal void HoldPresentation(long generation)
+	{
+		lock (_gate)
+		{
+			if (_current?.Generation == generation)
+			{
+				_heldPresentation = generation;
+			}
+		}
+	}
+
+	internal void Complete(long generation, bool presented = true)
 	{
 		bool post;
 		lock (_gate)
 		{
-			if (!_inFlight || _current?.Generation != generation)
+			if (_current?.Generation != generation || (!presented && _heldPresentation == generation))
 			{
 				return;
 			}
+			_heldPresentation = null;
 			_inFlight = false;
 			post = Schedule();
 		}
 		if (post)
 		{
 			postToUI(ApplyPending);
+		}
+	}
+
+	// State-only acks must not overtake the serial of an unpresented resize.
+	internal void AcknowledgeState(WaylandWindowConfiguration configuration, long presentedGeneration, Action<uint> acknowledge)
+	{
+		lock (_gate)
+		{
+			if (_current is null || (_current.Generation <= presentedGeneration && _current.SerialSequence <= _acknowledgedSequence))
+			{
+				Acknowledge(configuration, acknowledge);
+			}
 		}
 	}
 

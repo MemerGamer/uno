@@ -17,7 +17,7 @@ namespace Uno.UI.Runtime.Wayland;
 
 // Client-side title bar and resize border, used when the compositor lacks xdg-decoration or picks client-side
 // mode. A synchronized subsurface below the content surface, so its state is applied with the next content commit.
-// Drawn in software by the window's graphics backend. Dispatch thread only.
+// Drawn on dispatch, or during presentation while managed dispatch is suspended.
 internal sealed class WaylandClientDecorations : IDisposable
 {
 	private const uint LeftButton = 0x110; // BTN_LEFT
@@ -137,6 +137,9 @@ internal sealed class WaylandClientDecorations : IDisposable
 
 	internal bool HasPendingState => _redraw.PendingParentCommit;
 
+	internal WaylandDecorationLayout PendingLayout { get; private set; }
+	internal double PendingScale { get; private set; }
+
 	internal void AdvancePendingState()
 	{
 		if (_redraw.ParentCommitted())
@@ -151,11 +154,16 @@ internal sealed class WaylandClientDecorations : IDisposable
 		{
 			return;
 		}
+		var previousScale = _scale.EffectiveScale;
 		if (preferredScale != 0)
 		{
 			_scale.SetPreferredScale(preferredScale);
 		}
 		_scale.SetIntegerScale(integerScale);
+		if (layout == _layout && title == _title && activated == _activated && maximized == _maximized && previousScale == _scale.EffectiveScale)
+		{
+			return;
+		}
 		var moved = layout.SurfaceX != _layout.SurfaceX || layout.SurfaceY != _layout.SurfaceY;
 		_layout = layout;
 		_title = title;
@@ -193,6 +201,8 @@ internal sealed class WaylandClientDecorations : IDisposable
 		}
 		if (!_layout.IsVisible)
 		{
+			PendingLayout = _layout;
+			PendingScale = _scale.EffectiveScale;
 			_redraw.CompleteRedraw(committed: true);
 			_ = _redraw.ParentCommitted();
 			if (_shown)
@@ -216,6 +226,8 @@ internal sealed class WaylandClientDecorations : IDisposable
 		_redraw.CompleteRedraw(_context.Committed);
 		if (_context.Committed)
 		{
+			PendingLayout = _layout;
+			PendingScale = scale;
 			_shown = true;
 			_owner.RequestParentCommit();
 		}

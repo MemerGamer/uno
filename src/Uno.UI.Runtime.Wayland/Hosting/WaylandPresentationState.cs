@@ -10,6 +10,9 @@ internal sealed class WaylandPresentationState
 	internal WaylandDecorationLayout Layout { get; private set; }
 	internal double Scale { get; private set; }
 
+	internal bool Matches(WaylandDecorationLayout layout, double scale)
+		=> Generation != 0 && Layout == layout && Scale == scale;
+
 	internal bool Submit(long generation, WaylandDecorationLayout layout, double scale, Func<bool> submit)
 	{
 		if (!submit())
