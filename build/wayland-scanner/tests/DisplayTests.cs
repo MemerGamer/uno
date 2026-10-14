@@ -1,5 +1,6 @@
 #nullable enable
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -191,6 +192,10 @@ public sealed partial class DisplayTests
 		private uint _registry;
 		private readonly uint _compositorVersion;
 		private readonly bool _answerSync;
+		private readonly BlockingCollection<uint> _frames = new();
+		private readonly Dictionary<uint, uint> _surfaceFrames = new();
+		private readonly object _sendGate = new();
+		private uint _compositor;
 
 		internal ProtocolPeer(uint compositorVersion = 6, bool answerSync = true)
 		{
@@ -210,6 +215,12 @@ public sealed partial class DisplayTests
 			var fd = _client;
 			_client = -1;
 			return WaylandDisplay.ConnectToFileDescriptor(fd);
+		}
+		internal void CompleteFrame()
+		{
+			Assert.IsTrue(_frames.TryTake(out var callback, TimeSpan.FromSeconds(5)), "No committed frame callback.");
+			Send(callback, 0, BitConverter.GetBytes(42u));
+			Send(1, 1, BitConverter.GetBytes(callback));
 		}
 		private void Serve()
 		{
@@ -241,6 +252,30 @@ public sealed partial class DisplayTests
 						Send(callback, 0, BitConverter.GetBytes(42u));
 						Send(1, 1, BitConverter.GetBytes(callback));
 					}
+					else if (id == _registry && opcode == 0)
+					{
+						_compositor = BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(body.Length - 4));
+					}
+					else if (id == _compositor && opcode == 0)
+					{
+						_surfaceFrames.Add(BinaryPrimitives.ReadUInt32LittleEndian(body), 0);
+					}
+					else if (_surfaceFrames.TryGetValue(id, out var frameCallback))
+					{
+						if (opcode == 0)
+						{
+							_surfaceFrames.Remove(id);
+						}
+						else if (opcode == 3)
+						{
+							_surfaceFrames[id] = BinaryPrimitives.ReadUInt32LittleEndian(body);
+						}
+						else if (opcode == 6 && frameCallback != 0)
+						{
+							_frames.Add(frameCallback);
+							_surfaceFrames[id] = 0;
+						}
+					}
 				}
 			}
 			catch (Exception error) when (error is SocketException or ObjectDisposedException or EndOfStreamException)
@@ -267,7 +302,14 @@ public sealed partial class DisplayTests
 				offset += read;
 			}
 		}
-		private unsafe void Send(uint id, uint opcode, byte[] body)
+		private void Send(uint id, uint opcode, byte[] body)
+		{
+			lock (_sendGate)
+			{
+				SendCore(id, opcode, body);
+			}
+		}
+		private unsafe void SendCore(uint id, uint opcode, byte[] body)
 		{
 			var bytes = new byte[body.Length + 8];
 			BinaryPrimitives.WriteUInt32LittleEndian(bytes, id);

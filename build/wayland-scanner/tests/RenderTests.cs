@@ -174,6 +174,138 @@ public sealed partial class DisplayTests
 	}
 
 	[TestMethod]
+	[DataRow(60, 1)]
+	[DataRow(165, 2)]
+	public void ContinuousConfigureBurstPresentsAtFrameRate(int refreshRate, int scale)
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		using var compositor = (WlCompositor)display.Bind(WlCompositor.ProtocolName, WlCompositor.MaximumVersion);
+		using var surface = compositor.CreateSurface();
+		var owner = new BlockingCollection<Action>();
+		var ui = new Queue<Action>();
+		var configures = new WaylandConfigureQueue();
+		var readiness = new WaylandFrameReadiness();
+		var received = new Dictionary<uint, WaylandDecorationLayout>();
+		var acknowledgements = new List<uint>();
+		WaylandWindowConfigure? bufferConfigure = null;
+		WaylandFrameScheduler scheduler = null!;
+		var canvasWidth = 0;
+		var canvasHeight = 0;
+		var draws = 0;
+		var presentations = 0;
+		var framePending = false;
+		var presentedOlderConfigure = false;
+		uint latestSerial = 0;
+
+		void ApplyPending()
+		{
+			bufferConfigure = configures.TakePending()!;
+			Assert.IsNotNull(bufferConfigure);
+			readiness.ConfigureUI(bufferConfigure.Generation, boundsChanged: true);
+			readiness.ConfigureRender(bufferConfigure.Generation);
+			scheduler.PresentationReady();
+		}
+		void DrainUI()
+		{
+			while (ui.TryDequeue(out var apply))
+			{
+				apply();
+			}
+		}
+		using var frameScheduler = new WaylandFrameScheduler(surface, () =>
+		{
+			draws++;
+			var configure = bufferConfigure!;
+			var width = configure.Layout.ContentWidth * scale;
+			var height = configure.Layout.ContentHeight * scale;
+			readiness.BeginFrame();
+			if (!readiness.CanPresent(canvasWidth, canvasHeight, width, height))
+			{
+				return WaylandRenderResult.ContentRejected;
+			}
+			Assert.AreSame(configure, configures.Current);
+			Assert.AreEqual(width, canvasWidth, "The buffer must match the completed layout.");
+			Assert.AreEqual(height, canvasHeight);
+			configures.AcknowledgeCurrent(serial =>
+			{
+				Assert.IsTrue(received.ContainsKey(serial), "Never acknowledge a serial not yet received.");
+				Assert.IsTrue(acknowledgements.Count == 0 || acknowledgements[^1] < serial);
+				Assert.AreEqual(received[serial], configure.Layout, "The buffer must match the acknowledged geometry, including decorations.");
+				acknowledgements.Add(serial);
+				presentedOlderConfigure |= serial < latestSerial;
+			});
+			surface.Commit();
+			presentations++;
+			framePending = true;
+			if (configures.Complete(configure.Generation))
+			{
+				ui.Enqueue(ApplyPending);
+			}
+			return WaylandRenderResult.Presented;
+		}, () => Assert.Fail("Continuous resize must not need the liveness fallback."), owner.Add);
+		scheduler = frameScheduler;
+		display.StartDispatch();
+
+		void PresentFrame()
+		{
+			var waitingForCallback = framePending;
+			var before = presentations;
+			Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+			canvasWidth = bufferConfigure!.Layout.ContentWidth * scale;
+			canvasHeight = bufferConfigure.Layout.ContentHeight * scale;
+			scheduler.ContentReady();
+			if (waitingForCallback)
+			{
+				Assert.AreEqual(before, presentations, "Recorded content must respect the display's frame callback.");
+				framePending = false;
+				peer.CompleteFrame();
+				var deadline = Stopwatch.StartNew();
+				while (presentations == before && deadline.Elapsed < TimeSpan.FromSeconds(5))
+				{
+					Assert.IsTrue(owner.TryTake(out var callback, TimeSpan.FromSeconds(5)), "Frame callback did not reach the owner.");
+					callback();
+				}
+			}
+			Assert.AreEqual(before + 1, presentations, "Each frame opportunity must present exactly once, even while configures keep arriving.");
+			var after = draws;
+			scheduler.ContentReady();
+			scheduler.BufferAvailable();
+			Assert.AreEqual(after, draws, "Readiness notifications must not draw twice.");
+			DrainUI();
+		}
+
+		// Virtual time: pointer configures every 5 ms, layout completes at the display rate.
+		var nextConfigureMs = 0;
+		for (var frame = 1; frame <= refreshRate; frame++)
+		{
+			while (nextConfigureMs < frame * 1000d / refreshRate)
+			{
+				latestSerial++;
+				var layout = new WaylandDecorationLayout(800 + (int)latestSerial, 600 + (int)latestSerial, 32, 8, WaylandCaptionButtons.Close);
+				received.Add(latestSerial, layout);
+				configures.Receive(latestSerial);
+				if (configures.Enqueue(layout, scale, (uint)(scale * 120), scale, WaylandToplevelStates.Resizing, configured: true))
+				{
+					ui.Enqueue(ApplyPending);
+				}
+				DrainUI();
+				nextConfigureMs += 5;
+			}
+			PresentFrame();
+		}
+		Assert.AreEqual(200, received.Count);
+		Assert.AreEqual(refreshRate, presentations, "Configure traffic must not reduce presentation below the simulated refresh rate.");
+		Assert.IsTrue(presentedOlderConfigure, "A completed layout must present even after a newer configure arrives.");
+		if (acknowledgements[^1] != latestSerial)
+		{
+			PresentFrame();
+		}
+		Assert.AreEqual(latestSerial, acknowledgements[^1], "The final pending size must also be presented.");
+		display.StopDispatch();
+	}
+
+	[TestMethod]
 	[DataRow(true)]
 	[DataRow(false)]
 	public void ContentRejectionResumesOnFallbackTicksWithoutReadinessWakeups(bool contentBecomesReady)

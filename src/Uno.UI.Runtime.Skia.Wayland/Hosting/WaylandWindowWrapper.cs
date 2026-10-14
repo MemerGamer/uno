@@ -83,9 +83,8 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	private uint _preferredScale;
 	private int _integerScale = 1;
 	private bool _configured;
-	private long _configureGeneration;
+	private readonly WaylandConfigureQueue _configures = new();
 	private readonly WaylandPresentationState _presentation = new();
-	private uint? _configureSerial;
 	private long _iconGeneration;
 	// Most recently entered last; the last one is the window's current output.
 	private readonly List<WaylandOutput> _enteredOutputs = new();
@@ -501,12 +500,13 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			_floatingHeight = _geometryHeight;
 		}
 		ApplyGeometry();
-		_configureSerial = args.Serial;
-		if (_presentation.Generation != 0 && _layout == _presentation.Layout && EffectiveScale == _presentation.Scale)
+		_configures.Receive(args.Serial);
+		var acknowledged = _presentation.Generation != 0 && _layout == _presentation.Layout && EffectiveScale == _presentation.Scale
+			&& _configures.CanAcknowledgeLatest(_layout, EffectiveScale);
+		if (acknowledged)
 		{
 			// State-only changes need no new buffer; hidden surfaces may receive no frame callbacks.
-			_xdgSurface.AckConfigure(args.Serial);
-			_configureSerial = null;
+			_configures.AcknowledgeLatest(_xdgSurface.AckConfigure);
 		}
 		_configured = true;
 		var activated = (_states & WaylandToplevelStates.Activated) != 0;
@@ -520,7 +520,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 		if (WaylandDiagnostics.IsEnabled)
 		{
-			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: configure serial={args.Serial} suggested={_pendingWidth}x{_pendingHeight} geometry={_geometryWidth}x{_geometryHeight} content={_layout.ContentWidth}x{_layout.ContentHeight} states={_states} decorations={(_serverSideDecorations ? "server" : "client")} -> {(_configureSerial is null ? "acknowledged" : "pending presentation")}"));
+			WaylandDiagnostics.Trace(FormattableString.Invariant($"window{_id}: configure serial={args.Serial} suggested={_pendingWidth}x{_pendingHeight} geometry={_geometryWidth}x{_geometryHeight} content={_layout.ContentWidth}x{_layout.ContentHeight} states={_states} decorations={(_serverSideDecorations ? "server" : "client")} -> {(acknowledged ? "acknowledged" : "pending presentation")}"));
 		}
 		Publish(notifyActivation: true);
 	}
@@ -730,30 +730,40 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	// Acknowledges the configure and applies its geometry and decorations with that commit.
 	private bool PreparePresentation(long generation, Func<bool> submit)
 	{
+		WaylandWindowConfigure configure;
 		lock (_connection.Display.SyncRoot)
 		{
-			if (!PreparePresentationCore(generation))
+			if (_closed || _configures.Current is not { } current || current.Generation != generation
+				|| !PreparePresentationCore(current))
 			{
 				return false;
 			}
+			configure = current;
 		}
-		return _presentation.Submit(generation, _layout, EffectiveScale, () =>
+		var committed = _presentation.Submit(generation, configure.Layout, configure.Scale, () =>
 		{
-			var committed = submit();
-			if (committed)
+			var submitted = submit();
+			if (submitted)
 			{
 				_clientDecorations?.AdvancePendingState();
 			}
-			return committed;
+			return submitted;
 		});
+		if (committed)
+		{
+			lock (_connection.Display.SyncRoot)
+			{
+				if (_configures.Complete(generation))
+				{
+					_connection.PostToUI(ApplyPendingConfigure);
+				}
+			}
+		}
+		return committed;
 	}
 
-	private bool PreparePresentationCore(long generation)
+	private bool PreparePresentationCore(WaylandWindowConfigure configure)
 	{
-		if (_closed || generation != _configureGeneration)
-		{
-			return false;
-		}
 		if (_clientDecorations is { } decorations)
 		{
 			if (!decorations.IsReady)
@@ -767,16 +777,13 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 				return false;
 			}
 		}
-		if (_presentation.Generation == generation)
+		if (_presentation.Generation == configure.Generation)
 		{
 			return true;
 		}
-		if (_configureSerial is { } serial)
-		{
-			_xdgSurface.AckConfigure(serial);
-			_configureSerial = null;
-		}
-		_xdgSurface.SetWindowGeometry(0, _layout.GeometryY, _layout.ContentWidth, _layout.GeometryHeight);
+		_configures.AcknowledgeCurrent(_xdgSurface.AckConfigure);
+		var layout = configure.Layout;
+		_xdgSurface.SetWindowGeometry(0, layout.GeometryY, layout.ContentWidth, layout.GeometryHeight);
 		return true;
 	}
 
@@ -803,34 +810,56 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	private void Publish(bool notifyActivation = false)
 	{
-		var generation = ++_configureGeneration;
-		if (_clientDecorations is { } decorations)
+		if (_configures.Enqueue(_layout, EffectiveScale, _preferredScale, _integerScale, _states, _configured, notifyActivation))
 		{
-			decorations.Update(_layout, _dispatchTitle, (_states & WaylandToplevelStates.Activated) != 0, (_states & WaylandToplevelStates.Maximized) != 0, _preferredScale, _integerScale);
+			_connection.PostToUI(ApplyPendingConfigure);
 		}
-		var width = _layout.ContentWidth;
-		var height = _layout.ContentHeight;
-		var titleBarHeight = _layout.TitleBarHeight;
-		var states = _states;
-		var scale = EffectiveScale;
-		_connection.PostToUI(() =>
+	}
+
+	// UI thread. An applied configure owns the layout and buffer size until its first successful submission.
+	private void ApplyPendingConfigure()
+	{
+		WaylandWindowConfigure configure;
+		lock (_connection.Display.SyncRoot)
 		{
-			ApplyConfigure(width, height, titleBarHeight, scale, states, generation);
-			if (notifyActivation && !_closed)
+			if (_closed || _configures.TakePending() is not { } pending)
 			{
-				// Even an unchanged size must be applied before activation observers inspect the window.
-				var initialActivation = !_hasAppliedConfigure && _activationRequested;
-				_hasAppliedConfigure = true;
-				ActivationState = (states & WaylandToplevelStates.Activated) != 0
-					? CoreWindowActivationState.PointerActivated
-					: initialActivation ? CoreWindowActivationState.CodeActivated : CoreWindowActivationState.Deactivated;
+				return;
+			}
+			configure = pending;
+		}
+		var layout = configure.Layout;
+		var states = configure.States;
+		ApplyConfigure(layout.ContentWidth, layout.ContentHeight, layout.TitleBarHeight, configure.Scale, states, configure.Generation);
+		if (configure.NotifyActivation && !_closed)
+		{
+			// Even an unchanged size must be applied before activation observers inspect the window.
+			var initialActivation = !_hasAppliedConfigure && _activationRequested;
+			_hasAppliedConfigure = true;
+			ActivationState = (states & WaylandToplevelStates.Activated) != 0
+				? CoreWindowActivationState.PointerActivated
+				: initialActivation ? CoreWindowActivationState.CodeActivated : CoreWindowActivationState.Deactivated;
+		}
+		Post(() =>
+		{
+			_clientDecorations?.Update(layout, _dispatchTitle, (states & WaylandToplevelStates.Activated) != 0,
+				(states & WaylandToplevelStates.Maximized) != 0, configure.PreferredScale, configure.IntegerScale);
+			// Pre-activation resizes update managed bounds, but buffers wait for the first configure.
+			if (configure.Configured)
+			{
+				_host.Configure(layout.ContentWidth, layout.ContentHeight, configure.PreferredScale, configure.IntegerScale, configure.Generation);
+				if (_presentation.Generation == 0 || layout != _presentation.Layout || configure.Scale != _presentation.Scale)
+				{
+					return;
+				}
+				// Already presented geometry needs no frame callback, including on hidden surfaces.
+				_configures.AcknowledgeCurrent(_xdgSurface.AckConfigure);
+			}
+			if (_configures.Complete(configure.Generation))
+			{
+				_connection.PostToUI(ApplyPendingConfigure);
 			}
 		});
-		// Pre-activation resizes update managed bounds, but buffers must wait for the first configure.
-		if (_configured)
-		{
-			_host.Configure(width, height, _preferredScale, _integerScale, generation);
-		}
 	}
 
 	// UI thread.
