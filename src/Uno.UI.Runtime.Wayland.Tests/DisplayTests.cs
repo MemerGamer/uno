@@ -1,6 +1,7 @@
 #nullable enable
 
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -207,6 +208,10 @@ public sealed partial class DisplayTests
 		private readonly object _sendGate = new();
 		private readonly ManualResetEventSlim _sourceCreated = new();
 		private uint _manager, _source;
+		private uint _compositor;
+		private readonly HashSet<uint> _surfaces = new();
+		private readonly Dictionary<uint, uint> _pendingFrames = new();
+		private readonly BlockingCollection<uint> _frameCallbacks = new();
 
 		internal ProtocolPeer(uint compositorVersion = 6, bool answerSync = true, bool dataDeviceManager = false)
 		{
@@ -232,6 +237,13 @@ public sealed partial class DisplayTests
 		{
 			Assert.IsTrue(_sourceCreated.Wait(TimeSpan.FromSeconds(5)), "Data source was not created.");
 			Send(_source, 2, []); // wl_data_source.cancelled
+		}
+
+		internal void CompleteFrame(uint timestamp)
+		{
+			Assert.IsTrue(_frameCallbacks.TryTake(out var callback, TimeSpan.FromSeconds(5)), "No frame callback was committed.");
+			Send(callback, 0, BitConverter.GetBytes(timestamp));
+			Send(1, 1, BitConverter.GetBytes(callback));
 		}
 
 		private void AdvertiseGlobal(uint id, string interfaceName, uint version)
@@ -266,6 +278,22 @@ public sealed partial class DisplayTests
 						{
 							AdvertiseGlobal(8, WlDataDeviceManager.ProtocolName, 3);
 						}
+					}
+					else if (id == _registry && opcode == 0 && BinaryPrimitives.ReadUInt32LittleEndian(body) == 7)
+					{
+						_compositor = BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(body.Length - 4));
+					}
+					else if (id == _compositor && opcode == 0)
+					{
+						_surfaces.Add(BinaryPrimitives.ReadUInt32LittleEndian(body));
+					}
+					else if (_surfaces.Contains(id) && opcode == 3)
+					{
+						_pendingFrames[id] = BinaryPrimitives.ReadUInt32LittleEndian(body);
+					}
+					else if (_surfaces.Contains(id) && opcode == 6 && _pendingFrames.Remove(id, out var frame))
+					{
+						_frameCallbacks.Add(frame);
 					}
 					else if (_dataDeviceManager && id == _registry && opcode == 0 && BinaryPrimitives.ReadUInt32LittleEndian(body) == 8)
 					{
@@ -348,6 +376,7 @@ public sealed partial class DisplayTests
 			_server.Dispose();
 			Assert.IsTrue(_thread.Join(TimeSpan.FromSeconds(5)), "Protocol peer did not stop.");
 			_sourceCreated.Dispose();
+			_frameCallbacks.Dispose();
 			if (_client >= 0)
 			{
 				new SafeSocketHandle(_client, ownsHandle: true).Dispose();

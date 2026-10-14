@@ -1,6 +1,5 @@
 #nullable enable
 
-using System;
 using System.Threading;
 
 namespace Uno.UI.Runtime.Wayland;
@@ -9,7 +8,7 @@ namespace Uno.UI.Runtime.Wayland;
 // and the UI thread must have recorded a frame laid out at the configured bounds.
 internal sealed class WaylandFrameReadiness
 {
-	// Bounds the waits, so content Uno never produces at the expected size cannot freeze the window.
+	// Bounds the layout wait; the render target still has to match the configured buffer size.
 	internal const int MaxStaleFrames = 8;
 
 	private long _uiGeneration;
@@ -20,7 +19,6 @@ internal sealed class WaylandFrameReadiness
 	private int _layoutFrames;
 
 	// Render thread state.
-	private int _staleFrames;
 	private long _frameUIGeneration;
 
 	internal long RenderGeneration { get; private set; }
@@ -52,30 +50,15 @@ internal sealed class WaylandFrameReadiness
 	}
 
 	// Render thread.
-	internal void ConfigureRender(long generation)
-	{
-		RenderGeneration = generation;
-		_staleFrames = 0;
-	}
+	internal void ConfigureRender(long generation) => RenderGeneration = generation;
 
 	// Render thread, before drawing Uno's latest picture. A picture taken before the UI became ready
 	// can still have the old layout, even if the UI becomes ready while it is drawn.
 	internal void BeginFrame() => _frameUIGeneration = Interlocked.Read(ref _uiGeneration);
 
+	internal bool IsFrameReady => RenderGeneration == _frameUIGeneration;
+
 	// Render thread, after BeginFrame. A generation mismatch has no safety valve: presenting it would acknowledge the wrong configure.
 	internal bool CanPresent(int canvasWidth, int canvasHeight, int bufferWidth, int bufferHeight)
-	{
-		if (RenderGeneration != _frameUIGeneration)
-		{
-			return false;
-		}
-		// One pixel of tolerance: Uno rounds the canvas size half to even, buffers round half up.
-		if ((Math.Abs(canvasWidth - bufferWidth) > 1 || Math.Abs(canvasHeight - bufferHeight) > 1)
-			&& ++_staleFrames <= MaxStaleFrames)
-		{
-			return false;
-		}
-		_staleFrames = 0;
-		return true;
-	}
+		=> IsFrameReady && canvasWidth == bufferWidth && canvasHeight == bufferHeight;
 }

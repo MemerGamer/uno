@@ -83,7 +83,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	private bool _configured;
 	private long _configureGeneration;
 	private readonly WaylandPresentationState _presentation = new();
+	private readonly WaylandConfigureScheduler _configures;
 	private uint? _configureSerial;
+	private long _configureSerialSequence;
 	private long _iconGeneration;
 	// Most recently entered last; the last one is the window's current output.
 	private readonly List<WaylandOutput> _enteredOutputs = new();
@@ -93,6 +95,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		: base(window, root)
 	{
 		_connection = connection;
+		_configures = new(connection.PostToUI, ApplyPendingConfigure);
 		_id = Interlocked.Increment(ref _nextId);
 		OwnerWindow = window;
 		ActivationState = CoreWindowActivationState.Deactivated;
@@ -137,7 +140,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			}
 			// Activation follows the configure activated state rather than keyboard focus.
 			hostConstructionStarted = true;
-			_host = new WaylandXamlRootHost(connection, _id, window, root, _surface, _viewport, static _ => { }, PreparePresentation, DestroyProtocolObjects);
+			_host = new WaylandXamlRootHost(connection, _id, window, root, _surface, _viewport, static _ => { }, PreparePresentation, _configures.Complete, DestroyProtocolObjects);
 			NonClientPointerSource = new WaylandNonClientPointerSource(connection, _toplevel, window, _id, _host, () => Scale, Post);
 			connection.AddWindow(this);
 			RasterizationScale = 1;
@@ -508,12 +511,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		}
 		ApplyGeometry();
 		_configureSerial = args.Serial;
-		if (_presentation.Generation != 0 && _layout == _presentation.Layout && EffectiveScale == _presentation.Scale)
-		{
-			// State-only changes need no new buffer; hidden surfaces may receive no frame callbacks.
-			_xdgSurface.AckConfigure(args.Serial);
-			_configureSerial = null;
-		}
+		_configureSerialSequence++;
 		_configured = true;
 		var activated = (_states & WaylandToplevelStates.Activated) != 0;
 		if (activated)
@@ -744,14 +742,16 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	// Acknowledges the configure and applies its geometry and decorations with that commit.
 	private bool PreparePresentation(long generation, Func<bool> submit)
 	{
+		WaylandWindowConfiguration configuration;
 		lock (_connection.Display.SyncRoot)
 		{
-			if (!PreparePresentationCore(generation))
+			if (_configures.Current is not { } current || !PreparePresentationCore(generation, current))
 			{
 				return false;
 			}
+			configuration = current;
 		}
-		return _presentation.Submit(generation, _layout, EffectiveScale, () =>
+		return _presentation.Submit(generation, configuration.Layout, configuration.Scale, () =>
 		{
 			var committed = submit();
 			if (committed)
@@ -762,9 +762,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		});
 	}
 
-	private bool PreparePresentationCore(long generation)
+	private bool PreparePresentationCore(long generation, WaylandWindowConfiguration configuration)
 	{
-		if (_closed || generation != _configureGeneration)
+		if (_closed || generation != configuration.Generation)
 		{
 			return false;
 		}
@@ -785,12 +785,9 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		{
 			return true;
 		}
-		if (_configureSerial is { } serial)
-		{
-			_xdgSurface.AckConfigure(serial);
-			_configureSerial = null;
-		}
-		_xdgSurface.SetWindowGeometry(0, _layout.GeometryY, _layout.ContentWidth, _layout.GeometryHeight);
+		_configures.Acknowledge(configuration, _xdgSurface.AckConfigure);
+		var layout = configuration.Layout;
+		_xdgSurface.SetWindowGeometry(0, layout.GeometryY, layout.ContentWidth, layout.GeometryHeight);
 		return true;
 	}
 
@@ -817,38 +814,56 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 
 	private void Publish(bool notifyActivation = false)
 	{
-		var generation = ++_configureGeneration;
-		if (_clientDecorations is { } decorations)
+		_configures.Enqueue(new(++_configureGeneration, _layout, EffectiveScale, _preferredScale, _integerScale,
+			_states, _dispatchTitle, notifyActivation, _configureSerial, _configureSerialSequence));
+	}
+
+	// UI thread. A received configure cannot replace this snapshot while its layout is in flight.
+	private void ApplyPendingConfigure(WaylandWindowConfiguration configuration) => Post(() =>
+	{
+		var layout = configuration.Layout;
+		var states = configuration.States;
+		_clientDecorations?.Update(layout, configuration.Title, (states & WaylandToplevelStates.Activated) != 0,
+			(states & WaylandToplevelStates.Maximized) != 0, configuration.PreferredScale, configuration.IntegerScale);
+		if (_presentation.Generation != 0 && layout == _presentation.Layout && configuration.Scale == _presentation.Scale)
 		{
-			decorations.Update(_layout, _dispatchTitle, (_states & WaylandToplevelStates.Activated) != 0, (_states & WaylandToplevelStates.Maximized) != 0, _preferredScale, _integerScale);
+			// State-only changes also need an acknowledgement while frame callbacks are withheld.
+			_configures.Acknowledge(configuration, _xdgSurface.AckConfigure);
 		}
-		var width = _layout.ContentWidth;
-		var height = _layout.ContentHeight;
-		var titleBarHeight = _layout.TitleBarHeight;
-		var states = _states;
-		var scale = EffectiveScale;
-		_connection.PostToUI(() =>
+		_connection.PostToUI(() => ApplyConfigurationUI(configuration));
+	});
+
+	private void ApplyConfigurationUI(WaylandWindowConfiguration configuration)
+	{
+		if (_closed)
 		{
-			ApplyConfigure(width, height, titleBarHeight, scale, states, generation);
-			if (notifyActivation && !_closed)
+			return;
+		}
+		var layout = configuration.Layout;
+		var states = configuration.States;
+		ApplyConfigure(layout.ContentWidth, layout.ContentHeight, layout.TitleBarHeight, configuration.Scale, states, configuration.Generation);
+		if (configuration.NotifyActivation && !_closed)
+		{
+			// Even an unchanged size must be applied before activation observers inspect the window.
+			var initialActivation = !_hasAppliedConfigure && _activationRequested;
+			_hasAppliedConfigure = true;
+			foreach (var state in WaylandToplevelStateParser.GetActivationSequence(states, initialActivation))
 			{
-				// Even an unchanged size must be applied before activation observers inspect the window.
-				var initialActivation = !_hasAppliedConfigure && _activationRequested;
-				_hasAppliedConfigure = true;
-				foreach (var state in WaylandToplevelStateParser.GetActivationSequence(states, initialActivation))
+				if (_closed)
 				{
-					if (_closed)
-					{
-						break;
-					}
-					ActivationState = state;
+					break;
 				}
+				ActivationState = state;
 			}
-		});
+		}
 		// Pre-activation resizes update managed bounds, but buffers must wait for the first configure.
-		if (_configured)
+		if (_configured && !_closed)
 		{
-			_host.Configure(width, height, _preferredScale, _integerScale, generation);
+			_host.Configure(layout.ContentWidth, layout.ContentHeight, configuration.PreferredScale, configuration.IntegerScale, configuration.Generation);
+		}
+		else
+		{
+			_configures.Complete(configuration.Generation);
 		}
 	}
 

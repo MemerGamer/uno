@@ -18,13 +18,16 @@ internal interface IWaylandFrameGate
 
 	/// <summary>Called right before the commit, with the drawn frame's size and the configured buffer size.</summary>
 	bool CanPresent(int frameWidth, int frameHeight, int bufferWidth, int bufferHeight);
+
+	/// <summary>Called after a frame was committed or consumed by the liveness fallback.</summary>
+	void EndFrame();
 }
 
 /// <summary>
 /// Drives one window's frames over its negotiated graphics context, paced by wl_surface frame callbacks.
 /// All members run on the window's render thread.
 /// </summary>
-internal sealed class WaylandRenderer : IDisposable
+internal sealed class WaylandRenderer : IDisposable, ISwapChain
 {
 	private readonly IXamlRootHost _host;
 	private readonly IWaylandFrameGate _gate;
@@ -116,19 +119,38 @@ internal sealed class WaylandRenderer : IDisposable
 
 	private bool Draw(bool commit)
 	{
-		if (_disposed
-			|| _context is WaylandEglGraphicsContext { IsLost: true }
-			|| _host.RootElement?.Visual.CompositionTarget is not CompositionTarget compositionTarget)
+		if (_disposed || _context is WaylandEglGraphicsContext { IsLost: true })
 		{
 			return false;
 		}
-		_commitAllowed = commit;
 		_gate.BeginFrame();
+		if (_host.RootElement?.Visual.CompositionTarget is not CompositionTarget compositionTarget)
+		{
+			_gate.EndFrame();
+			return false;
+		}
+		_commitAllowed = commit;
 		// Each window owns its context, so its backend factory is bound to this window's CompositionTarget.
 		compositionTarget.Renderer = _drawingFactory;
-		compositionTarget.OnNativePlatformFrameRequested(_context);
-		return commit && _context.Committed;
+		compositionTarget.OnNativePlatformFrameRequested(this);
+		var presented = commit && _context.Committed;
+		if (presented || !commit)
+		{
+			_gate.EndFrame();
+		}
+		return presented;
 	}
+
+	GraphicsContextKind IGraphicsContext.Kind => _context.Kind;
+	bool ISwapChain.PreservesContents => _context.PreservesContents;
+
+	// Even the bounded layout fallback must draw into a buffer matching the configure being acknowledged.
+	IRenderTarget ISwapChain.AcquireRenderTarget(int width, int height)
+		=> _configured
+			? _context.AcquireRenderTarget(WaylandRenderScale.ToBufferPixels(_width, Scale.EffectiveScale), WaylandRenderScale.ToBufferPixels(_height, Scale.EffectiveScale))
+			: _context.AcquireRenderTarget(width, height);
+
+	void ISwapChain.Present() => _context.Present();
 
 	private void Attach(IWaylandGraphicsContext context)
 	{

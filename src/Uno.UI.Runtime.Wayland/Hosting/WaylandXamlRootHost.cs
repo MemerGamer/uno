@@ -29,6 +29,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 	private readonly WaylandFrameReadiness _readiness = new();
 	private readonly WaylandRenderErrorThrottle _renderErrors = new();
 	private readonly Func<long, Func<bool>, bool> _preparePresentation;
+	private readonly Action<long> _frameConsumed;
 	private volatile bool _disposed;
 
 	// Render thread state.
@@ -43,7 +44,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 	private WaylandCursor? _cursor;
 	private WlPointer? _cursorPointer;
 
-	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, Func<bool>, bool> preparePresentation, Action rollbackProtocolObjects)
+	internal WaylandXamlRootHost(WaylandConnection connection, int id, Window window, XamlRoot xamlRoot, WlSurface surface, WpViewport? viewport, Action<bool> keyboardFocusChanged, Func<long, Func<bool>, bool> preparePresentation, Action<long> frameConsumed, Action rollbackProtocolObjects)
 	{
 		_connection = connection;
 		_id = id;
@@ -51,6 +52,7 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 		_xamlRoot = xamlRoot;
 		_surface = surface;
 		_preparePresentation = preparePresentation;
+		_frameConsumed = frameConsumed;
 		try
 		{
 			_renderThread = new WaylandRenderThread($"Uno Wayland render {id}", OnRenderError);
@@ -354,6 +356,14 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 
 	// Render thread, before Uno draws its latest recorded frame.
 	void IWaylandFrameGate.BeginFrame() => _readiness.BeginFrame();
+
+	void IWaylandFrameGate.EndFrame()
+	{
+		if (_readiness.IsFrameReady)
+		{
+			_frameConsumed(_readiness.RenderGeneration);
+		}
+	}
 
 	// Render thread. Keeps the previous buffer while the frame still has the size of an older configure or scale,
 	// so a frame drawn for stale geometry never acknowledges the new configure.

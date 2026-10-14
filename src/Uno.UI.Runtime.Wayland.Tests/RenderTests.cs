@@ -3,6 +3,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Microsoft.UI.Xaml;
+using Uno.UI.Composition.Drawing;
+using Uno.UI.Hosting;
 using Uno.UI.Runtime.Wayland;
 using Uno.UI.Runtime.Wayland.Protocols;
 using Uno.UI.Runtime.Wayland.Rendering;
@@ -65,6 +68,161 @@ public sealed partial class DisplayTests
 		scheduler.Invalidate();
 		Assert.IsFalse(owner.TryTake(out _, WaylandFrameScheduler.StallInterval * 3));
 		Assert.AreEqual(0, stalls);
+	}
+
+	[TestMethod]
+	[DataRow(60)]
+	[DataRow(165)]
+	public void ConfigureFloodPresentsAtDisplayRate(int refreshRate)
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		using var compositor = (WlCompositor)display.Bind(WlCompositor.ProtocolName, WlCompositor.MaximumVersion);
+		using var surface = compositor.CreateSurface();
+		using var owner = new BlockingCollection<Action>();
+		var ui = new Queue<Action>();
+		var readiness = new WaylandFrameReadiness();
+		var acknowledgements = new List<uint>();
+		var presentations = new List<WaylandWindowConfiguration>();
+		var draws = 0;
+		long received = 0;
+		WaylandFrameScheduler? frames = null;
+		WaylandWindowConfiguration? applied = null;
+		var configures = new WaylandConfigureScheduler(ui.Enqueue, configuration =>
+		{
+			applied = configuration;
+			readiness.ConfigureUI(configuration.Generation, boundsChanged: true);
+			readiness.ConfigureRender(configuration.Generation);
+			frames!.Invalidate();
+		});
+		using var scheduler = frames = new WaylandFrameScheduler(surface, () =>
+		{
+			draws++;
+			readiness.BeginFrame();
+			var configuration = configures.Current!;
+			var layout = configuration.Layout;
+			var width = WaylandRenderScale.ToBufferPixels(layout.ContentWidth, configuration.Scale);
+			var height = WaylandRenderScale.ToBufferPixels(layout.ContentHeight, configuration.Scale);
+			if (!readiness.CanPresent(width, height, width, height))
+			{
+				return false;
+			}
+			Assert.AreEqual(applied, configuration, "The buffer must reflect the UI's applied configure.");
+			Assert.IsTrue(configuration.SerialSequence <= received, "Only received serials may be acknowledged.");
+			Assert.IsFalse(readiness.CanPresent(width - 2, height, width, height), "A stale-size buffer must never commit.");
+			configures.Acknowledge(configuration, acknowledgements.Add);
+			surface.Commit();
+			presentations.Add(configuration);
+			configures.Complete(configuration.Generation);
+			return true;
+		}, () => { }, owner.Add);
+		display.StartDispatch();
+
+		void Receive(long generation)
+		{
+			received = generation;
+			configures.Enqueue(new(generation, new(800 + (int)generation, 600 + (int)generation, 32, 8, WaylandCaptionButtons.Close),
+				1.25, 150, 1, WaylandToplevelStates.Resizing, "test", true, (uint)generation, generation));
+		}
+		void ApplyPending()
+		{
+			Assert.IsTrue(ui.Count <= 1, "Configure arrivals must coalesce into one dispatcher turn.");
+			if (ui.TryDequeue(out var apply))
+			{
+				apply();
+			}
+		}
+		void RecordAndPresent(int tick)
+		{
+			Assert.IsTrue(readiness.OnFrameRecorded(arrangedAtBounds: true));
+			var before = presentations.Count;
+			var drawsBefore = draws;
+			scheduler.Invalidate();
+			if (before != 0)
+			{
+				Assert.AreEqual(before, presentations.Count, "A pending callback must prevent a second draw.");
+				Assert.AreEqual(drawsBefore, draws, "Invalidation must not draw while a callback is pending.");
+				peer.CompleteFrame((uint)(tick / 33));
+				var deadline = Stopwatch.StartNew();
+				while (presentations.Count == before && deadline.Elapsed < TimeSpan.FromSeconds(5))
+				{
+					Assert.IsTrue(owner.TryTake(out var action, TimeSpan.FromSeconds(5)));
+					action();
+				}
+			}
+			Assert.AreEqual(before + 1, presentations.Count);
+			Assert.AreEqual(drawsBefore + 1, draws, "Each display opportunity must draw exactly once.");
+		}
+
+		// Virtual time: 33,000 ticks/s represents both 200 configures/s and 60/165 display callbacks/s exactly.
+		Receive(1);
+		ApplyPending();
+		RecordAndPresent(0);
+		for (var tick = 1; tick <= 33000; tick++)
+		{
+			if (tick < 33000 && tick % 165 == 0)
+			{
+				Receive(1 + tick / 165);
+			}
+			ApplyPending();
+			if (tick % (33000 / refreshRate) == 0)
+			{
+				RecordAndPresent(tick);
+			}
+		}
+		Assert.AreEqual(refreshRate + 1, presentations.Count, "Resizing must keep presenting before the configure stream stops.");
+		Assert.IsTrue(acknowledgements.Zip(acknowledgements.Skip(1), (previous, next) => next > previous).All(ordered => ordered));
+		Assert.IsTrue(acknowledgements.All(serial => serial <= 200), "Only received serials may be acknowledged.");
+		ApplyPending();
+		RecordAndPresent(33000 + 33000 / refreshRate);
+		Assert.AreEqual(200u, acknowledgements[^1], "The last pending geometry must eventually be presented.");
+		Assert.AreEqual(0, ui.Count);
+		display.StopDispatch();
+	}
+
+	[TestMethod]
+	public void RenderTargetUsesAppliedConfigureSizeEvenWhenCanvasSizeIsStale()
+	{
+		using var peer = new ProtocolPeer();
+		using var display = peer.Connect();
+		using var compositor = (WlCompositor)display.Bind(WlCompositor.ProtocolName, WlCompositor.MaximumVersion);
+		using var surface = compositor.CreateSurface();
+		var scale = new WaylandRenderScale(surface, null);
+		scale.SetIntegerScale(2);
+		using var renderer = new WaylandRenderer(new EmptyHost(), new EmptyFrameGate(), scale, new SizeContext(), null!, surface, _ => { });
+		renderer.Configure(801, 601);
+		using var target = ((ISwapChain)renderer).AcquireRenderTarget(800, 600);
+		Assert.AreEqual((1602, 1202), (target.Width, target.Height));
+	}
+
+	private sealed class EmptyHost : IXamlRootHost
+	{
+		public UIElement? RootElement => null;
+		public void InvalidateRender() { }
+	}
+
+	private sealed class EmptyFrameGate : IWaylandFrameGate
+	{
+		public void BeginFrame() { }
+		public bool CanPresent(int frameWidth, int frameHeight, int bufferWidth, int bufferHeight) => true;
+		public void EndFrame() { }
+	}
+
+	private sealed class SizeContext : IWaylandGraphicsContext
+	{
+		public GraphicsContextKind Kind => GraphicsContextKind.Software;
+		public bool Committed => false;
+		public IRenderTarget AcquireRenderTarget(int width, int height) => new SizeTarget(width, height);
+		public void Present() { }
+		public void Dispose() { }
+	}
+
+	private sealed class SizeTarget(int width, int height) : IRenderTarget
+	{
+		public int Width => width;
+		public int Height => height;
+		public GraphicsColorFormat ColorFormat => GraphicsColorFormat.Bgra8888;
+		public void Dispose() { }
 	}
 
 	[TestMethod]
