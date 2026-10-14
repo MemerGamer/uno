@@ -4,6 +4,7 @@ using System;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Input;
 using Uno.Foundation.Logging;
 using Uno.UI.Composition;
 using Uno.UI.Composition.Drawing;
@@ -96,6 +97,9 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 
 			// Input sources must exist before registration: Uno resolves them per IXamlRootHost.
 			XamlRootMap.Register(xamlRoot, this);
+			FocusManager.GotFocus += OnManagedGotFocus;
+			FocusManager.LostFocus += OnManagedLostFocus;
+			_window.Activated += OnWindowActivated;
 		}
 		catch
 		{
@@ -121,6 +125,34 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 			throw;
 		}
 	}
+
+	private void OnManagedGotFocus(object? sender, FocusManagerGotFocusEventArgs args)
+	{
+		if (Uno.UI.Xaml.Core.VisualTree.GetContentRootForElement(args.NewFocusedElement)?.XamlRoot == _xamlRoot
+			&& ReferenceEquals(FocusManager.GetFocusedElement(_xamlRoot), args.NewFocusedElement))
+		{
+			_connection.KeyboardInjectionPolicy.Focused(_xamlRoot.VisualTree.ContentRoot.InputManager);
+		}
+	}
+
+	private void OnManagedLostFocus(object? sender, FocusManagerLostFocusEventArgs args)
+	{
+		if (Uno.UI.Xaml.Core.VisualTree.GetContentRootForElement(args.OldFocusedElement)?.XamlRoot == _xamlRoot
+			&& FocusManager.GetFocusedElement(_xamlRoot) is null)
+		{
+			_connection.KeyboardInjectionPolicy.Unfocused(_xamlRoot.VisualTree.ContentRoot.InputManager);
+		}
+	}
+
+	private void OnWindowActivated(object sender, Microsoft.UI.Xaml.WindowActivatedEventArgs args)
+	{
+		if (args.WindowActivationState != WindowActivationState.Deactivated)
+		{
+			RecordActivation();
+		}
+	}
+
+	internal void RecordActivation() => _connection.KeyboardInjectionPolicy.Activated(_xamlRoot.VisualTree.ContentRoot.InputManager);
 
 	internal WlSurface Surface => _surface;
 	internal WaylandPointerInputSource PointerSource { get; }
@@ -416,7 +448,14 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IWaylandFrameGate, ID
 						_frameTarget = null;
 					}
 				},
-				() => XamlRootMap.Unregister(_xamlRoot),
+				() =>
+				{
+					FocusManager.GotFocus -= OnManagedGotFocus;
+					FocusManager.LostFocus -= OnManagedLostFocus;
+					_window.Activated -= OnWindowActivated;
+					_connection.KeyboardInjectionPolicy.Remove(_xamlRoot.VisualTree.ContentRoot.InputManager);
+					XamlRootMap.Unregister(_xamlRoot);
+				},
 				() =>
 				{
 					lock (display.SyncRoot)

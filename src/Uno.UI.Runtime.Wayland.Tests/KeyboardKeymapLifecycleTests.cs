@@ -11,10 +11,9 @@ using Windows.UI.Core;
 namespace Uno.UI.Runtime.Wayland.Tests;
 
 [TestClass]
-public sealed class KeyboardDefaultKeymapTests
+public sealed class KeyboardKeymapLifecycleTests
 {
-	[TestInitialize]
-	public void RequireXkbcommon()
+	private static void RequireXkbcommon()
 	{
 		if (!OperatingSystem.IsLinux() || !NativeLibrary.TryLoad("libxkbcommon.so.0", out var library))
 		{
@@ -25,34 +24,28 @@ public sealed class KeyboardDefaultKeymapTests
 	}
 
 	[TestMethod]
-	public void NoKeyboardDeviceHasDefaultKeymapBeforeCompositorKeymap()
+	public void NoKeyboardDeviceNeedsNoLocalKeymapOrXkbContext()
 	{
 		using var keyboard = CreateKeyboard();
-		var events = new List<KeyEventArgs>();
-		keyboard.KeyDown += (_, args) => events.Add(args);
-		keyboard.KeyUp += (_, args) => events.Add(args);
-		keyboard.UseDefaultKeymap();
-		keyboard.RepeatInfo(0, 0);
+		AssertXkbHandles(keyboard, allocated: false);
+		var events = 0;
+		keyboard.KeyDown += (_, _) => events++;
 		keyboard.Enter([]);
-		keyboard.Key(57, 1); // evdev Space is independent of the configured alphabetic layout.
+		keyboard.Key(57, 1);
 		keyboard.Key(57, 0);
-		Assert.AreEqual(2, events.Count);
-		Assert.AreEqual(VirtualKey.Space, events[0].VirtualKey);
-		Assert.AreEqual(' ', GetText(events[0]));
-		Assert.AreEqual(57u, events[0].KeyStatus.ScanCode);
-		Assert.AreEqual(1u, events[0].KeyStatus.RepeatCount);
-		Assert.IsTrue(events[1].KeyStatus.IsKeyReleased);
+		Assert.AreEqual(0, events);
+		AssertXkbHandles(keyboard, allocated: false);
 	}
 
 	[TestMethod]
-	public void CompositorKeymapReplacesDefaultAndDeviceRemovalRestoresIt()
+	public void CompositorKeymapReplacementAndUnsupportedMapReleaseState()
 	{
+		RequireXkbcommon();
 		using var keyboard = CreateKeyboard();
 		var text = new List<char?>();
 		keyboard.KeyDown += (_, args) => text.Add(GetText(args));
 		keyboard.RepeatInfo(0, 0);
 		keyboard.Enter([]);
-		TapSpace(keyboard);
 		var path = Path.GetTempFileName();
 		try
 		{
@@ -71,11 +64,23 @@ public sealed class KeyboardDefaultKeymapTests
 			TapSpace(keyboard);
 			keyboard.UpdateModifiers(1, 0, 0, 0);
 			TapSpace(keyboard);
-			keyboard.Leave();
-			keyboard.UseDefaultKeymap();
-			keyboard.Enter([]);
+			AssertXkbHandles(keyboard, allocated: true);
+			using var replacementHandle = File.OpenHandle(path);
+			var replacementFd = checked((int)replacementHandle.DangerousGetHandle());
+			replacementHandle.SetHandleAsInvalid();
+			keyboard.Keymap(1, replacementFd, checked((uint)new FileInfo(path).Length));
+			keyboard.UpdateModifiers(0, 0, 0, 0);
 			TapSpace(keyboard);
-			CollectionAssert.AreEqual(new char?[] { ' ', 'a', 'A', ' ' }, text);
+			using var unsupportedHandle = File.OpenHandle(path);
+			var unsupportedFd = checked((int)unsupportedHandle.DangerousGetHandle());
+			unsupportedHandle.SetHandleAsInvalid();
+			keyboard.Keymap(0, unsupportedFd, 0);
+			Assert.AreEqual(-1, Uno.UI.Runtime.Wayland.Native.Posix.fcntl(unsupportedFd, 3, 0));
+			AssertXkbHandles(keyboard, allocated: false);
+			TapSpace(keyboard);
+			CollectionAssert.AreEqual(new char?[] { 'a', 'A', 'a' }, text);
+			keyboard.Dispose();
+			AssertXkbHandles(keyboard, allocated: false);
 		}
 		finally
 		{
@@ -84,13 +89,22 @@ public sealed class KeyboardDefaultKeymapTests
 	}
 
 	[TestMethod]
-	public void DefaultKeymapDoesNotInventNativeKeyboardFocus()
+	public void NoKeymapDoesNotInventNativeKeyboardFocus()
 	{
 		using var keyboard = CreateKeyboard();
 		var events = 0;
 		keyboard.KeyDown += (_, _) => events++;
 		keyboard.Key(57, 1);
 		Assert.AreEqual(0, events);
+	}
+
+	private static void AssertXkbHandles(WaylandKeyboardInputSource keyboard, bool allocated)
+	{
+		foreach (var field in new[] { "_context", "_keymap", "_state" })
+		{
+			var handle = (nint)typeof(WaylandKeyboardInputSource).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(keyboard)!;
+			Assert.AreEqual(allocated, handle != 0, field);
+		}
 	}
 
 	private static WaylandKeyboardInputSource CreateKeyboard() => new(new NoKeyboardConnection(), action => action(), _ => { });

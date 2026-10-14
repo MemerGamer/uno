@@ -21,9 +21,10 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 	private readonly IWaylandClipboardDevice? _device;
 	private readonly Action<Action> _postToUI;
 	private readonly object _gate = new();
-	// Guarded by _gate: the last local copy, valid until a foreign selection is offered.
+	// Guarded by _gate: local generations survive announcements while pending and echoed offers while owned.
 	private DataPackageView? _content;
 	private int _generation;
+	private int? _pendingGeneration;
 	// Dispatch thread.
 	private WlDataSource? _source;
 	private CancellationTokenSource? _sourceCancellation;
@@ -37,15 +38,17 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 		{
 			device.SelectionChanged += (_, _) =>
 			{
-				// Our own offer is echoed while the source is live. Cancellation alone can mean refusal.
-				if (_source is null && device.HasSelection)
+				// On refocus the existing offer precedes keyboard enter. It must not overwrite a pending copy or clear.
+				if (_source is null)
 				{
 					lock (_gate)
 					{
-						_content = null;
-						_generation++;
+						if (_pendingGeneration is null)
+						{
+							_content = null;
+							_generation++;
+						}
 					}
-					device.CancelPendingSelection();
 				}
 				NotifyContentChanged();
 			};
@@ -81,6 +84,7 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 			// Readable locally right away, as on WinUI, even while publishing waits for keyboard focus.
 			_content = view ?? new DataPackage().GetView();
 			generation = ++_generation;
+			_pendingGeneration = generation;
 		}
 		if (_device is not { } device)
 		{
@@ -128,12 +132,31 @@ internal sealed class WaylandClipboardExtension : IClipboardExtension
 					if (_source == source)
 					{
 						_source = null;
+						_sourceCancellation = null;
+						cancellation.Dispose();
+						lock (_gate)
+						{
+							// Ownership loss invalidates this source, never a newer deferred copy or clear.
+							if (_generation == generation)
+							{
+								_content = null;
+								_generation++;
+							}
+						}
+						NotifyContentChanged();
 					}
 					source.Destroy();
 				};
 				_source = source;
 			}
 			device.SetSelection(_source);
+			lock (_gate)
+			{
+				if (_pendingGeneration == generation)
+				{
+					_pendingGeneration = null;
+				}
+			}
 			previous?.Destroy();
 		}
 	}

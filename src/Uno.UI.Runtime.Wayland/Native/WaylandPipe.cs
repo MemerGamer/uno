@@ -15,6 +15,7 @@ internal static unsafe class WaylandPipe
 	private const int OCloexec = 0x80000;
 	private const int ONonblock = 0x800;
 	internal const int MaximumTransferSize = 64 * 1024 * 1024;
+	private static readonly TimeSpan _maximumTransferDuration = TimeSpan.FromMinutes(2);
 	private const short PollIn = 1;
 	private const short PollOut = 4;
 	private const int EIntr = 4;
@@ -32,19 +33,22 @@ internal static unsafe class WaylandPipe
 
 	/// <summary>
 	/// Reads until end of file. Returns null when the size limit is exceeded or the writer makes no progress
-	/// for <paramref name="timeout"/>, or the caller cancels the transfer.
+	/// for <paramref name="timeout"/>, the total deadline expires, or the caller cancels the transfer.
 	/// </summary>
-	internal static byte[]? ReadToEnd(int fd, TimeSpan timeout, int maximumSize = MaximumTransferSize, CancellationToken cancellationToken = default)
+	internal static byte[]? ReadToEnd(int fd, TimeSpan timeout, int maximumSize = MaximumTransferSize, CancellationToken cancellationToken = default, TimeSpan? totalTimeout = null)
 	{
 		try
 		{
 			SetNonblocking(fd);
+			// Progress resets the idle timeout, but never the two-minute total deadline: trickling peers cannot pin a worker and fd.
+			var total = Stopwatch.StartNew();
+			var deadline = totalTimeout is { } requested && requested < _maximumTransferDuration ? requested : _maximumTransferDuration;
 			var idle = Stopwatch.StartNew();
 			using var buffer = new MemoryStream();
 			var chunk = new byte[64 * 1024];
 			while (true)
 			{
-				if (!Wait(fd, PollIn, timeout - idle.Elapsed, cancellationToken))
+				if (!Wait(fd, PollIn, Remaining(timeout - idle.Elapsed, deadline - total.Elapsed), cancellationToken))
 				{
 					return null;
 				}
@@ -80,12 +84,15 @@ internal static unsafe class WaylandPipe
 		}
 	}
 
-	/// <summary>Writes all of <paramref name="data"/>. Returns false when the reader went away or stopped reading for <paramref name="timeout"/>.</summary>
-	internal static bool WriteAll(int fd, ReadOnlySpan<byte> data, TimeSpan timeout, CancellationToken cancellationToken = default)
+	/// <summary>Writes all of <paramref name="data"/>. Returns false when the reader went away or stopped reading for <paramref name="timeout"/>, the total deadline expired, or the caller cancelled.</summary>
+	internal static bool WriteAll(int fd, ReadOnlySpan<byte> data, TimeSpan timeout, CancellationToken cancellationToken = default, TimeSpan? totalTimeout = null)
 	{
 		try
 		{
 			SetNonblocking(fd);
+			// Progress resets the idle timeout, but never the two-minute total deadline: trickling peers cannot pin a worker and fd.
+			var total = Stopwatch.StartNew();
+			var deadline = totalTimeout is { } requested && requested < _maximumTransferDuration ? requested : _maximumTransferDuration;
 			var idle = Stopwatch.StartNew();
 			if (data.Length > MaximumTransferSize)
 			{
@@ -96,7 +103,7 @@ internal static unsafe class WaylandPipe
 				var written = 0;
 				while (written < data.Length)
 				{
-					if (!Wait(fd, PollOut, timeout - idle.Elapsed, cancellationToken))
+					if (!Wait(fd, PollOut, Remaining(timeout - idle.Elapsed, deadline - total.Elapsed), cancellationToken))
 					{
 						return false;
 					}
@@ -112,7 +119,10 @@ internal static unsafe class WaylandPipe
 						return false;
 					}
 					written += (int)count;
-					idle.Restart();
+					if (count > 0)
+					{
+						idle.Restart();
+					}
 				}
 			}
 			return true;
@@ -122,6 +132,8 @@ internal static unsafe class WaylandPipe
 			_ = Posix.close(fd);
 		}
 	}
+
+	private static TimeSpan Remaining(TimeSpan idle, TimeSpan total) => idle < total ? idle : total;
 
 	private static void SetNonblocking(int fd)
 	{

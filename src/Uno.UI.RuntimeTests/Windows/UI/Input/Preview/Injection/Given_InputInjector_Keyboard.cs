@@ -14,6 +14,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Private.Infrastructure;
 using Uno.UI.RuntimeTests.Helpers;
 using Uno.UI.DevTools.Input;
+using Uno.Foundation.Extensibility;
 using Windows.Foundation;
 using Windows.System;
 using Windows.UI.Input.Preview.Injection;
@@ -75,6 +76,101 @@ public class Given_InputInjector_Keyboard
 		await TestServices.WindowHelper.WaitForIdle();
 
 		Assert.AreEqual("a", textBox.Text);
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWin32)]
+	public async Task When_InjectKey_During_Secondary_Window_Show_Activation()
+	{
+		var original = TestServices.WindowHelper.CurrentTestWindow;
+		var injector = GetInjector();
+		var secondary = new Window { Content = new Grid() };
+		var originalKeys = 0;
+		var secondaryKeys = 0;
+		var injected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		var visibleDuringActivation = true;
+		void OnOriginalKey(object sender, KeyRoutedEventArgs args) => originalKeys++;
+		void OnSecondaryKey(object sender, KeyRoutedEventArgs args) => secondaryKeys++;
+		void OnActivated(object sender, WindowActivatedEventArgs args)
+		{
+			if (args.WindowActivationState != WindowActivationState.Deactivated && !injected.Task.IsCompleted)
+			{
+				visibleDuringActivation = secondary.NativeWrapper!.IsVisible;
+				Tap(injector, VirtualKey.A);
+				injected.SetResult();
+			}
+		}
+		original.RootElement!.KeyDown += OnOriginalKey;
+		secondary.RootElement!.KeyDown += OnSecondaryKey;
+		secondary.Activated += OnActivated;
+		try
+		{
+			await TestServices.WindowHelper.WaitForIdle();
+			// An unshown HWND is inactive. Exercise the real WM_ACTIVATE inside ShowWindow/ShowCore.
+			secondary.NativeWrapper!.ActivationState = Windows.UI.Core.CoreWindowActivationState.Deactivated;
+			secondary.Activate();
+			await injected.Task.WaitAsync(TimeSpan.FromSeconds(5));
+			Assert.IsFalse(visibleDuringActivation, "This test must inject before ShowCore returns and marks the wrapper visible.");
+			Assert.AreEqual(1, secondaryKeys);
+			Assert.AreEqual(0, originalKeys);
+		}
+		finally
+		{
+			secondary.Activated -= OnActivated;
+			secondary.RootElement!.KeyDown -= OnSecondaryKey;
+			original.RootElement!.KeyDown -= OnOriginalKey;
+			secondary.Close();
+			original.Activate();
+		}
+	}
+
+	[TestMethod]
+	[PlatformCondition(ConditionMode.Include, RuntimeTestPlatforms.SkiaWayland)]
+	public async Task When_InjectKey_Without_Native_Activation_Uses_Managed_Focus_And_Live_Window()
+	{
+		var original = TestServices.WindowHelper.CurrentTestWindow;
+		var injector = GetInjector();
+		var firstText = new TextBox();
+		var secondText = new TextBox();
+		var first = new Window { Content = firstText };
+		var second = new Window { Content = secondText };
+		var secondTarget = (IInputInjectorTarget)second.RootElement!.XamlRoot!.VisualTree.ContentRoot.InputManager;
+		try
+		{
+			Assert.IsFalse(secondTarget.IsReadyForKeyboardInput, "An initialized but unshown window is not an injection target.");
+			first.Activate();
+			await TestServices.WindowHelper.WaitForLoaded(firstText);
+			Assert.IsTrue(firstText.Focus(FocusState.Programmatic));
+			await TestServices.WindowHelper.WaitForIdle();
+			second.Activate();
+			await TestServices.WindowHelper.WaitForLoaded(secondText);
+			Assert.IsTrue(secondText.Focus(FocusState.Programmatic));
+			await TestServices.WindowHelper.WaitForIdle();
+			Assert.IsTrue(secondTarget.IsReadyForKeyboardInput);
+			Assert.IsTrue(ApiExtensibility.CreateInstance<IInputInjectorKeyboardTargetPolicy>(injector, out var policy));
+			var firstTarget = (IInputInjectorTarget)first.RootElement!.XamlRoot!.VisualTree.ContentRoot.InputManager;
+			var originalTarget = (IInputInjectorTarget)original.RootElement!.XamlRoot!.VisualTree.ContentRoot.InputManager;
+			if (policy!.IsActive(firstTarget) || policy.IsActive(secondTarget) || policy.IsActive(originalTarget))
+			{
+				Assert.Inconclusive("This lifecycle test requires a compositor without native activation (e.g. seatless Weston).");
+			}
+			Tap(injector, VirtualKey.A);
+			Assert.AreEqual("a", secondText.Text);
+			Assert.AreEqual("", firstText.Text);
+			second.Close();
+			Assert.IsFalse(secondTarget.IsReadyForKeyboardInput, "A retained root of a closed window must be ineligible.");
+			Assert.IsTrue(firstText.Focus(FocusState.Programmatic));
+			await TestServices.WindowHelper.WaitForIdle();
+			Tap(injector, VirtualKey.B);
+			Assert.AreEqual("b", firstText.Text);
+			Assert.AreEqual("a", secondText.Text);
+		}
+		finally
+		{
+			second.Close();
+			first.Close();
+			original.Activate();
+		}
 	}
 
 	/// <summary>

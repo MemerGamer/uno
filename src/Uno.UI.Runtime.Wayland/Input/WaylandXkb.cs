@@ -14,7 +14,6 @@ internal static partial class WaylandXkb
 	[LibraryImport(Library, EntryPoint = "xkb_context_new")] internal static partial nint ContextNew(uint flags);
 	[LibraryImport(Library, EntryPoint = "xkb_context_unref")] internal static partial void ContextUnref(nint context);
 	[LibraryImport(Library, EntryPoint = "xkb_keymap_new_from_string", StringMarshalling = StringMarshalling.Utf8)] internal static partial nint KeymapNew(nint context, string text, uint format, uint flags);
-	[LibraryImport(Library, EntryPoint = "xkb_keymap_new_from_names")] internal static partial nint KeymapNewFromNames(nint context, nint names, uint flags);
 	[LibraryImport(Library, EntryPoint = "xkb_keymap_unref")] internal static partial void KeymapUnref(nint keymap);
 	[LibraryImport(Library, EntryPoint = "xkb_state_new")] internal static partial nint StateNew(nint keymap);
 	[LibraryImport(Library, EntryPoint = "xkb_state_unref")] internal static partial void StateUnref(nint state);

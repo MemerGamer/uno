@@ -23,6 +23,8 @@ internal interface IInputInjectorTarget
 	/// </summary>
 	bool IsActive { get; }
 
-	/// <summary>Gets whether this target is initialized and attached to a visible window.</summary>
+	/// <summary>Gets whether this target is initialized and attached to a live window.</summary>
 	bool IsReadyForKeyboardInput { get; }
+	/// <summary>Gets whether the live window is visible, for host fallback targeting.</summary>
+	bool IsVisibleForKeyboardInput { get; }
 }
