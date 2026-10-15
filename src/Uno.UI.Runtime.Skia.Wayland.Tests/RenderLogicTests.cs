@@ -4,6 +4,7 @@
 
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using SkiaSharp;
+using Uno.WinUI.Runtime.Skia.Linux;
 using Uno.WinUI.Runtime.Skia.Wayland;
 using Uno.WinUI.Runtime.Skia.Wayland.Rendering;
 
@@ -62,22 +63,91 @@ public sealed class RenderLogicTests
 	public void TextGeometrySupportsEachPhysicalOrder(int subpixel, SKPixelGeometry geometry)
 	{
 		var output = WaylandOutputInfo.Unknown with { Subpixel = subpixel, Transform = 0 };
-		Assert.AreEqual(geometry, WaylandWindowWrapper.GetTextPixelGeometry([output], geometry, 1));
+		Assert.AreEqual(geometry, WaylandWindowWrapper.GetTextPixelGeometry([output], LinuxFontRenderingSettings.Default, 1));
 	}
 
 	[TestMethod]
-	public void TextGeometryRequiresMatchingUntransformedOutputsAndIntegerPresentation()
+	[DataRow("auto")]
+	[DataRow("on")]
+	[DataRow("off")]
+	public void TextGeometryRequiresMatchingUntransformedOutputsAndIntegerPresentation(string mode)
 	{
 		var rgb = WaylandOutputInfo.Unknown with { Subpixel = 2, Transform = 0 };
-		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([rgb], SKPixelGeometry.RgbHorizontal, 1));
-		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([rgb with { Scale = 2 }], SKPixelGeometry.RgbHorizontal, 2));
-		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([], SKPixelGeometry.RgbHorizontal, 1));
-		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb, rgb with { Subpixel = 3 }], SKPixelGeometry.RgbHorizontal, 1));
-		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb with { Subpixel = 0 }], SKPixelGeometry.RgbHorizontal, 1));
-		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb with { Transform = 1 }], SKPixelGeometry.RgbHorizontal, 1));
-		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb], SKPixelGeometry.RgbHorizontal, 1.25));
-		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb, rgb with { Scale = 2 }], SKPixelGeometry.RgbHorizontal, 2));
-		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb], SKPixelGeometry.Unknown, 1));
+		var settings = LinuxFontRenderingSettings.FromPattern(true, true, 1, 1, 1, false).WithOverrides(null, null, lcd: mode);
+		var expected = mode == "off" ? SKPixelGeometry.Unknown : SKPixelGeometry.RgbHorizontal;
+		Assert.AreEqual(expected, WaylandWindowWrapper.GetTextPixelGeometry([rgb], settings, 1));
+		Assert.AreEqual(expected, WaylandWindowWrapper.GetTextPixelGeometry([rgb with { Scale = 2 }], settings, 2));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([], settings, 1));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb, rgb with { Subpixel = 3 }], settings, 1));
+		foreach (var transform in new[] { -1, 1, 2, 3, 4, 5, 6, 7 })
+		{
+			Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb with { Transform = transform }], settings, 1));
+		}
+		foreach (var scale in new[] { 0d, 0.5, 1.25, 1.5, double.NaN, double.PositiveInfinity })
+		{
+			Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb], settings, scale));
+		}
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb, rgb with { Scale = 2 }], settings, 2));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb], settings with { Antialias = false }, 1));
+		settings = settings.WithOverrides(null, "rgb");
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb with { Transform = 1 }], settings, 1));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb with { Scale = 2 }], settings, 1));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([rgb], settings, 1.25));
+	}
+
+	[TestMethod]
+	public void TextGeometryPrefersOutputOrderAndFallsBackWhenUnknown()
+	{
+		var settings = LinuxFontRenderingSettings.FromPattern(true, true, 1, 1, 1, false);
+		var output = WaylandOutputInfo.Unknown with { Transform = 0, Subpixel = 3 };
+		Assert.AreEqual(SKPixelGeometry.BgrHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([output], settings, 1));
+		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([output with { Subpixel = 0 }], settings, 1));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([output with { Subpixel = 1 }], settings, 1));
+		Assert.AreEqual(SKPixelGeometry.Unknown, WaylandWindowWrapper.GetTextPixelGeometry([output with { Subpixel = 0 }], LinuxFontRenderingSettings.Default, 1));
+		var desktop = new LinuxTextGeometry(SKPixelGeometry.RgbVertical, LinuxTextGeometrySource.Gnome);
+		Assert.AreEqual(SKPixelGeometry.RgbVertical, WaylandWindowWrapper.GetTextPixelGeometry([output with { Subpixel = 0 }], LinuxFontRenderingSettings.Default, 1, desktop));
+		Assert.AreEqual(SKPixelGeometry.BgrHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([output], LinuxFontRenderingSettings.Default, 1, desktop));
+		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([output with { Subpixel = 0 }], settings, 1, desktop));
+	}
+
+	[TestMethod]
+	[DataRow("auto")]
+	[DataRow("on")]
+	public void TextGeometryEnvironmentOrderOverridesEveryOutput(string mode)
+	{
+		var settings = LinuxFontRenderingSettings.Default.WithOverrides(null, "vbgr", lcd: mode);
+		var output = WaylandOutputInfo.Unknown with { Transform = 0, Subpixel = 2 };
+		Assert.AreEqual(SKPixelGeometry.BgrVertical, WaylandWindowWrapper.GetTextPixelGeometry(
+			[output, output with { Subpixel = 3 }, output with { Subpixel = 1 }, output with { Subpixel = 0 }], settings, 1));
+	}
+
+	[TestMethod]
+	[DataRow("auto")]
+	[DataRow("on")]
+	public void TextGeometryExplicitNoneDependsOnMode(string mode)
+	{
+		var output = WaylandOutputInfo.Unknown with { Transform = 0, Subpixel = 3 };
+		var expected = mode == "on" ? SKPixelGeometry.BgrHorizontal : SKPixelGeometry.Unknown;
+		var settings = LinuxFontRenderingSettings.FromPattern(true, true, 1, 5, 1, false).WithOverrides(null, null, lcd: mode);
+		Assert.AreEqual(expected, WaylandWindowWrapper.GetTextPixelGeometry([output], settings, 1));
+		settings = LinuxFontRenderingSettings.Default.WithOverrides(null, "none", lcd: mode);
+		Assert.AreEqual(expected, WaylandWindowWrapper.GetTextPixelGeometry([output], settings, 1));
+		settings = LinuxFontRenderingSettings.Default.WithOverrides(null, null, lcd: mode);
+		var desktop = new LinuxTextGeometry(SKPixelGeometry.Unknown, LinuxTextGeometrySource.Kde, ExplicitNone: true);
+		Assert.AreEqual(expected, WaylandWindowWrapper.GetTextPixelGeometry([output], settings, 1, desktop));
+	}
+
+	[TestMethod]
+	public void TextGeometryOnAssumesRgbAndIgnoresOutputNone()
+	{
+		var output = WaylandOutputInfo.Unknown with { Transform = 0 };
+		var settings = LinuxFontRenderingSettings.Default.WithOverrides(null, null, lcd: "on");
+		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([output], settings, 1));
+		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([output with { Subpixel = 1 }], settings, 1));
+		settings = LinuxFontRenderingSettings.FromPattern(true, true, 1, 2, 1, false).WithOverrides(null, null, lcd: "on");
+		Assert.AreEqual(SKPixelGeometry.BgrHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([output with { Subpixel = 1 }], settings, 1));
+		settings = LinuxFontRenderingSettings.FromPattern(true, true, 1, 5, 1, false).WithOverrides(null, null, lcd: "on");
+		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, WaylandWindowWrapper.GetTextPixelGeometry([output with { Subpixel = 1 }], settings, 1));
 	}
 
 	[TestMethod]

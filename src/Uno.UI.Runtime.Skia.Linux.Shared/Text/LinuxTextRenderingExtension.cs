@@ -3,9 +3,12 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using Microsoft.UI.Xaml.Documents.TextFormatting;
 using SkiaSharp;
+using Tmds.DBus.Protocol;
 using Uno.Foundation.Logging;
+using Uno.WinUI.Runtime.Skia.Linux.DBus;
 
 namespace Uno.WinUI.Runtime.Skia.Linux;
 
@@ -18,25 +21,91 @@ internal sealed class LinuxTextRenderingExtension : ISkiaTextRenderingExtension
 	private readonly ConditionalWeakTable<SKFont, SKFont> _grayscaleFonts = new();
 	private readonly Dictionary<uint, SKShader> _colorShaders = new();
 	private readonly SKPaint _renderPaint = new();
+	private volatile LinuxTextGeometry _desktopGeometry = LinuxTextGeometry.Unknown;
 
 	internal LinuxFontRenderingSettings Settings { get; }
+	internal LinuxTextGeometry ConfiguredGeometry => Settings.GetConfiguredGeometry(_desktopGeometry);
+	internal SKPixelGeometry PreferredGeometry => Settings.GetPreferredGeometry(_desktopGeometry);
+
+	internal event EventHandler? DesktopGeometryChanged;
 
 	public bool UsesLcd => Settings.Edging == SKFontEdging.SubpixelAntialias;
 
 	private LinuxTextRenderingExtension()
 		: this(FontConfig.ReadDefault().WithOverrides(
 			Environment.GetEnvironmentVariable("UNO_SKIA_TEXT_HINTING"), Environment.GetEnvironmentVariable("UNO_SKIA_TEXT_RGBA"),
-			Environment.GetEnvironmentVariable("UNO_SKIA_TEXT_GAMMA")))
+			Environment.GetEnvironmentVariable("UNO_SKIA_TEXT_GAMMA"), Environment.GetEnvironmentVariable("UNO_SKIA_TEXT_LCD")))
 	{
+		if (ConfiguredGeometry == LinuxTextGeometry.Unknown)
+		{
+			if (KdeTextGeometry.IsDesktop("KDE"))
+			{
+				SetDesktopGeometry(KdeTextGeometry.Read());
+			}
+			if (ConfiguredGeometry == LinuxTextGeometry.Unknown && KdeTextGeometry.IsDesktop("GNOME"))
+			{
+				_ = ReadDesktopGeometryAsync();
+			}
+		}
 	}
 
 	internal LinuxTextRenderingExtension(LinuxFontRenderingSettings settings)
 	{
 		Settings = settings;
+		LogSettings();
+	}
+
+	private void LogSettings()
+	{
 		if (this.Log().IsEnabled(LogLevel.Debug))
 		{
+			var configured = ConfiguredGeometry;
 			// SkiaSharp has no LCD filter setter: Skia's own FreeType library uses FT_LCD_FILTER_DEFAULT.
-			this.Log().Debug($"Linux text: fontconfig={Settings.HasFontConfig}, antialias={Settings.Antialias}, hinting={Settings.Hinting}, geometry={Settings.PixelGeometry}, autohint={Settings.ForceAutoHinting}, linear coverage={Settings.LinearCoverage}, fontconfig lcdfilter={Settings.LcdFilter} (Skia uses default).");
+			this.Log().Debug($"Linux text: fontconfig={Settings.HasFontConfig}, antialias={Settings.Antialias}, hinting={Settings.Hinting}, lcd={Settings.LcdMode}, geometry={configured.PixelGeometry}, source={configured.Source}, explicit none={configured.ExplicitNone}, autohint={Settings.ForceAutoHinting}, linear coverage={Settings.LinearCoverage}, fontconfig lcdfilter={Settings.LcdFilter} (Skia uses default).");
+		}
+	}
+
+	private void SetDesktopGeometry(LinuxTextGeometry geometry)
+	{
+		if (_desktopGeometry != geometry)
+		{
+			_desktopGeometry = geometry;
+			LogSettings();
+			DesktopGeometryChanged?.Invoke(this, EventArgs.Empty);
+		}
+	}
+
+	private async Task ReadDesktopGeometryAsync()
+	{
+		try
+		{
+			if (DBusAddress.Session is not { } address)
+			{
+				return;
+			}
+			using var connection = new DBusConnection(address);
+			await connection.ConnectAsync().ConfigureAwait(false);
+			var settings = new DBusService(connection, "org.freedesktop.portal.Desktop").CreateSettings("/org/freedesktop/portal/desktop");
+			var antialias = (await settings.ReadOneAsync("org.gnome.desktop.interface", "font-antialiasing").ConfigureAwait(false)).GetString();
+			if (antialias is "grayscale" or "none")
+			{
+				SetDesktopGeometry(new(SKPixelGeometry.Unknown, LinuxTextGeometrySource.Gnome, ExplicitNone: true));
+			}
+			else if (antialias == "rgba")
+			{
+				var order = (await settings.ReadOneAsync("org.gnome.desktop.interface", "font-rgba-order").ConfigureAwait(false)).GetString();
+				if (LinuxTextGeometry.Parse(order, LinuxTextGeometrySource.Gnome) is { ExplicitNone: false } geometry)
+				{
+					SetDesktopGeometry(geometry);
+				}
+			}
+		}
+		catch (Exception error)
+		{
+			if (this.Log().IsEnabled(LogLevel.Debug))
+			{
+				this.Log().Debug($"Unable to read desktop text geometry via DBus: {error}");
+			}
 		}
 	}
 
@@ -53,8 +122,8 @@ internal sealed class LinuxTextRenderingExtension : ISkiaTextRenderingExtension
 		}
 	}
 
-	public SKFont GetRenderFont(SKFont font, SKMatrix matrix, SKPaint paint)
-		=> font.Edging == SKFontEdging.SubpixelAntialias && !LinuxFontRenderingSettings.CanUseLcd(matrix, paint)
+	public SKFont GetRenderFont(SKFont font, SKMatrix matrix, SKPaint paint, bool grayscale = false)
+		=> font.Edging == SKFontEdging.SubpixelAntialias && (grayscale || !LinuxFontRenderingSettings.CanUseLcd(matrix, paint))
 			? _grayscaleFonts.GetValue(font, CreateGrayscaleFont) : font;
 
 	// Skia derives its coverage gamma/contrast table from the paint's luminance colour, but only when the paint is

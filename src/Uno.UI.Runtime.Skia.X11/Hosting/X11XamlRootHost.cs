@@ -19,6 +19,7 @@ using SkiaSharp;
 using Uno.Disposables;
 using Uno.UI;
 using Uno.UI.Xaml.Controls;
+using Uno.WinUI.Runtime.Skia.Linux;
 
 namespace Uno.WinUI.Runtime.Skia.X11;
 
@@ -139,6 +140,10 @@ internal partial class X11XamlRootHost : IXamlRootHost
 		var windowBackgroundDisposable = _window.RegisterBackgroundChangedEvent((_, _) => UpdateRendererBackground());
 		UpdateRendererBackground();
 
+		// The GNOME desktop order is read asynchronously and may arrive after the first frames.
+		EventHandler desktopGeometryChanged = (_, _) => InvalidateTextPixelGeometry();
+		LinuxTextRenderingExtension.Instance.DesktopGeometryChanged += desktopGeometryChanged;
+
 		Closed.ContinueWith(_ =>
 		{
 			using (X11Helper.XLock(RootX11Window.Display))
@@ -148,6 +153,7 @@ internal partial class X11XamlRootHost : IXamlRootHost
 				CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBarChanged -= UpdateWindowPropertiesFromCoreApplication;
 				winUIWindow.AppWindow.TitleBar.ExtendsContentIntoTitleBarChanged -= ExtendContentIntoTitleBar;
 				windowBackgroundDisposable.Dispose();
+				LinuxTextRenderingExtension.Instance.DesktopGeometryChanged -= desktopGeometryChanged;
 				_framePacer.Dispose();
 				_renderRequested.Dispose();
 				_renderer?.Dispose();

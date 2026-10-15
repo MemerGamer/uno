@@ -90,6 +90,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 	// Most recently entered last; the last one is the window's current output.
 	private readonly List<WaylandOutput> _enteredOutputs = new();
 	private volatile WaylandOutputInfo? _outputInfo;
+	private SKPixelGeometry _textPixelGeometry;
 
 	internal WaylandWindowWrapper(WaylandConnection connection, Window window, XamlRoot root)
 		: base(window, root)
@@ -144,6 +145,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			_host.LayoutRecorded = OnLayoutRecorded;
 			lock (display.SyncRoot)
 			{
+				LinuxTextRenderingExtension.Instance.DesktopGeometryChanged += OnDesktopGeometryChanged;
 				// Scale events may precede host construction; publish their accumulated output state now.
 				UpdateTextPixelGeometry();
 			}
@@ -173,6 +175,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		catch
 		{
 			_closed = true;
+			LinuxTextRenderingExtension.Instance.DesktopGeometryChanged -= OnDesktopGeometryChanged;
 			try
 			{
 				WaylandCleanup.Run(
@@ -636,6 +639,8 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 		UpdateTextPixelGeometry();
 	}
 
+	private void OnDesktopGeometryChanged(object? sender, EventArgs args) => Post(UpdateTextPixelGeometry);
+
 	private void UpdateTextPixelGeometry()
 	{
 		if (_closed || _host is not { } host)
@@ -648,18 +653,40 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			infos.Add(output.Info);
 		}
 		var scale = EffectiveScale;
-		var preference = LinuxTextRenderingExtension.Instance.Settings.GetSurfaceGeometry(scale);
-		host.SetOutputGeometry(GetTextPixelGeometry(infos, preference, scale), scale);
+		var extension = LinuxTextRenderingExtension.Instance;
+		var configured = extension.ConfiguredGeometry;
+		var geometry = GetTextPixelGeometry(infos, extension.Settings, scale, configured);
+		if (_textPixelGeometry != geometry)
+		{
+			_textPixelGeometry = geometry;
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace($"window{_id}: text geometry {geometry} (lcd={extension.Settings.LcdMode}, configured={configured.PixelGeometry}, source={configured.Source}, explicit none={configured.ExplicitNone}, scale={scale}, output subpixels=[{string.Join(", ", infos.ConvertAll(info => info.Subpixel))}])");
+			}
+		}
+		host.SetOutputGeometry(geometry, scale);
 	}
 
-	internal static SKPixelGeometry GetTextPixelGeometry(IReadOnlyCollection<WaylandOutputInfo> entered, SKPixelGeometry preference, double scale)
+	internal static SKPixelGeometry GetTextPixelGeometry(IReadOnlyCollection<WaylandOutputInfo> entered,
+		LinuxFontRenderingSettings settings, double scale, LinuxTextGeometry? desktop = null)
 	{
-		if (entered.Count == 0 || preference == SKPixelGeometry.Unknown || !double.IsFinite(scale) || scale < 1 || scale != Math.Truncate(scale))
+		if (!settings.Antialias || settings.LcdMode == LcdMode.Off || entered.Count == 0
+			|| !double.IsFinite(scale) || scale < 1 || scale != Math.Truncate(scale))
 		{
 			return SKPixelGeometry.Unknown;
 		}
+		var configured = settings.GetConfiguredGeometry(desktop);
+		if (settings.LcdMode == LcdMode.Auto && configured.ExplicitNone)
+		{
+			return SKPixelGeometry.Unknown;
+		}
+		var resolved = SKPixelGeometry.Unknown;
 		foreach (var output in entered)
 		{
+			if (output.Transform != 0 || output.Scale != scale)
+			{
+				return SKPixelGeometry.Unknown;
+			}
 			var geometry = output.Subpixel switch
 			{
 				2 => SKPixelGeometry.RgbHorizontal,
@@ -668,13 +695,26 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 				5 => SKPixelGeometry.BgrVertical,
 				_ => SKPixelGeometry.Unknown,
 			};
-			// No LCD if the compositor may rotate/resample, or entered outputs disagree with the preference.
-			if (output.Transform != 0 || output.Scale != scale || geometry != preference)
+			if (configured.Source == LinuxTextGeometrySource.Environment && configured.PixelGeometry != SKPixelGeometry.Unknown)
+			{
+				geometry = configured.PixelGeometry;
+			}
+			else if (settings.LcdMode == LcdMode.Auto && output.Subpixel == 1)
 			{
 				return SKPixelGeometry.Unknown;
 			}
+			else if (geometry == SKPixelGeometry.Unknown)
+			{
+				geometry = configured.PixelGeometry != SKPixelGeometry.Unknown ? configured.PixelGeometry
+					: settings.LcdMode == LcdMode.On ? SKPixelGeometry.RgbHorizontal : SKPixelGeometry.Unknown;
+			}
+			if (geometry == SKPixelGeometry.Unknown || (resolved != SKPixelGeometry.Unknown && resolved != geometry))
+			{
+				return SKPixelGeometry.Unknown;
+			}
+			resolved = geometry;
 		}
-		return preference;
+		return resolved;
 	}
 
 	private void OnToplevelClose(object? sender, XdgToplevel.CloseEventArgs args)
@@ -1035,6 +1075,7 @@ internal sealed class WaylandWindowWrapper : NativeWindowWrapperBase, IWaylandDe
 			return;
 		}
 		_closed = true;
+		LinuxTextRenderingExtension.Instance.DesktopGeometryChanged -= OnDesktopGeometryChanged;
 		Interlocked.Increment(ref _iconGeneration);
 		if (WaylandDiagnostics.IsEnabled)
 		{
