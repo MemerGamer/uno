@@ -20,8 +20,12 @@ internal record FontDetails(SKFont SKFont, float SKFontSize, float SKFontScaleX,
 
 	internal static bool UsesLcd => _textRendering.Value?.UsesLcd == true;
 
+	// Set while a visual records text that is replayed under a transform unsuitable for LCD glyphs.
+	[ThreadStatic]
+	internal static bool RecordGrayscale;
+
 	internal static SKFont GetRenderFont(SKFont font, SKCanvas canvas, SKPaint paint)
-		=> _textRendering.Value?.GetRenderFont(font, canvas.TotalMatrix, paint) ?? font;
+		=> _textRendering.Value?.GetRenderFont(font, canvas.TotalMatrix, paint, RecordGrayscale) ?? font;
 
 	internal static SKPaint GetRenderPaint(SKPaint paint)
 		=> _textRendering.Value?.GetRenderPaint(paint) ?? paint;

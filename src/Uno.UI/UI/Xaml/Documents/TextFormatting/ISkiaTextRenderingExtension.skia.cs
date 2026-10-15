@@ -10,7 +10,8 @@ internal interface ISkiaTextRenderingExtension
 
 	void Apply(SKFont font);
 
-	SKFont GetRenderFont(SKFont font, SKMatrix matrix, SKPaint paint);
+	// grayscale: the caller cannot guarantee an LCD-safe device transform for this draw.
+	SKFont GetRenderFont(SKFont font, SKMatrix matrix, SKPaint paint, bool grayscale);
 
 	// Returns the paint to draw glyphs with; it may be a shared paint that only stays valid until the next call.
 	SKPaint GetRenderPaint(SKPaint paint);
