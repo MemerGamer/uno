@@ -331,9 +331,9 @@ internal sealed class X11DragSource
 		_starting = null;
 		_drag = session;
 		session.Started.TrySetResult(true);
-		if (this.Log().IsEnabled(LogLevel.Trace))
+		if (X11DragDiagnostics.IsEnabled)
 		{
-			this.Log().Trace($"XDND start time={session.Time} source={session.Window} formats={string.Join(",", session.Content.Keys)}");
+			X11DragDiagnostics.Trace($"XDND start time={session.Time} source={session.Window} formats={string.Join(",", session.Content.Keys)}");
 		}
 		Move(session, x, y, mask, session.Time);
 	}
@@ -505,9 +505,9 @@ internal sealed class X11DragSource
 		if (X11Helper.XQueryPointer(_display, _root, out _, out _, out var x, out var y, out _, out _, out var mask)
 			&& !X11DragActions.IsButtonHeld(mask, drag.Button))
 		{
-			if (this.Log().IsEnabled(LogLevel.Trace))
+			if (X11DragDiagnostics.IsEnabled)
 			{
-				this.Log().Trace("XDND buttons released without a ButtonRelease");
+				X11DragDiagnostics.Trace("XDND buttons released without a ButtonRelease");
 			}
 			Move(drag, x, y, mask, drag.Time);
 			Release(drag);
@@ -537,9 +537,9 @@ internal sealed class X11DragSource
 			&& X11Helper.XQueryPointer(_display, _root, out _, out _, out var x, out var y, out _, out _, out _)
 			&& x == drag.X && y == drag.Y && FindTarget(x, y, drag.Icon?.Window ?? IntPtr.Zero).Window == IntPtr.Zero)
 		{
-			if (this.Log().IsEnabled(LogLevel.Trace))
+			if (X11DragDiagnostics.IsEnabled)
 			{
-				this.Log().Trace($"XDND target {drag.Target.Window} vanished under a still pointer, cancelling");
+				X11DragDiagnostics.Trace($"XDND target {drag.Target.Window} vanished under a still pointer, cancelling");
 			}
 			Cancel(drag);
 		}
@@ -594,9 +594,9 @@ internal sealed class X11DragSource
 				var types = drag.Types;
 				Send(target.Receiver, target.Window, Atom("XdndEnter"), drag.Window, (IntPtr)X11DragActions.EnterFlags(target.Version, types.Length),
 					types.ElementAtOrDefault(0), types.ElementAtOrDefault(1), types.ElementAtOrDefault(2));
-				if (this.Log().IsEnabled(LogLevel.Trace))
+				if (X11DragDiagnostics.IsEnabled)
 				{
-					this.Log().Trace($"XDND enter target={target.Window} proxy={target.Receiver} version={target.Version}");
+					X11DragDiagnostics.Trace($"XDND enter target={target.Window} proxy={target.Receiver} version={target.Version}");
 				}
 			}
 		}
@@ -694,9 +694,9 @@ internal sealed class X11DragSource
 		{
 			drag.State.Drop(now);
 			Send(drag.Target.Receiver, drag.Target.Window, Atom("XdndDrop"), drag.Window, IntPtr.Zero, drag.Time);
-			if (this.Log().IsEnabled(LogLevel.Trace))
+			if (X11DragDiagnostics.IsEnabled)
 			{
-				this.Log().Trace($"XDND drop target={drag.Target.Window} action={drag.State.StatusAction}");
+				X11DragDiagnostics.Trace($"XDND drop target={drag.Target.Window} action={drag.State.StatusAction}");
 			}
 		}
 		else if (decision == X11DragReleaseDecision.Leave)
@@ -722,9 +722,9 @@ internal sealed class X11DragSource
 			var action = Action(message.ptr5);
 			drag.State.Status(accepted, action, drag.Info.AllowedOperations);
 			Feedback(drag, drag.State.StatusAction);
-			if (this.Log().IsEnabled(LogLevel.Trace))
+			if (X11DragDiagnostics.IsEnabled)
 			{
-				this.Log().Trace($"XDND status target={message.ptr1} accepted={drag.State.Accepted} action={action}");
+				X11DragDiagnostics.Trace($"XDND status target={message.ptr1} accepted={drag.State.Accepted} action={action}");
 			}
 			SendPosition(drag, Environment.TickCount64);
 			if (drag.State.Released)
@@ -735,9 +735,9 @@ internal sealed class X11DragSource
 		else if (message.message_type == Atom("XdndFinished")
 			&& drag.State.Finished(drag.Target.Version, (message.ptr2 & 1) != 0, message.ptr3 == IntPtr.Zero ? null : Action(message.ptr3), drag.Info.AllowedOperations))
 		{
-			if (this.Log().IsEnabled(LogLevel.Trace))
+			if (X11DragDiagnostics.IsEnabled)
 			{
-				this.Log().Trace($"XDND finished target={message.ptr1} result={drag.State.Result}");
+				X11DragDiagnostics.Trace($"XDND finished target={message.ptr1} result={drag.State.Result}");
 			}
 			Finish(drag);
 		}
@@ -787,9 +787,9 @@ internal sealed class X11DragSource
 		}
 		Leave(drag);
 		drag.State.Complete(DataPackageOperation.None);
-		if (this.Log().IsEnabled(LogLevel.Trace))
+		if (X11DragDiagnostics.IsEnabled)
 		{
-			this.Log().Trace($"XDND cancel target={drag.Target.Window}");
+			X11DragDiagnostics.Trace($"XDND cancel target={drag.Target.Window}");
 		}
 		Finish(drag);
 	}

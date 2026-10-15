@@ -54,6 +54,30 @@ internal static class X11DragActions
 		_ => DataPackageOperation.Copy
 	};
 
+	// Target side: an action atom name sent by a source; XdndActionPrivate and unknown actions copy.
+	internal static DataPackageOperation FromTargetActionName(string? name) => name switch
+	{
+		"XdndActionCopy" or "XdndActionPrivate" => DataPackageOperation.Copy,
+		"XdndActionMove" => DataPackageOperation.Move,
+		"XdndActionLink" => DataPackageOperation.Link,
+		_ => DataPackageOperation.None
+	};
+
+	// Target side: what a drop may do. A source's XdndActionList lists its actions. Without one (KWin's bridge for Wayland
+	// sources publishes none) the requested action can change with the modifiers during the drag, while the operations of
+	// Uno's drag are fixed when it starts, so every action is allowed and XdndStatus reports only the requested one or Copy.
+	internal static DataPackageOperation TargetAllowed(DataPackageOperation sourceActions, DataPackageOperation requested)
+		=> sourceActions != DataPackageOperation.None
+			? sourceActions | requested
+			: DataPackageOperation.Copy | DataPackageOperation.Move | DataPackageOperation.Link;
+
+	// Target side: the single action reported in XdndStatus/XdndFinished: the requested action when accepted, otherwise
+	// Copy, which every source supports; an accepted Move or Link that was not requested is a refusal.
+	internal static DataPackageOperation ChooseTargetAction(DataPackageOperation accepted, DataPackageOperation requested)
+		=> (accepted & requested) != 0 ? requested
+			: (accepted & DataPackageOperation.Copy) != 0 ? DataPackageOperation.Copy
+			: DataPackageOperation.None;
+
 	internal static uint PackPosition(int x, int y) => ((uint)(ushort)x << 16) | (ushort)y;
 
 	internal static uint EnterFlags(int version, int targetCount) => ((uint)version << 24) | (targetCount > 3 ? 1u : 0u);

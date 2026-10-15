@@ -385,4 +385,38 @@ public sealed class Given_X11DragSource
 		Assert.AreEqual(new X11DragIconLayout(1024, 512, -512, -384), X11DragIconLayout.Compute(2048, 1024, 2, null));
 		Assert.AreEqual(new X11DragIconLayout(1, 1, 0, -1), X11DragIconLayout.Compute(0, 0, 0, null));
 	}
+
+	[TestMethod]
+	public void IncomingActionNamesMapToOperations()
+	{
+		Assert.AreEqual(DataPackageOperation.Copy, X11DragActions.FromTargetActionName("XdndActionCopy"));
+		Assert.AreEqual(DataPackageOperation.Copy, X11DragActions.FromTargetActionName("XdndActionPrivate"));
+		Assert.AreEqual(DataPackageOperation.Move, X11DragActions.FromTargetActionName("XdndActionMove"));
+		Assert.AreEqual(DataPackageOperation.Link, X11DragActions.FromTargetActionName("XdndActionLink"));
+		Assert.AreEqual(DataPackageOperation.None, X11DragActions.FromTargetActionName("XdndActionAsk"));
+		Assert.AreEqual(DataPackageOperation.None, X11DragActions.FromTargetActionName(null));
+	}
+
+	[TestMethod]
+	public void IncomingDropAllowsTheActionListAndTheRequestedAction()
+	{
+		var all = DataPackageOperation.Copy | DataPackageOperation.Move | DataPackageOperation.Link;
+		// KWin's bridge for Wayland sources publishes no XdndActionList and its requested action follows the modifiers.
+		Assert.AreEqual(all, X11DragActions.TargetAllowed(DataPackageOperation.None, DataPackageOperation.Copy));
+		Assert.AreEqual(all, X11DragActions.TargetAllowed(DataPackageOperation.None, DataPackageOperation.None));
+		Assert.AreEqual(DataPackageOperation.Copy | DataPackageOperation.Move,
+			X11DragActions.TargetAllowed(DataPackageOperation.Copy, DataPackageOperation.Move));
+	}
+
+	[TestMethod]
+	public void IncomingStatusReportsTheRequestedActionOrCopy()
+	{
+		var both = DataPackageOperation.Copy | DataPackageOperation.Move;
+		Assert.AreEqual(DataPackageOperation.Move, X11DragActions.ChooseTargetAction(both, DataPackageOperation.Move));
+		Assert.AreEqual(DataPackageOperation.Copy, X11DragActions.ChooseTargetAction(both, DataPackageOperation.Copy));
+		Assert.AreEqual(DataPackageOperation.Copy, X11DragActions.ChooseTargetAction(both, DataPackageOperation.Link));
+		// Accepting only an action the source did not request is a refusal, not a substitution.
+		Assert.AreEqual(DataPackageOperation.None, X11DragActions.ChooseTargetAction(DataPackageOperation.Move, DataPackageOperation.Copy));
+		Assert.AreEqual(DataPackageOperation.None, X11DragActions.ChooseTargetAction(DataPackageOperation.None, DataPackageOperation.Copy));
+	}
 }
