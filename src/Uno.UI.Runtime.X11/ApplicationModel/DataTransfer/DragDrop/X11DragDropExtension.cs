@@ -67,7 +67,7 @@ internal class X11DragDropExtension : IDragDropExtension
 			X11Helper.GetAtom(display, X11Helper.XA_ATOM),
 			32,
 			PropertyMode.Replace,
-			new byte[] { 5 }, // version 5
+			new IntPtr[] { 5 }, // version 5
 			1);
 		_ = XLib.XFlush(display);
 
@@ -276,7 +276,7 @@ internal class X11DragDropExtension : IDragDropExtension
 		m.message_type = X11Helper.GetAtom(display, X11Helper.XdndFinished);
 		m.format = 32;
 		m.ptr1 = _host.RootX11Window.Window;
-		m.ptr2 = 0;
+		m.ptr2 = acceptedOperation is not DataPackageOperation.None ? 1 : 0;
 		// TODO: support other actions and read from acceptedOperation
 		m.ptr3 = acceptedOperation is not DataPackageOperation.None ? X11Helper.GetAtom(display, X11Helper.XdndActionCopy) : X11Helper.None;
 
@@ -291,8 +291,34 @@ internal class X11DragDropExtension : IDragDropExtension
 		}
 	}
 
-	// TODO: uno-to-outside dragging
-	public bool StartNativeDrag(CoreDragInfo info, Action<DataPackageOperation> onCompleted) => false;
+	// The XDND source takes the pointer grab from the start, so it can track the windows over Uno's and route the
+	// pointer back while it is over the window the drag started in.
+	public bool StartsNativeDragImmediately => true;
+
+	public bool StartNativeDrag(CoreDragInfo info, Action<DataPackageOperation> onCompleted)
+	{
+		if (info.SourceId == _fakePointerId || (Windows.Devices.Input.PointerDeviceType)(info.SourceId >> 32) != Windows.Devices.Input.PointerDeviceType.Mouse
+			|| _host.PointerSource is null || _host.Closed.IsCompleted)
+		{
+			return false;
+		}
+		var formats = X11DragFormats.GetDragMimeTypes(info.Data);
+		if (formats.Count == 0)
+		{
+			return false;
+		}
+		uint button;
+		using (X11Helper.XLock(_host.TopX11Window.Display))
+		{
+			if (!X11Helper.XQueryPointer(_host.TopX11Window.Display, _host.TopX11Window.Window,
+				out _, out _, out _, out _, out _, out _, out var mask) || (button = X11DragActions.ChooseButton(mask)) == 0)
+			{
+				return false;
+			}
+		}
+		var scale = ((IXamlRootHost)_host).RootElement?.XamlRoot?.RasterizationScale ?? 1;
+		return X11DragSource.Instance.TryStart(_host, _coreDragDropManager, info, formats, scale, button, onCompleted);
+	}
 
 	private readonly struct DragEventSource(int x, int y) : IDragEventSource
 	{

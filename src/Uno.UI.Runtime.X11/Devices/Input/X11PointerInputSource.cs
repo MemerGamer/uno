@@ -115,22 +115,52 @@ internal partial class X11PointerInputSource : IUnoCorePointerInputSource
 	public void SetPointerCapture() => LogNotSupported();
 
 	private void RaisePointerMoved(PointerEventArgs args)
-		=> PointerMoved?.Invoke(this, args);
+	{
+		if (!_nativeDrag)
+		{
+			PointerMoved?.Invoke(this, args);
+		}
+	}
 
 	private void RaisePointerPressed(PointerEventArgs args)
-		=> PointerPressed?.Invoke(this, args);
+	{
+		if (!_nativeDrag)
+		{
+			PointerPressed?.Invoke(this, args);
+		}
+	}
 
 	private void RaisePointerReleased(PointerEventArgs args)
-		=> PointerReleased?.Invoke(this, args);
+	{
+		if (!_nativeDrag)
+		{
+			PointerReleased?.Invoke(this, args);
+		}
+	}
 
 	private void RaisePointerWheelChanged(PointerEventArgs args)
-		=> PointerWheelChanged?.Invoke(this, args);
+	{
+		if (!_nativeDrag)
+		{
+			PointerWheelChanged?.Invoke(this, args);
+		}
+	}
 
 	private void RaisePointerExited(PointerEventArgs args)
-		=> PointerExited?.Invoke(this, args);
+	{
+		if (!_nativeDrag)
+		{
+			PointerExited?.Invoke(this, args);
+		}
+	}
 
 	private void RaisePointerEntered(PointerEventArgs args)
-		=> PointerEntered?.Invoke(this, args);
+	{
+		if (!_nativeDrag)
+		{
+			PointerEntered?.Invoke(this, args);
+		}
+	}
 
 	private void LogNotSupported([CallerMemberName] string member = "")
 	{

@@ -110,6 +110,24 @@ internal partial class X11XamlRootHost
 
 	private (XIVersion, int)? _xi2Details;
 
+	internal void ReleasePointerGrabForDrag()
+	{
+		Release(TopX11Window);
+		Release(RootX11Window);
+
+		void Release(X11Window window)
+		{
+			using var xlock = X11Helper.XLock(window.Display);
+			_ = X11Helper.XUngrabPointer(window.Display, IntPtr.Zero);
+			if (_xi2Details is { Item1: not XIVersion.Unsupported }
+				&& X11Helper.XIGetClientPointer(window.Display, window.Window, out var deviceId))
+			{
+				_ = X11Helper.XIUngrabDevice(window.Display, deviceId, IntPtr.Zero);
+			}
+			XLib.XSync(window.Display, false);
+		}
+	}
+
 	private unsafe (XIVersion version, int opcode) GetXI2Details(IntPtr display)
 	{
 		if (_xi2Details is { } d)

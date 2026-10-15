@@ -47,6 +47,8 @@ internal partial class X11XamlRootHost
 		}.Start();
 	}
 
+	internal X11PointerInputSource? PointerSource => _pointerSource;
+
 	public void SetPointerSource(X11PointerInputSource pointerSource)
 	{
 		if (_pointerSource is not null)
@@ -200,9 +202,17 @@ internal partial class X11XamlRootHost
 							RaiseConfigureCallback();
 							break;
 						case XEventName.FocusIn:
+							if (_pointerSource?.IsNativeDragActive == true && @event.FocusChangeEvent.mode is 1 or 2)
+							{
+								break;
+							}
 							QueueAction(this, () => _focusCallback(true));
 							break;
 						case XEventName.FocusOut:
+							if (_pointerSource?.IsNativeDragActive == true && @event.FocusChangeEvent.mode is 1 or 2)
+							{
+								break;
+							}
 							QueueAction(this, () => _focusCallback(false));
 							break;
 						case XEventName.VisibilityNotify:

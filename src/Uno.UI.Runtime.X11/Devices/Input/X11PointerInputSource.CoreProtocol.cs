@@ -27,6 +27,11 @@ internal partial class X11PointerInputSource
 
 	public void ProcessLeaveEvent(XCrossingEvent ev)
 	{
+		if (_nativeDrag)
+		{
+			return;
+		}
+
 		_mousePosition = new Point(ev.x, ev.y);
 
 		var point = CreatePointFromCurrentState(ev.time);
@@ -40,6 +45,11 @@ internal partial class X11PointerInputSource
 
 	public void ProcessEnterEvent(XCrossingEvent ev)
 	{
+		if (_nativeDrag)
+		{
+			return;
+		}
+
 		_mousePosition = new Point(ev.x, ev.y);
 
 		var args = CreatePointerEventArgsFromCurrentState(ev.time, ev.state, ev.window);
@@ -48,6 +58,11 @@ internal partial class X11PointerInputSource
 
 	public void ProcessMotionNotifyEvent(XMotionEvent ev)
 	{
+		if (_nativeDrag)
+		{
+			return;
+		}
+
 		_mousePosition = new Point(ev.x, ev.y);
 
 		var args = CreatePointerEventArgsFromCurrentState(ev.time, ev.state, ev.window);
@@ -56,6 +71,11 @@ internal partial class X11PointerInputSource
 
 	public void ProcessButtonPressedEvent(XButtonEvent ev)
 	{
+		if (_nativeDrag)
+		{
+			return;
+		}
+
 		_mousePosition = new Point(ev.x, ev.y);
 		_pressedButtons = (byte)(_pressedButtons | 1 << ev.button);
 
@@ -86,6 +106,11 @@ internal partial class X11PointerInputSource
 	// while a button is held.
 	public void ProcessButtonReleasedEvent(XButtonEvent ev)
 	{
+		if (_nativeDrag)
+		{
+			return;
+		}
+
 		// TODO: what if button released when not same_screen?
 		if (ev.button is SCROLL_LEFT or SCROLL_RIGHT or SCROLL_UP or SCROLL_DOWN)
 		{
@@ -137,6 +162,7 @@ internal partial class X11PointerInputSource
 			properties.SetUpdateKindFromPrevious(_previousPointerPointProperties)
 		);
 
+		_lastPoint = point;
 		_previousPointerPointProperties = properties;
 
 		return point;
