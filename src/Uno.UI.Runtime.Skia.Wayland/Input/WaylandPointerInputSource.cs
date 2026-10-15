@@ -210,14 +210,15 @@ internal sealed class WaylandPointerInputSource : IUnoCorePointerInputSource
 	// which must not cancel the drag Uno keeps running until the drag source completes.
 	public void BeginNativeDrag() => _nativeDrag = true;
 
-	// Dispatch thread, once the drag source completed: the suppressed capture loss is delivered now, so the
-	// dragged element releases its pointer capture after the drop result was reported.
+	// Dispatch thread, once the drag source completed: the suppressed cancellation is delivered now, after the
+	// drop result was reported, so the dragged element ends its gesture and releases its pointer capture.
 	public void EndNativeDrag()
 	{
 		_nativeDrag = false;
 		if (_nativeDragCaptureLost)
 		{
 			_nativeDragCaptureLost = false;
+			Emit(PointerCancelled);
 			Emit(PointerCaptureLost);
 		}
 	}
