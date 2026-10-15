@@ -98,11 +98,18 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 
 	private void PollAcceptance()
 	{
-		if (_session is { } session)
+		if (_session is not { } session)
 		{
-			// An already processed frame id only reads the operation accepted by the latest DragOver.
-			UpdateAcceptance(session, CoreDragDropManager.ProcessMoved(new DragEventSource(session.SourceId, 0, session.Position)));
+			return;
 		}
+		// Uno answers the first move over an element with DragEnter and only the next one with DragOver, which is
+		// where WinUI apps set the accepted operation. A pointer supplies that next move; the sparse motion events
+		// of a compositor drag may not, so while nothing is accepted the poll moves again at the same position.
+		// Once accepted, an already processed frame id only reads the operation of the latest DragOver.
+		var source = session.Accepted is null or DataPackageOperation.None
+			? Source(session, session.Position)
+			: new DragEventSource(session.SourceId, 0, session.Position);
+		UpdateAcceptance(session, CoreDragDropManager.ProcessMoved(source));
 	}
 
 	// Frame ids must grow past the pointer frames Uno's drag already consumed, or the move is ignored as stale.
@@ -123,6 +130,10 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 				? WaylandDropNegotiation.ChooseOwnDragAction(WaylandDataFormats.ToDndActions(accepted), sourceActions, accepted != DataPackageOperation.None)
 				: WaylandDropNegotiation.ChooseAction(WaylandDataFormats.ToDndActions(accepted), sourceActions);
 			session.Offer.Accept(session.Serial, action != 0 && session.Offer.MimeTypes is [var mime, ..] ? mime : null, action, action);
+			if (this.Log().IsEnabled(LogLevel.Trace))
+			{
+				this.Log().Trace($"Target accepts {accepted} at {session.Position}: offering action {action}.");
+			}
 		}
 	}
 
@@ -136,6 +147,10 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 	{
 		if (_session is { } session)
 		{
+			if (this.Log().IsEnabled(LogLevel.Trace))
+			{
+				this.Log().Trace(session.IsOwnDrag ? "Our own drag left the window." : "Drag left the window.");
+			}
 			_session = null;
 			StopAcceptancePoll();
 			if (session.IsOwnDrag)
