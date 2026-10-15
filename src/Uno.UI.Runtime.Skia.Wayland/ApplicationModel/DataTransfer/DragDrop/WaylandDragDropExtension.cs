@@ -8,7 +8,6 @@ using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
 using Uno.Extensions;
-using Uno.Foundation.Logging;
 using Uno.UI.Hosting;
 using Uno.WinUI.Runtime.Skia.Wayland.Protocols;
 using Windows.ApplicationModel.DataTransfer;
@@ -19,7 +18,7 @@ using Windows.Foundation;
 namespace Uno.WinUI.Runtime.Skia.Wayland;
 
 // Drops from other clients onto one window, and drags from it to other clients. All members run on the UI thread.
-internal sealed class WaylandDragDropExtension : IDragDropExtension
+internal sealed class WaylandDragDropExtension : IImmediateDragDropExtension
 {
 	private static readonly long _fakePointerId = Pointer.CreateUniqueIdForUnknownPointer();
 	private static readonly TimeSpan _acceptancePollInterval = TimeSpan.FromMilliseconds(100);
@@ -60,10 +59,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		{
 			session = new Session(offer, serial, own.Info.SourceId);
 			own.Info.RegisterCompletedCallback(result => Complete(session, result));
-			if (this.Log().IsEnabled(LogLevel.Trace))
-			{
-				this.Log().Trace("Our own drag entered the window it started from.");
-			}
+			WaylandDiagnostics.Trace("dnd: own drag entered the origin window");
 		}
 		else
 		{
@@ -71,10 +67,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 			WaylandDataFormats.Fill(package, offer);
 			session = new Session(offer, serial, _fakePointerId);
 
-			if (this.Log().IsEnabled(LogLevel.Trace))
-			{
-				this.Log().Trace($"Drag entered with operations {operations} and formats {string.Join(", ", offer.MimeTypes)}.");
-			}
+			WaylandDiagnostics.Trace($"dnd: drag entered with operations {operations} and formats {string.Join(", ", offer.MimeTypes)}");
 
 			var info = new CoreDragInfo(Source(session, position), package.GetView(), operations);
 			info.RegisterCompletedCallback(result => Complete(session, result));
@@ -130,10 +123,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 				? WaylandDropNegotiation.ChooseOwnDragAction(WaylandDataFormats.ToDndActions(accepted), sourceActions, accepted != DataPackageOperation.None)
 				: WaylandDropNegotiation.ChooseAction(WaylandDataFormats.ToDndActions(accepted), sourceActions);
 			session.Offer.Accept(session.Serial, action != 0 && session.Offer.MimeTypes is [var mime, ..] ? mime : null, action, action);
-			if (this.Log().IsEnabled(LogLevel.Trace))
-			{
-				this.Log().Trace($"Target accepts {accepted} at {session.Position}: offering action {action}.");
-			}
+			WaylandDiagnostics.Trace($"dnd: target accepts {accepted} at {session.Position}, offering action {action}");
 		}
 	}
 
@@ -147,10 +137,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 	{
 		if (_session is { } session)
 		{
-			if (this.Log().IsEnabled(LogLevel.Trace))
-			{
-				this.Log().Trace(session.IsOwnDrag ? "Our own drag left the window." : "Drag left the window.");
-			}
+			WaylandDiagnostics.Trace(session.IsOwnDrag ? "dnd: own drag left the window" : "dnd: drag left the window");
 			_session = null;
 			StopAcceptancePoll();
 			if (session.IsOwnDrag)
@@ -183,10 +170,7 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		}
 		var accepted = CoreDragDropManager.ProcessDropped(Source(session, session.Position));
 
-		if (this.Log().IsEnabled(LogLevel.Trace))
-		{
-			this.Log().Trace($"Drop processed, last accepted operation {accepted}.");
-		}
+		WaylandDiagnostics.Trace($"dnd: drop processed, last accepted operation {accepted}");
 	}
 
 	// Called once the drop handlers completed (or the drag was aborted). The offer stays alive until
@@ -214,20 +198,35 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 		}, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
 	}
 
-	// Called by Uno once its drag left the window bounds while the button is still held: the implicit grab is
-	// converted into a compositor drag, and onCompleted gets the action the target performed.
-	public void StartNativeDrag(CoreDragInfo info, Action<DataPackageOperation> onCompleted)
+	// Called by Uno as soon as its drag starts: the implicit grab is converted into a compositor drag, which is
+	// the only way a window covering this one can be dropped on, and onCompleted gets the action the target
+	// performed. Content no other client could take (Uno-private formats) stays a managed drag.
+	public bool TryStartNativeDrag(CoreDragInfo info, Action<DataPackageOperation> onCompleted)
 	{
-		if (Host is not { } host)
+		// Drags of other clients entering this window run a drag operation too; they already are compositor drags.
+		if (info.SourceId == _fakePointerId || Host is not { } host)
 		{
-			return;
+			return false;
+		}
+		string? reason = !_device.SupportsDragOutcome ? "wl_data_device_manager below v3"
+			: host.Input?.GrabSerial is null ? "no implicit grab"
+			: WaylandDataFormats.GetDragMimeTypes(info.Data).Count == 0 ? "nothing to offer"
+			: null;
+		if (reason is not null)
+		{
+			WaylandDiagnostics.Trace($"dnd: drag stays internal ({reason})");
+			return false;
 		}
 		// A drag that never completed (a target holding its offer) would block the compositor's single drag slot.
 		_device.OutgoingDrag?.Cancel();
 		var drag = new WaylandOutgoingDrag(_device, host, XamlRoot, info, onCompleted);
 		_device.OutgoingDrag = drag;
 		drag.Start();
+		return true;
 	}
+
+	// Only reached for drags TryStartNativeDrag declined, which keep their implicit grab and can come back.
+	public void StartNativeDrag(CoreDragInfo info, Action<DataPackageOperation> onCompleted) { }
 
 	private void OnXamlRootUnregistered(object? sender, XamlRoot root)
 	{

@@ -39,12 +39,24 @@ internal sealed class WaylandDragIcon : IDisposable
 
 	internal WlSurface Surface => _surface;
 
-	/// <summary>UI thread: copies the bitmap Uno rendered for the drag visual, if its pixels are available.</summary>
+	// Uno renders the drag visual during a later render pass; the drag waits briefly for it.
+	private static readonly TimeSpan _captureTimeout = TimeSpan.FromMilliseconds(150);
+
+	/// <summary>UI thread: copies the bitmap Uno rendered for the drag visual, if its pixels become available in time.</summary>
 	internal static async Task<WaylandDragIconImage?> CaptureAsync(CoreDragInfo info)
 	{
-		if (info.DragUI is not DragUI { Content: RenderTargetBitmap { PixelWidth: > 0, PixelHeight: > 0 } bitmap } ui)
+		if (info.DragUI is not DragUI { Content: RenderTargetBitmap bitmap } ui)
 		{
 			return null;
+		}
+		var deadline = Environment.TickCount64 + (long)_captureTimeout.TotalMilliseconds;
+		while (bitmap.PixelWidth <= 0 || bitmap.PixelHeight <= 0)
+		{
+			if (Environment.TickCount64 >= deadline)
+			{
+				return null;
+			}
+			await Task.Delay(16);
 		}
 		var pixels = (await bitmap.GetPixelsAsync()).ToArray();
 		var (width, height) = (bitmap.PixelWidth, bitmap.PixelHeight);

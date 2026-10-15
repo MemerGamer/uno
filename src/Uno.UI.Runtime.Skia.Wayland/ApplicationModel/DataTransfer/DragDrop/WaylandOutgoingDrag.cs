@@ -48,13 +48,6 @@ internal sealed class WaylandOutgoingDrag
 		{
 			var view = Info.Data;
 			var mimeTypes = WaylandDataFormats.GetDragMimeTypes(view);
-			if (mimeTypes.Count == 0)
-			{
-				// Only Uno-private content (a ListView reorder, say): no client could accept it, and a compositor
-				// drag would end the internal one. Uno's drag keeps the implicit grab and can come back.
-				_device.Display.Post(Abandon);
-				return;
-			}
 			// Link has no Wayland action; a drag with nothing else to offer is still a copy for the target.
 			var actions = WaylandDataFormats.ToDndActions(Info.AllowedOperations);
 			if (actions == 0)
@@ -91,11 +84,8 @@ internal sealed class WaylandOutgoingDrag
 		{
 			if (_host.Input?.GrabSerial is not { } serial)
 			{
-				// Without a press to convert the compositor would ignore the request; Uno's internal drag goes on.
-				if (this.Log().IsEnabled(LogLevel.Debug))
-				{
-					this.Log().Debug("No implicit grab serial; the drag stays internal.");
-				}
+				// The press ended before the request could be sent; Uno's internal drag goes on.
+				WaylandDiagnostics.Trace("dnd: grab ended before start_drag, the drag stays internal");
 				Abandon();
 				return;
 			}
@@ -103,10 +93,7 @@ internal sealed class WaylandOutgoingDrag
 			if (source.Version < 3)
 			{
 				// Before v3 a source learns nothing after the drop (no dnd_finished), so the drag could never complete.
-				if (this.Log().IsEnabled(LogLevel.Debug))
-				{
-					this.Log().Debug($"wl_data_source v{source.Version} cannot report a drag's outcome; the drag stays internal.");
-				}
+				WaylandDiagnostics.Trace($"dnd: wl_data_source v{source.Version} cannot report an outcome, the drag stays internal");
 				source.Dispose();
 				Abandon();
 				return;
@@ -119,14 +106,26 @@ internal sealed class WaylandOutgoingDrag
 			source.SetActions(actions);
 			var content = new WaylandDataSourceContent(_device, view, "drag");
 			_content = content;
-			source.Target += (_, e) => _state.Target(e.MimeType);
-			source.Action += (_, e) => _state.SetAction(e.DndAction);
+			source.Target += (_, e) =>
+			{
+				_state.Target(e.MimeType);
+				WaylandDiagnostics.Trace($"dnd: source target {e.MimeType ?? "(none)"}");
+			};
+			source.Action += (_, e) =>
+			{
+				_state.SetAction(e.DndAction);
+				WaylandDiagnostics.Trace($"dnd: source action {e.DndAction}");
+			};
 			source.Send += (_, e) =>
 			{
 				_state.Sent();
 				content.Send(e.MimeType, e.Fd);
 			};
-			source.DndDropPerformed += (_, _) => _state.DropPerformed();
+			source.DndDropPerformed += (_, _) =>
+			{
+				_state.DropPerformed();
+				WaylandDiagnostics.Trace("dnd: source drop performed");
+			};
 			source.DndFinished += (_, _) =>
 			{
 				if (_state.Finished())
@@ -155,10 +154,7 @@ internal sealed class WaylandOutgoingDrag
 			_host.PointerSource.BeginNativeDrag();
 			_device.StartDrag(source, _host.Surface, _icon?.Surface, serial);
 			_icon?.Present();
-			if (this.Log().IsEnabled(LogLevel.Trace))
-			{
-				this.Log().Trace($"Native drag started with actions {actions} and formats {string.Join(", ", mimeTypes)}.");
-			}
+			WaylandDiagnostics.Trace($"dnd: start_drag serial={serial} actions={actions} icon={_icon is not null} formats={string.Join(",", mimeTypes)}");
 		}
 		catch (Exception error)
 		{
@@ -207,10 +203,7 @@ internal sealed class WaylandOutgoingDrag
 			return;
 		}
 		var result = WaylandDataFormats.ToOperations(_state.Result);
-		if (this.Log().IsEnabled(LogLevel.Trace))
-		{
-			this.Log().Trace($"Native drag {_state.Phase} with action {_state.Result} ({result}).");
-		}
+		WaylandDiagnostics.Trace($"dnd: source {_state.Phase} action={_state.Result} ({result}) targetAccepts={_state.TargetAccepts} sent={_state.DataSent}");
 		_icon?.Dispose();
 		_icon = null;
 		_content?.Dispose();

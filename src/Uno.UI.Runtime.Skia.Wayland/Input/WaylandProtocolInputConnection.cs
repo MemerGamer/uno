@@ -36,8 +36,8 @@ internal sealed class WaylandProtocolInputConnection : IWaylandInputConnection
 	// to the UI thread.
 	public event EventHandler<WlPointer.ButtonEventArgs>? PointerButton;
 	private readonly WaylandGrabSerial _grab = new();
-	// Dispatch thread: the serial of the implicit grab (button or touch) in progress on this window's surface,
-	// which a wl_data_device.start_drag needs; null once that grab ended.
+	// The serial of the implicit grab (button or touch) in progress on this window's surface, which a
+	// wl_data_device.start_drag needs; null once that grab ended. Updated on the dispatch thread, readable anywhere.
 	public uint? GrabSerial => _grab.Serial;
 
 	public IDisposable GetPointer(WaylandPointerInputSource sink)

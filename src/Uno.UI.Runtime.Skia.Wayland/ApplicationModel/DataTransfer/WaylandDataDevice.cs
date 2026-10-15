@@ -132,6 +132,9 @@ internal sealed class WaylandDataDevice
 		}
 	}
 
+	// Sources before wl_data_source v3 never learn a drag's outcome, so drags are only handed to the compositor from v3.
+	internal bool SupportsDragOutcome => _manager.Version >= 3;
+
 	// Dispatch thread.
 	internal WlDataSource CreateSource() => _manager.CreateDataSource();
 
