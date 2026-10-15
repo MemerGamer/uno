@@ -23,6 +23,7 @@
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/ApplicationModel/DataTransfer/WaylandFileUris.cs" Link="DataTransfer/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/ApplicationModel/DataTransfer/WaylandSelectionSerial.cs" Link="DataTransfer/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/ApplicationModel/DataTransfer/WaylandDropNegotiation.cs" Link="DataTransfer/%(Filename)%(Extension)" />
+		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/ApplicationModel/DataTransfer/DragDrop/WaylandDragSourceState.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/ApplicationModel/DataTransfer/DragDrop/WaylandDragIconLayout.cs" Link="DataTransfer/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandTextInputText.cs" Link="Input/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandTextInputBatch.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandTextInputContent.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandTextInputStateHistory.cs" Link="Input/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI/UI/Xaml/Input/InputScopeNameValue.cs" Link="Input/%(Filename)%(Extension)" />
@@ -32,7 +33,7 @@
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandFrameReadiness.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandDecorationLayout.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandToplevelStates.cs" Link="Hosting/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandConfigureQueue.cs" Link="Hosting/%(Filename)%(Extension)" />
 		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Hosting/WaylandNonClientRegions.cs" Link="Hosting/%(Filename)%(Extension)" />
-		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandPointerPress.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandXkb.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandKeyboardCompose.cs" Link="Input/%(Filename)%(Extension)" />
+		<Compile Include="../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandPointerPress.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandGrabSerial.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandXkb.cs;../../../src/Uno.UI.Runtime.Skia.Wayland/Input/WaylandKeyboardCompose.cs" Link="Input/%(Filename)%(Extension)" />
 		<None Include="../protocols/*.xml" Link="protocols/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
 	</ItemGroup>
 </Project>

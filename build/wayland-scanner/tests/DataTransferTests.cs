@@ -22,6 +22,13 @@ public sealed class DataTransferTests
 	}
 
 	[TestMethod]
+	public void UriTextJoinsFileUrisWithBareNewlines()
+	{
+		Assert.AreEqual("", WaylandFileUris.FormatUriText([]));
+		Assert.AreEqual("file:///a%20b\nfile:///c", WaylandFileUris.FormatUriText(["/a b", "/c"]));
+	}
+
+	[TestMethod]
 	public void UriListSkipsCommentsRemoteHostsAndOtherSchemes()
 	{
 		var text = "# comment\nfile:///a\nfile://localhost/b\nfile:/c\nfile://server/d\nhttps://example.com/e\n\nfile:///f\0";
