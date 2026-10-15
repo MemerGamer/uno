@@ -104,7 +104,14 @@ internal partial class X11XamlRootHost
 
 		while (true)
 		{
-			var ret = X11Helper.poll(fds, 1, 1000); // timeout every second to see if the window is closed
+			// Another thread reading this connection (a selection transfer waiting for its own event) can move events
+			// into Xlib's queue, where poll no longer sees them: those are handled without waiting for the socket.
+			int queued;
+			using (X11Helper.XLock(x11Window.Display))
+			{
+				queued = X11Helper.XEventsQueued(x11Window.Display, 0 /* QueuedAlready */);
+			}
+			var ret = queued > 0 ? 1 : X11Helper.poll(fds, 1, 1000); // timeout every second to see if the window is closed
 
 			if (Closed.IsCompleted)
 			{
@@ -133,7 +140,7 @@ internal partial class X11XamlRootHost
 					}
 				});
 			}
-			else if ((fds[0].revents & X11Helper.POLLIN) == 0)
+			else if (queued == 0 && (fds[0].revents & X11Helper.POLLIN) == 0)
 			{
 				continue;
 			}

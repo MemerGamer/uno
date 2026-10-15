@@ -356,6 +356,14 @@ internal static partial class X11Helper
 	public static partial int XChangeActivePointerGrab(IntPtr display, uint eventMask, IntPtr cursor, IntPtr time);
 
 	[LibraryImport(libX11)]
+	public static partial int XEventsQueued(IntPtr display, int mode);
+
+	// Takes only the matching event, leaving the others queued for the window's event loop.
+	[LibraryImport(libX11)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static partial bool XCheckTypedWindowEvent(IntPtr display, IntPtr window, int eventType, out XEvent eventReturn);
+
+	[LibraryImport(libX11)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static partial bool XQueryPointer(IntPtr display, IntPtr window, out IntPtr root, out IntPtr child,
 		out int rootX, out int rootY, out int windowX, out int windowY, out uint mask);
