@@ -631,7 +631,8 @@ internal class X11ClipboardExtension : IClipboardExtension
 		return dataPackage.GetView();
 	}
 
-	public static void FillDataPackage(X11Window x11Window, IntPtr selectionAtom, DataPackage dataPackage, IntPtr[] formatAtoms)
+	/// <param name="eager">Read text and file lists now. Otherwise every format is read on first use, off the UI thread.</param>
+	public static void FillDataPackage(X11Window x11Window, IntPtr selectionAtom, DataPackage dataPackage, IntPtr[] formatAtoms, bool eager = true)
 	{
 		using var _ = X11Helper.XLock(x11Window.Display);
 
@@ -649,6 +650,20 @@ internal class X11ClipboardExtension : IClipboardExtension
 			//    Thread.CurrentThread.Name = $"XSEL {DateTime.Now}";
 			//    return <your method>();
 			// }, TaskCreationOptions.LongRunning);
+		}
+
+		if (!eager)
+		{
+			if (formats.FirstOrDefault(f => TextFormats.ContainsKey(f.name)) is var text && text.atom != IntPtr.Zero)
+			{
+				dataPackage.SetDataProvider(StandardDataFormats.Text, async ct => await Task.Run(() => WaitForText(x11Window, text.atom, selectionAtom), ct));
+			}
+			if (formats.FirstOrDefault(f => f.name == "text/uri-list") is var uris && uris.atom != IntPtr.Zero)
+			{
+				dataPackage.SetDataProvider(StandardDataFormats.StorageItems, async ct => await Task.Run(() =>
+					WaitForBytes(x11Window, uris.atom, selectionAtom) is { } bytes ? ProcessUriList(Encoding.UTF8.GetString(bytes)).ToList() : new List<IStorageItem>(), ct));
+			}
+			return;
 		}
 
 		if (formats.FirstOrDefault(f => TextFormats.ContainsKey(f.name)) is var f2 && f2.atom != IntPtr.Zero)
@@ -701,19 +716,12 @@ internal class X11ClipboardExtension : IClipboardExtension
 
 		while (System.Diagnostics.Stopwatch.GetTimestamp() < deadline)
 		{
-			if (X11Helper.XPending(x11Window.Display) > 0)
+			// The window may belong to a host whose own thread reads its other events (drag and drop reads XdndSelection
+			// through the host window), so only the SelectionNotify is taken from the queue.
+			if (X11Helper.XCheckTypedWindowEvent(x11Window.Display, x11Window.Window, (int)XEventName.SelectionNotify, out event_))
 			{
-				_ = XLib.XNextEvent(x11Window.Display, out event_);
-				if (event_.type == XEventName.SelectionNotify)
-				{
-					gotSelection = true;
-					break;
-				}
-
-				if (_logger.IsEnabled(LogLevel.Debug))
-				{
-					_logger.Debug($"{nameof(WaitForFormats)}: Unexpected X {event_.type} event while waiting for clipboard formats.");
-				}
+				gotSelection = true;
+				break;
 			}
 			else
 			{
@@ -804,6 +812,16 @@ internal class X11ClipboardExtension : IClipboardExtension
 			return null;
 		}
 
+		// INCR chunks are announced with PropertyNotify, which must be selected before the INCR property is deleted.
+		// The window's own mask (a host window's) is kept and restored.
+		XWindowAttributes attributes = default;
+		_ = XLib.XGetWindowAttributes(x11Window.Display, x11Window.Window, ref attributes);
+		using var maskDisposable = new DisposableStruct<X11Window, XWindowAttributes>(static (window, attrs) =>
+		{
+			_ = XLib.XSelectInput(window.Display, window.Window, attrs.your_event_mask);
+		}, x11Window, attributes);
+		_ = XLib.XSelectInput(x11Window.Display, x11Window.Window, attributes.your_event_mask | (IntPtr)EventMask.PropertyChangeMask);
+
 		_ = XLib.XConvertSelection(x11Window.Display, selection, format, format,
 			x11Window.Window, X11Helper.CurrentTime);
 
@@ -815,14 +833,11 @@ internal class X11ClipboardExtension : IClipboardExtension
 
 		while (System.Diagnostics.Stopwatch.GetTimestamp() < deadline)
 		{
-			if (X11Helper.XPending(x11Window.Display) > 0)
+			// Only the SelectionNotify: a host window's other events belong to its event loop.
+			if (X11Helper.XCheckTypedWindowEvent(x11Window.Display, x11Window.Window, (int)XEventName.SelectionNotify, out event_))
 			{
-				_ = XLib.XNextEvent(x11Window.Display, out event_);
-				if (event_.type == XEventName.SelectionNotify)
-				{
-					gotSelection = true;
-					break;
-				}
+				gotSelection = true;
+				break;
 			}
 			else
 			{
@@ -890,30 +905,22 @@ internal class X11ClipboardExtension : IClipboardExtension
 			_ = XLib.XDeleteProperty(x11Window.Display, x11Window.Window, sel.property);
 			_ = XLib.XFlush(x11Window.Display); // just a precaution
 
-			XWindowAttributes attributes = default;
-			_ = XLib.XGetWindowAttributes(x11Window.Display, x11Window.Window, ref attributes);
-
-			using var maskDisposable = new DisposableStruct<X11Window, XWindowAttributes>(static (window, attrs) =>
-			{
-				_ = XLib.XSelectInput(window.Display, window.Window, attrs.your_event_mask);
-			}, x11Window, attributes);
-			_ = XLib.XSelectInput(x11Window.Display, x11Window.Window, (IntPtr)EventMask.PropertyChangeMask);
-
 			while (true)
 			{
 				var start = Stopwatch.GetTimestamp();
+				var received = false;
 				SpinWait.SpinUntil(() =>
 				{
-					return XLib.XPending(x11Window.Display) > 0 || Stopwatch.GetElapsedTime(start).Milliseconds > IncrMaxDelayMS;
+					_ = XLib.XFlush(x11Window.Display);
+					received = X11Helper.XCheckTypedWindowEvent(x11Window.Display, x11Window.Window, (int)XEventName.PropertyNotify, out event_);
+					return received || Stopwatch.GetElapsedTime(start).TotalMilliseconds > IncrMaxDelayMS;
 				});
-				if (ct.IsCancellationRequested || Stopwatch.GetElapsedTime(start).Milliseconds > IncrMaxDelayMS)
+				if (ct.IsCancellationRequested || !received)
 				{
 					return null;
 				}
 
-				_ = XLib.XNextEvent(x11Window.Display, out event_);
-
-				if (event_.type != XEventName.PropertyNotify || event_.PropertyEvent.state != X11Helper.PropertyNewValue)
+				if (event_.PropertyEvent.atom != sel.property || event_.PropertyEvent.state != X11Helper.PropertyNewValue)
 				{
 					continue;
 				}
@@ -939,9 +946,15 @@ internal class X11ClipboardExtension : IClipboardExtension
 					_logger.Trace($"{nameof(WaitForBytes)}: received INCR chunk, {bytes_after} remaining");
 				}
 
-				if (bytes_after == 0)
+				if (actualTypeAtom == IntPtr.Zero)
 				{
-					// end of transfer
+					// No property: a notification already consumed, such as the one for the INCR header itself.
+					continue;
+				}
+
+				if (nitems == 0)
+				{
+					// An existing zero-length property ends the transfer.
 					break;
 				}
 
