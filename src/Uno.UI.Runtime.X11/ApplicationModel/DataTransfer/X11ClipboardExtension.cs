@@ -945,9 +945,15 @@ internal class X11ClipboardExtension : IClipboardExtension
 					_logger.Trace($"{nameof(WaitForBytes)}: received INCR chunk, {bytes_after} remaining");
 				}
 
+				if (actualTypeAtom == IntPtr.Zero)
+				{
+					// No property: a notification already consumed, such as the one for the INCR header itself.
+					continue;
+				}
+
 				if (nitems == 0)
 				{
-					// The zero-length property ends the transfer.
+					// An existing zero-length property ends the transfer.
 					break;
 				}
 
