@@ -144,7 +144,7 @@ internal sealed class X11DragSource
 		}
 		using var xlock = X11Helper.XLock(display);
 		Send(_window, _window, Atom("_UNO_DND_WAKE"));
-		XLib.XFlush(display);
+		_ = XLib.XFlush(display);
 	}
 
 	private IntPtr Atom(string name)
@@ -179,7 +179,7 @@ internal sealed class X11DragSource
 				_controlLeft = X11Helper.XKeysymToKeycode(_display, 0xffe3);
 				_controlRight = X11Helper.XKeysymToKeycode(_display, 0xffe4);
 				fd = XLib.XConnectionNumber(_display);
-				XLib.XFlush(_display);
+				_ = XLib.XFlush(_display);
 			}
 			_ready.TrySetResult(true);
 			while (true)
@@ -215,12 +215,12 @@ internal sealed class X11DragSource
 							Cancel(drag);
 						}
 					}
-					XLib.XFlush(_display);
+					_ = XLib.XFlush(_display);
 					timeout = !_queue.IsEmpty || XLib.XPending(_display) > 0 ? 0
 						: _drag is not null || _starting is not null || _reads.Count > 0 || _sends.Count > 0 ? 15 : 1000;
 				}
 				var poll = new X11Helper.Pollfd { fd = fd, events = X11Helper.POLLIN };
-				X11Helper.poll(&poll, 1, timeout);
+				_ = X11Helper.poll(&poll, 1, timeout);
 			}
 		}
 		catch (Exception error)
@@ -306,7 +306,7 @@ internal sealed class X11DragSource
 		}
 		_pointerGrabbed = true;
 		_keyboardGrabbed = X11Helper.XGrabKeyboard(_display, _root, false, 1, 1, session.Time) == 0;
-		XLib.XSetSelectionOwner(_display, Atom("XdndSelection"), session.Window, session.Time);
+		_ = XLib.XSetSelectionOwner(_display, Atom("XdndSelection"), session.Window, session.Time);
 		if (XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) != session.Window)
 		{
 			RejectStart(session);
@@ -347,7 +347,7 @@ internal sealed class X11DragSource
 			{
 				if (XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) == session.Window)
 				{
-					XLib.XSetSelectionOwner(_display, Atom("XdndSelection"), IntPtr.Zero, IntPtr.Zero);
+					_ = XLib.XSetSelectionOwner(_display, Atom("XdndSelection"), IntPtr.Zero, IntPtr.Zero);
 				}
 				_selectionOwner = null;
 			}
@@ -366,7 +366,7 @@ internal sealed class X11DragSource
 		if (session is { Done: true } && session.Window != IntPtr.Zero
 			&& XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) != session.Window)
 		{
-			XLib.XDestroyWindow(_display, session.Window);
+			_ = XLib.XDestroyWindow(_display, session.Window);
 			session.Window = IntPtr.Zero;
 		}
 	}
@@ -754,7 +754,7 @@ internal sealed class X11DragSource
 		drag.Feedback = operation;
 		if (_pointerGrabbed && drag.Cursors is { } cursors)
 		{
-			X11Helper.XChangeActivePointerGrab(_display, PointerMask, cursors[operation], IntPtr.Zero);
+			_ = X11Helper.XChangeActivePointerGrab(_display, PointerMask, cursors[operation], IntPtr.Zero);
 		}
 	}
 
@@ -849,12 +849,12 @@ internal sealed class X11DragSource
 	{
 		if (_pointerGrabbed)
 		{
-			X11Helper.XUngrabPointer(_display, IntPtr.Zero);
+			_ = X11Helper.XUngrabPointer(_display, IntPtr.Zero);
 			_pointerGrabbed = false;
 		}
 		if (_keyboardGrabbed)
 		{
-			X11Helper.XUngrabKeyboard(_display, IntPtr.Zero);
+			_ = X11Helper.XUngrabKeyboard(_display, IntPtr.Zero);
 			_keyboardGrabbed = false;
 		}
 	}
@@ -888,7 +888,7 @@ internal sealed class X11DragSource
 			}
 			finally
 			{
-				XLib.XFree(children);
+				_ = XLib.XFree(children);
 			}
 		}
 		Target best = default;
@@ -926,7 +926,7 @@ internal sealed class X11DragSource
 		{
 			if (data != IntPtr.Zero)
 			{
-				XLib.XFree(data);
+				_ = XLib.XFree(data);
 			}
 		}
 	}
@@ -938,8 +938,16 @@ internal sealed class X11DragSource
 		{
 			ClientMessageEvent = new XClientMessageEvent
 			{
-				type = XEventName.ClientMessage, display = _display, window = window, message_type = message,
-				format = 32, ptr1 = a, ptr2 = b, ptr3 = c, ptr4 = d, ptr5 = e
+				type = XEventName.ClientMessage,
+				display = _display,
+				window = window,
+				message_type = message,
+				format = 32,
+				ptr1 = a,
+				ptr2 = b,
+				ptr3 = c,
+				ptr4 = d,
+				ptr5 = e,
 			}
 		};
 		XLib.XSendEvent(_display, receiver, false, IntPtr.Zero, ref ev);
@@ -1018,7 +1026,7 @@ internal sealed class X11DragSource
 	{
 		fixed (byte* data = bytes)
 		{
-			XLib.XChangeProperty(_display, window, property, type, 8, PropertyMode.Replace, (IntPtr)(data + offset), count);
+			_ = XLib.XChangeProperty(_display, window, property, type, 8, PropertyMode.Replace, (IntPtr)(data + offset), count);
 		}
 	}
 
@@ -1028,8 +1036,13 @@ internal sealed class X11DragSource
 		{
 			SelectionEvent = new XSelectionEvent
 			{
-				type = XEventName.SelectionNotify, display = _display, requestor = request.requestor,
-				selection = request.selection, target = request.target, property = property, time = request.time
+				type = XEventName.SelectionNotify,
+				display = _display,
+				requestor = request.requestor,
+				selection = request.selection,
+				target = request.target,
+				property = property,
+				time = request.time,
 			}
 		};
 		XLib.XSendEvent(_display, request.requestor, false, IntPtr.Zero, ref ev);

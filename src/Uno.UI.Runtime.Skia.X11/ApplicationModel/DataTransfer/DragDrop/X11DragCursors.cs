@@ -90,7 +90,7 @@ internal sealed class X11DragCursors : IDisposable
 		{
 			if (cursor != IntPtr.Zero)
 			{
-				XLib.XFreeCursor(_display, cursor);
+				_ = XLib.XFreeCursor(_display, cursor);
 			}
 		}
 		_cursors.Clear();

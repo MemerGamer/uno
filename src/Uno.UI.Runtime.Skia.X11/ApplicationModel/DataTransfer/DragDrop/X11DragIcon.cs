@@ -97,8 +97,8 @@ internal sealed class X11DragIcon : IDisposable
 			}
 			icon._image = X11Helper.XCreateImage(display, visual.visual, 32, 2, 0, icon._bitmap.GetPixels(), (uint)layout.Width, (uint)layout.Height, 32, icon._bitmap.RowBytes);
 			icon._gc = X11Helper.XCreateGC(display, icon.Window, 0, IntPtr.Zero);
-			XLib.XMapWindow(display, icon.Window);
-			XLib.XRaiseWindow(display, icon.Window);
+			_ = XLib.XMapWindow(display, icon.Window);
+			_ = XLib.XRaiseWindow(display, icon.Window);
 			icon.Draw();
 			return icon;
 		}
@@ -112,7 +112,7 @@ internal sealed class X11DragIcon : IDisposable
 	internal void Move(int rootX, int rootY)
 	{
 		using var xlock = X11Helper.XLock(_display);
-		X11Helper.XMoveWindow(_display, Window, rootX + _layout.OffsetX, rootY + _layout.OffsetY);
+		_ = X11Helper.XMoveWindow(_display, Window, rootX + _layout.OffsetX, rootY + _layout.OffsetY);
 	}
 
 	internal void Draw()
@@ -120,7 +120,7 @@ internal sealed class X11DragIcon : IDisposable
 		using var xlock = X11Helper.XLock(_display);
 		if (_image != IntPtr.Zero && _gc != IntPtr.Zero)
 		{
-			X11Helper.XPutImage(_display, Window, _gc, _image, 0, 0, 0, 0, (uint)_layout.Width, (uint)_layout.Height);
+			_ = X11Helper.XPutImage(_display, Window, _gc, _image, 0, 0, 0, 0, (uint)_layout.Width, (uint)_layout.Height);
 		}
 	}
 
@@ -131,24 +131,24 @@ internal sealed class X11DragIcon : IDisposable
 		{
 			// The bitmap owns the pixels; XDestroyImage must only free the image structure.
 			((XImage*)_image)->data = IntPtr.Zero;
-			XLib.XDestroyImage(_image);
+			_ = XLib.XDestroyImage(_image);
 			_image = IntPtr.Zero;
 		}
 		_bitmap?.Dispose();
 		_bitmap = null;
 		if (_gc != IntPtr.Zero)
 		{
-			X11Helper.XFreeGC(_display, _gc);
+			_ = X11Helper.XFreeGC(_display, _gc);
 			_gc = IntPtr.Zero;
 		}
 		if (Window != IntPtr.Zero)
 		{
-			XLib.XDestroyWindow(_display, Window);
+			_ = XLib.XDestroyWindow(_display, Window);
 			Window = IntPtr.Zero;
 		}
 		if (_colormap != IntPtr.Zero)
 		{
-			X11Helper.XFreeColormap(_display, _colormap);
+			_ = X11Helper.XFreeColormap(_display, _colormap);
 			_colormap = IntPtr.Zero;
 		}
 	}

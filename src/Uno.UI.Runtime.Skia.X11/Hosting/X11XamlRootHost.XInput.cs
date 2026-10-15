@@ -118,11 +118,11 @@ internal partial class X11XamlRootHost
 		void Release(X11Window window)
 		{
 			using var xlock = X11Helper.XLock(window.Display);
-			X11Helper.XUngrabPointer(window.Display, IntPtr.Zero);
+			_ = X11Helper.XUngrabPointer(window.Display, IntPtr.Zero);
 			if (_xi2Details is { Item1: not XIVersion.Unsupported }
 				&& X11Helper.XIGetClientPointer(window.Display, window.Window, out var deviceId))
 			{
-				X11Helper.XIUngrabDevice(window.Display, deviceId, IntPtr.Zero);
+				_ = X11Helper.XIUngrabDevice(window.Display, deviceId, IntPtr.Zero);
 			}
 			XLib.XSync(window.Display, false);
 		}
