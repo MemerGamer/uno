@@ -38,9 +38,11 @@ internal static class SkiaRenderHelper
 	// The picture clears transparent, then this square root background covers the frame before text.
 	// Capture this on the UI thread with the picture; a host's initial clear is not an opacity contract.
 	internal static bool CanUseLcdRoot(UIElement rootElement, float width, float height)
-		=> FontDetails.UsesLcd && HasLcdRootCoverage(rootElement, width, height);
+		=> FontDetails.UsesLcd && HasLcdRootCoverage(rootElement, width, height, ++_lcdFrame);
 
-	internal static bool HasLcdRootCoverage(UIElement rootElement, float width, float height)
+	private static long _lcdFrame;
+
+	internal static bool HasLcdRootCoverage(UIElement rootElement, float width, float height, long frame = 0)
 		=> (rootElement is RootVisual or XamlIslandRoot) && rootElement is Panel
 		{
 			Background: Microsoft.UI.Xaml.Media.SolidColorBrush { Color.A: 255, Opacity: 1 },
@@ -53,36 +55,29 @@ internal static class SkiaRenderHelper
 		} && rootElement.Visual.TotalMatrix.IsIdentity && rootElement.Visual.Opacity == 1 && rootElement.Visual.Clip is null
 		&& rootElement.Visual.Size.X >= width && rootElement.Visual.Size.Y >= height
 		&& (rootElement.Visual.LayoutClip is not { } clip || (clip.rect.X <= 0 && clip.rect.Y <= 0 && clip.rect.Right >= width && clip.rect.Bottom >= height))
-		&& HasOnlyAxisAlignedText(rootElement.Visual);
+		&& HasOnlyAxisAlignedText(rootElement.Visual, frame);
 
-	private static bool HasOnlyAxisAlignedText(Visual visual)
+	internal static bool IsLcdTextMatrix(SKMatrix matrix)
+		=> matrix.SkewX == 0 && matrix.SkewY == 0 && matrix.Persp0 == 0 && matrix.Persp1 == 0 && matrix.Persp2 == 1
+			&& matrix.ScaleX > 0 && matrix.ScaleY > 0 && float.IsFinite(matrix.ScaleX) && float.IsFinite(matrix.ScaleY);
+
+	// Cached text pictures use local matrices and are replayed under TotalMatrix: TextVisual records grayscale glyphs
+	// when its TotalMatrix is not LCD-safe, and the frame stays grayscale while a stale recording is drawn.
+	private static bool HasOnlyAxisAlignedText(Visual visual, long frame)
 	{
 		if (!visual.IsVisible || visual.Opacity == 0)
 		{
 			return true;
 		}
-		if (visual is TextVisual)
-		{
-			var matrix = visual.TotalMatrix.ToSKMatrix();
-			if (matrix.SkewX != 0 || matrix.SkewY != 0 || matrix.Persp0 != 0 || matrix.Persp1 != 0 || matrix.Persp2 != 1
-				|| !(matrix.ScaleX > 0 && matrix.ScaleY > 0) || !float.IsFinite(matrix.ScaleX) || !float.IsFinite(matrix.ScaleY))
-			{
-				return false;
-			}
-		}
-		// Cached child pictures use local matrices. Gate the whole frame so an ancestor rotation
-		// cannot replay an already-recorded LCD font into a surface with physical pixel geometry.
+		var result = visual is not TextVisual text || text.IsLcdSafeRecording(frame);
 		if (visual is ContainerVisual container)
 		{
 			foreach (var child in container.Children.InnerList)
 			{
-				if (!HasOnlyAxisAlignedText(child))
-				{
-					return false;
-				}
+				result &= HasOnlyAxisAlignedText(child, frame);
 			}
 		}
-		return true;
+		return result;
 	}
 
 	internal static (SKPicture picture, SKPath nativeClipPath, List<Visual> nativeVisualsInZOrder) RecordPictureAndReturnPath(float width, float height, ContainerVisual rootVisual, bool invertPath, SKPath? damage = null, bool fullDamage = false)

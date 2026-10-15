@@ -17,7 +17,7 @@ public sealed class Given_LinuxFontRendering
 		var settings = LinuxFontRenderingSettings.FromPattern(null, null, 99, 99, null, null);
 		Assert.AreEqual(SKFontHinting.Normal, settings.Hinting);
 		Assert.AreEqual(SKPixelGeometry.Unknown, settings.PixelGeometry);
-		Assert.AreEqual(SKFontEdging.Antialias, settings.Edging);
+		Assert.AreEqual(SKFontEdging.SubpixelAntialias, settings.Edging);
 	}
 
 	[TestMethod]
@@ -28,7 +28,7 @@ public sealed class Given_LinuxFontRendering
 		extension.Apply(font);
 		Assert.IsFalse(extension.Settings.HasFontConfig);
 		Assert.AreEqual(SKFontHinting.Normal, font.Hinting);
-		Assert.AreEqual(SKFontEdging.Antialias, font.Edging);
+		Assert.AreEqual(SKFontEdging.SubpixelAntialias, font.Edging);
 		Assert.IsTrue(font.Subpixel);
 		Assert.IsTrue(font.BaselineSnap);
 		font.Hinting = SKFontHinting.Full;
@@ -44,7 +44,7 @@ public sealed class Given_LinuxFontRendering
 		using var font = new SKFont { ForceAutoHinting = true };
 		new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Unavailable.WithOverrides(" slight ", null)).Apply(font);
 		Assert.AreEqual(SKFontHinting.Slight, font.Hinting);
-		Assert.AreEqual(SKFontEdging.Antialias, font.Edging);
+		Assert.AreEqual(SKFontEdging.SubpixelAntialias, font.Edging);
 		Assert.IsTrue(font.ForceAutoHinting);
 		font.Hinting = SKFontHinting.Full;
 		new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Unavailable.WithOverrides("invalid", null)).Apply(font);
@@ -71,6 +71,110 @@ public sealed class Given_LinuxFontRendering
 	[DataRow(5, SKPixelGeometry.Unknown)]
 	public void When_RgbaIsMapped(int rgba, SKPixelGeometry expected)
 		=> Assert.AreEqual(expected, LinuxFontRenderingSettings.FromPattern(true, true, 1, rgba, 1, false).PixelGeometry);
+
+	[TestMethod]
+	[DataRow(null, false)]
+	[DataRow(0, false)]
+	[DataRow(5, true)]
+	public void When_ExplicitNoneIsDistinctFromUnknown(int? rgba, bool explicitNone)
+	{
+		var settings = LinuxFontRenderingSettings.FromPattern(true, true, 1, rgba, 1, false);
+		Assert.AreEqual(SKPixelGeometry.Unknown, settings.PixelGeometry);
+		Assert.AreEqual(explicitNone, settings.ExplicitNone);
+		Assert.AreEqual(explicitNone ? LinuxTextGeometrySource.FontConfig : LinuxTextGeometrySource.Unknown, settings.GeometrySource);
+		Assert.AreEqual(explicitNone ? SKFontEdging.Antialias : SKFontEdging.SubpixelAntialias, settings.Edging);
+		Assert.AreEqual(SKFontEdging.SubpixelAntialias, settings.WithOverrides(null, null, lcd: "on").Edging);
+	}
+
+	[TestMethod]
+	[DataRow(null, "Auto")]
+	[DataRow("auto", "Auto")]
+	[DataRow(" ON ", "On")]
+	[DataRow(" Off ", "Off")]
+	[DataRow("invalid", "Auto")]
+	[DataRow("", "Auto")]
+	public void When_LcdModeIsOverridden(string? value, string expected)
+	{
+		var settings = LinuxFontRenderingSettings.Default.WithOverrides(null, null, lcd: value);
+		Assert.AreEqual(expected, settings.LcdMode.ToString());
+		Assert.AreEqual(settings, settings.WithOverrides(null, null, lcd: "invalid"));
+	}
+
+	[TestMethod]
+	[DataRow("off", null, SKFontEdging.Antialias, SKPixelGeometry.Unknown)]
+	[DataRow("off", "rgb", SKFontEdging.Antialias, SKPixelGeometry.Unknown)]
+	[DataRow("auto", null, SKFontEdging.SubpixelAntialias, SKPixelGeometry.Unknown)]
+	[DataRow("auto", "none", SKFontEdging.Antialias, SKPixelGeometry.Unknown)]
+	[DataRow("auto", "bgr", SKFontEdging.SubpixelAntialias, SKPixelGeometry.BgrHorizontal)]
+	[DataRow("on", null, SKFontEdging.SubpixelAntialias, SKPixelGeometry.RgbHorizontal)]
+	[DataRow("on", "none", SKFontEdging.SubpixelAntialias, SKPixelGeometry.RgbHorizontal)]
+	[DataRow("on", "bgr", SKFontEdging.SubpixelAntialias, SKPixelGeometry.BgrHorizontal)]
+	public void When_LcdModeSelectsEdgingAndPreference(string mode, string? rgba, SKFontEdging edging, SKPixelGeometry geometry)
+	{
+		var settings = LinuxFontRenderingSettings.Default.WithOverrides(null, rgba, lcd: mode);
+		Assert.AreEqual(edging, settings.Edging);
+		Assert.AreEqual(geometry, settings.GetPreferredGeometry());
+		Assert.AreEqual(geometry, settings.GetSurfaceGeometry(1));
+		Assert.AreEqual(SKPixelGeometry.Unknown, settings.GetSurfaceGeometry(1.25));
+		Assert.AreEqual(SKPixelGeometry.Unknown, settings.GetSurfaceGeometry(1, pixelPreserving: false));
+		var extension = new LinuxTextRenderingExtension(settings);
+		using var font = new SKFont();
+		extension.Apply(font);
+		Assert.AreEqual(edging, font.Edging);
+		Assert.AreEqual(edging == SKFontEdging.SubpixelAntialias, extension.UsesLcd);
+		settings = settings with { Antialias = false };
+		Assert.AreEqual(SKFontEdging.Alias, settings.Edging);
+		Assert.AreEqual(SKPixelGeometry.Unknown, settings.GetPreferredGeometry());
+	}
+
+	[TestMethod]
+	public void When_DesktopGeometryIsOnlyAFallback()
+	{
+		var desktop = new LinuxTextGeometry(SKPixelGeometry.BgrHorizontal, LinuxTextGeometrySource.Kde);
+		var settings = LinuxFontRenderingSettings.Default;
+		Assert.AreEqual(desktop, settings.GetConfiguredGeometry(desktop));
+		Assert.AreEqual(SKPixelGeometry.BgrHorizontal, settings.GetPreferredGeometry(desktop));
+		var desktopNone = new LinuxTextGeometry(SKPixelGeometry.Unknown, LinuxTextGeometrySource.Gnome, ExplicitNone: true);
+		Assert.AreEqual(SKPixelGeometry.Unknown, settings.GetPreferredGeometry(desktopNone));
+		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, settings.WithOverrides(null, null, lcd: "on").GetPreferredGeometry(desktopNone));
+		settings = LinuxFontRenderingSettings.FromPattern(true, true, 1, 1, 1, false);
+		Assert.AreEqual(LinuxTextGeometrySource.FontConfig, settings.GetConfiguredGeometry(desktop).Source);
+		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, settings.GetPreferredGeometry(desktop));
+		Assert.AreEqual(SKPixelGeometry.RgbHorizontal, settings.GetPreferredGeometry(desktopNone));
+		settings = LinuxFontRenderingSettings.FromPattern(true, true, 1, 5, 1, false);
+		Assert.IsTrue(settings.GetConfiguredGeometry(desktop).ExplicitNone);
+		Assert.AreEqual(SKPixelGeometry.Unknown, settings.GetPreferredGeometry(desktop));
+		settings = settings.WithOverrides(null, "bgr");
+		Assert.AreEqual(LinuxTextGeometrySource.Environment, settings.GeometrySource);
+		Assert.IsFalse(settings.ExplicitNone);
+		Assert.AreEqual(SKFontEdging.SubpixelAntialias, settings.Edging);
+		settings = settings.WithOverrides(null, "none");
+		Assert.AreEqual(LinuxTextGeometrySource.Environment, settings.GeometrySource);
+		Assert.IsTrue(settings.ExplicitNone);
+		Assert.AreEqual(SKFontEdging.Antialias, settings.Edging);
+		Assert.AreEqual(SKPixelGeometry.Unknown, settings.GetPreferredGeometry(desktop));
+	}
+
+	[TestMethod]
+	[DataRow("[General]\nXftSubPixel=rgb", SKPixelGeometry.RgbHorizontal, false)]
+	[DataRow("[General]\nXftSubPixel=bgr", SKPixelGeometry.BgrHorizontal, false)]
+	[DataRow("[General]\nXftSubPixel=vrgb", SKPixelGeometry.RgbVertical, false)]
+	[DataRow("[General]\nXftSubPixel=vbgr", SKPixelGeometry.BgrVertical, false)]
+	[DataRow("[General]\n XftSubPixel = none ", SKPixelGeometry.Unknown, true)]
+	[DataRow("[General]\nOther=rgb", SKPixelGeometry.Unknown, false)]
+	[DataRow("[Other]\nXftSubPixel=rgb", SKPixelGeometry.Unknown, false)]
+	[DataRow("[General]\n[Other]\nXftSubPixel=rgb", SKPixelGeometry.Unknown, false)]
+	[DataRow("garbage", SKPixelGeometry.Unknown, false)]
+	[DataRow("[General]\nXftSubPixel=garbage", SKPixelGeometry.Unknown, false)]
+	[DataRow("[General]\nXftSubPixel", SKPixelGeometry.Unknown, false)]
+	[DataRow("# comment\n[General]\n; XftSubPixel=none\nXftSubPixel=rgb\n[Other]\nXftSubPixel=bgr", SKPixelGeometry.RgbHorizontal, false)]
+	public void When_KdeGeometryIsParsed(string contents, SKPixelGeometry expected, bool explicitNone)
+	{
+		var geometry = KdeTextGeometry.Parse(contents);
+		Assert.AreEqual(expected, geometry.PixelGeometry);
+		Assert.AreEqual(explicitNone, geometry.ExplicitNone);
+		Assert.AreEqual(expected != SKPixelGeometry.Unknown || explicitNone ? LinuxTextGeometrySource.Kde : LinuxTextGeometrySource.Unknown, geometry.Source);
+	}
 
 	[TestMethod]
 	public void When_AntialiasIsDisabled()
@@ -142,13 +246,17 @@ public sealed class Given_LinuxFontRendering
 		Assert.IsTrue(font.Subpixel);
 		Assert.IsTrue(font.BaselineSnap);
 		Assert.AreSame(font, extension.GetRenderFont(font, SKMatrix.CreateScale(1.25f, 1.25f), paint));
+		Assert.AreEqual(SKFontEdging.Antialias, extension.GetRenderFont(font, SKMatrix.Identity, paint, grayscale: true).Edging);
 		using var grayscale = extension.GetRenderFont(font, SKMatrix.CreateRotationDegrees(15), paint);
 		Assert.AreEqual(SKFontEdging.Antialias, grayscale.Edging);
 		Assert.AreEqual(font.Hinting, grayscale.Hinting);
 		Assert.IsTrue(grayscale.Subpixel);
 		Assert.IsTrue(grayscale.BaselineSnap);
 		paint.Color = SKColors.Black.WithAlpha(128);
+		Assert.AreSame(font, extension.GetRenderFont(font, SKMatrix.Identity, paint));
+		paint.BlendMode = SKBlendMode.Multiply;
 		Assert.AreSame(grayscale, extension.GetRenderFont(font, SKMatrix.Identity, paint));
+		paint.BlendMode = SKBlendMode.SrcOver;
 		Assert.AreSame(grayscale, extension.GetRenderFont(font, SKMatrix.CreateScale(-1, 1), paint));
 	}
 
@@ -159,8 +267,40 @@ public sealed class Given_LinuxFontRendering
 		Assert.IsTrue(LinuxFontRenderingSettings.CanUseLcd(SKMatrix.CreateTranslation(0.25f, 0.5f), paint));
 		Assert.IsFalse(LinuxFontRenderingSettings.CanUseLcd(SKMatrix.CreateSkew(0.1f, 0), paint));
 		Assert.IsFalse(LinuxFontRenderingSettings.CanUseLcd(SKMatrix.Identity with { Persp0 = 0.01f }, paint));
+		Assert.IsTrue(LinuxFontRenderingSettings.CanUseLcd(SKMatrix.Identity, new SKPaint { Color = new SKColor(0, 0, 0, 0xE4) }));
 		paint.BlendMode = SKBlendMode.Src;
 		Assert.IsFalse(LinuxFontRenderingSettings.CanUseLcd(SKMatrix.Identity, paint));
+	}
+
+	[TestMethod]
+	public void When_TranslucentLcdTextBlendsPerSubpixel()
+	{
+		using var typeface = SKTypeface.Default;
+		if (typeface is null || typeface.GlyphCount == 0)
+		{
+			Assert.Inconclusive("No default typeface is available.");
+		}
+
+		// Fluent text brushes are translucent (TextFillColorPrimary is #E4000000). Over an opaque destination each
+		// subpixel must blend as coverage * alpha, i.e. the opaque LCD result faded towards the background.
+		var extension = new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Default);
+		using var font = new SKFont(typeface, 14) { Edging = SKFontEdging.SubpixelAntialias, Subpixel = true, Hinting = SKFontHinting.Slight };
+		using var paint = new SKPaint { IsAntialias = true, Color = SKColors.Black };
+		var opaque = DrawTextPixels(font, paint, extension, SKPixelGeometry.RgbHorizontal);
+		paint.Color = new SKColor(0, 0, 0, 0xE4);
+		var translucent = DrawTextPixels(font, paint, extension, SKPixelGeometry.RgbHorizontal);
+		var chromatic = false;
+		for (var i = 0; i < opaque.Length; i++)
+		{
+			chromatic |= Math.Abs(translucent[i].Red - translucent[i].Blue) > 8;
+			Assert.AreEqual(255, translucent[i].Alpha);
+			Assert.AreEqual(Fade(opaque[i].Red), translucent[i].Red, 2, $"Red at pixel {i}.");
+			Assert.AreEqual(Fade(opaque[i].Green), translucent[i].Green, 2, $"Green at pixel {i}.");
+			Assert.AreEqual(Fade(opaque[i].Blue), translucent[i].Blue, 2, $"Blue at pixel {i}.");
+		}
+		Assert.IsTrue(chromatic, "Translucent text should keep LCD coverage.");
+
+		static double Fade(byte channel) => 255 - (255 - channel) * 0xE4 / 255.0;
 	}
 
 	[TestMethod]
@@ -234,6 +374,55 @@ public sealed class Given_LinuxFontRendering
 		Assert.IsTrue(plainLight > plainDark * 1.1, $"Skia gamma expected: dark {plainDark}, light {plainLight}.");
 		Assert.IsTrue(Math.Abs(linearDark - linearLight) <= linearDark * 0.02, $"Linear coverage expected: dark {linearDark}, light {linearLight}.");
 		Assert.IsTrue(linearDark > plainDark, $"Dark text should gain coverage: {plainDark} -> {linearDark}.");
+	}
+
+	[TestMethod]
+	public void When_LinearCoveragePreservesLcdAndUnknownGeometryUsesGrayscale()
+	{
+		using var typeface = SKTypeface.Default;
+		if (typeface is null || typeface.GlyphCount == 0)
+		{
+			Assert.Inconclusive("No default typeface is available.");
+		}
+
+		var extension = new LinuxTextRenderingExtension(LinuxFontRenderingSettings.Default);
+		using var font = new SKFont(typeface, 14) { Edging = SKFontEdging.SubpixelAntialias, Subpixel = true, Hinting = SKFontHinting.Slight };
+		using var paint = new SKPaint { IsAntialias = true, Color = SKColors.Black };
+		Assert.AreSame(font, extension.GetRenderFont(font, SKMatrix.Identity, paint));
+		Assert.AreNotSame(paint, extension.GetRenderPaint(paint));
+		var lcd = DrawTextPixels(font, paint, extension, SKPixelGeometry.RgbHorizontal);
+		var unknown = DrawTextPixels(font, paint, extension, SKPixelGeometry.Unknown);
+		font.Edging = SKFontEdging.Antialias;
+		var grayscale = DrawTextPixels(font, paint, extension, SKPixelGeometry.Unknown);
+		var chromatic = false;
+		for (var i = 0; i < lcd.Length; i++)
+		{
+			chromatic |= Math.Abs(lcd[i].Red - lcd[i].Green) > 8 || Math.Abs(lcd[i].Green - lcd[i].Blue) > 8;
+			Assert.AreEqual(unknown[i].Red, unknown[i].Green, $"Unknown geometry at pixel {i}.");
+			Assert.AreEqual(unknown[i].Green, unknown[i].Blue, $"Unknown geometry at pixel {i}.");
+		}
+		Assert.IsTrue(chromatic, "LCD geometry must produce chromatic pixels with the linear coverage paint.");
+		CollectionAssert.AreEqual(grayscale, unknown, "Unknown geometry must rasterize LCD requests identically to grayscale.");
+	}
+
+	private static SKColor[] DrawTextPixels(SKFont font, SKPaint paint, LinuxTextRenderingExtension extension, SKPixelGeometry geometry)
+	{
+		using var properties = new SKSurfaceProperties(geometry);
+		using var surface = SKSurface.Create(new SKImageInfo(160, 32, SKColorType.Bgra8888, SKAlphaType.Premul), properties);
+		surface.Canvas.Clear(SKColors.White);
+		var renderFont = extension.GetRenderFont(font, SKMatrix.Identity, paint);
+		surface.Canvas.DrawText("Downloads", 4, 22, SKTextAlign.Left, renderFont, extension.GetRenderPaint(paint));
+		using var image = surface.Snapshot();
+		using var pixels = image.PeekPixels();
+		var colors = new SKColor[pixels.Width * pixels.Height];
+		for (var y = 0; y < pixels.Height; y++)
+		{
+			for (var x = 0; x < pixels.Width; x++)
+			{
+				colors[y * pixels.Width + x] = pixels.GetPixelColor(x, y);
+			}
+		}
+		return colors;
 	}
 
 	private static long Ink(SKFont font, SKPaint paint, SKColor foreground, SKColor background, LinuxTextRenderingExtension? extension)

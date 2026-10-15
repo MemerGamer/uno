@@ -1,3 +1,5 @@
+#nullable enable
+
 using System;
 using System.Threading;
 using Windows.Foundation;
@@ -18,6 +20,7 @@ internal abstract class X11Renderer : IDisposable
 	private SKSizeI _surfaceSize;
 	private int _outputGeometryDirty = 1;
 	private SKPixelGeometry _outputGeometry;
+	private SKPixelGeometry _preferredGeometry;
 	private readonly RetainedLayer _retainedLayer = new();
 	private X11AirspaceRenderHelper? _airspaceHelper;
 	private readonly IXamlRootHost _host;
@@ -64,14 +67,17 @@ internal abstract class X11Renderer : IDisposable
 		var useLayer = UsesRetainedLayer;
 		var renderCanvas = useLayer ? _retainedLayer.Surface?.Canvas : _surface?.Canvas;
 
-		var settings = LinuxTextRenderingExtension.Instance.Settings;
-		if (Interlocked.Exchange(ref _outputGeometryDirty, 0) != 0)
+		var extension = LinuxTextRenderingExtension.Instance;
+		var preference = extension.PreferredGeometry;
+		if (Interlocked.Exchange(ref _outputGeometryDirty, 0) != 0 || _preferredGeometry != preference)
 		{
+			_preferredGeometry = preference;
 			_outputGeometry = _host is X11XamlRootHost { TracksOutputGeometry: true }
-				? X11TextPixelGeometry.Read(_x11Window, settings.PixelGeometry) : SKPixelGeometry.Unknown;
+				? X11TextPixelGeometry.Read(_x11Window, preference) : SKPixelGeometry.Unknown;
 		}
-		var requestedGeometry = settings.GetSurfaceGeometry(_host.RootElement!.XamlRoot!.RasterizationScale,
-			pixelPreserving: _outputGeometry != SKPixelGeometry.Unknown);
+		var scale = _host.RootElement!.XamlRoot!.RasterizationScale;
+		var requestedGeometry = extension.Settings.Antialias && double.IsFinite(scale) && scale >= 1 && scale == Math.Truncate(scale)
+			? _outputGeometry : SKPixelGeometry.Unknown;
 		var nativeElementClipPath = ((CompositionTarget)_host.RootElement.Visual.CompositionTarget!).OnNativePlatformFrameRequested(renderCanvas, (size, pixelGeometry) =>
 		{
 			PixelGeometry = pixelGeometry;

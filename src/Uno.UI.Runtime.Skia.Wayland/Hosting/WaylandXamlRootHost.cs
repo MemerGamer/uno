@@ -365,8 +365,9 @@ internal sealed class WaylandXamlRootHost : IXamlRootHost, IDisposable
 			{
 				canvas = null;
 			}
-			var surfaceGeometry = LinuxTextRenderingExtension.Instance.Settings.GetSurfaceGeometry(_renderer!.Scale.EffectiveScale,
-				pixelPreserving: _outputGeometry != SKPixelGeometry.Unknown && _outputScale == _renderer.Scale.EffectiveScale);
+			var surfaceGeometry = LinuxTextRenderingExtension.Instance.Settings.Antialias
+				&& _outputGeometry != SKPixelGeometry.Unknown && _outputScale == _renderer!.Scale.EffectiveScale
+				? _outputGeometry : SKPixelGeometry.Unknown;
 			compositionTarget.OnNativePlatformFrameRequested(canvas, (size, pixelGeometry) =>
 			{
 				// CompositionTarget rounds current XamlRoot bounds to even. The retained layer and

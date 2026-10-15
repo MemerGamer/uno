@@ -14,13 +14,30 @@ internal sealed record LinuxFontRenderingSettings(bool Antialias, SKFontHinting 
 
 	internal bool HasFontConfig { get; init; } = true;
 	internal bool HintingOverridden { get; init; }
+	internal LcdMode LcdMode { get; init; }
+	internal LinuxTextGeometrySource GeometrySource { get; init; }
+	internal bool ExplicitNone { get; init; }
+
+	internal LinuxTextGeometry GetConfiguredGeometry(LinuxTextGeometry? desktop = null)
+		=> PixelGeometry != SKPixelGeometry.Unknown || ExplicitNone
+			? new(PixelGeometry, GeometrySource, ExplicitNone) : desktop ?? LinuxTextGeometry.Unknown;
+
+	internal SKPixelGeometry GetPreferredGeometry(LinuxTextGeometry? desktop = null)
+	{
+		var configured = GetConfiguredGeometry(desktop);
+		return !Antialias || LcdMode == LcdMode.Off || (LcdMode == LcdMode.Auto && configured.ExplicitNone)
+			? SKPixelGeometry.Unknown
+			: configured.PixelGeometry != SKPixelGeometry.Unknown ? configured.PixelGeometry
+			: LcdMode == LcdMode.On ? SKPixelGeometry.RgbHorizontal : SKPixelGeometry.Unknown;
+	}
 
 	// Skia darkens or lightens glyph coverage per text colour (SK_GAMMA_EXPONENT/SK_GAMMA_CONTRAST); FreeType consumers
 	// such as Qt and cairo blend the raw coverage. Linear coverage matches them, which matters most for dark text at 1x.
 	internal bool LinearCoverage { get; init; } = true;
 
+	// Unknown surface geometry converts LCD requests to A8 until an output order is available.
 	internal SKFontEdging Edging => !Antialias ? SKFontEdging.Alias
-		: PixelGeometry == SKPixelGeometry.Unknown ? SKFontEdging.Antialias : SKFontEdging.SubpixelAntialias;
+		: LcdMode == LcdMode.Off || (LcdMode == LcdMode.Auto && ExplicitNone) ? SKFontEdging.Antialias : SKFontEdging.SubpixelAntialias;
 
 	internal static LinuxFontRenderingSettings FromPattern(bool? antialias, bool? hinting, int? hintstyle, int? rgba, int? lcdFilter, bool? autohint)
 		=> new(antialias ?? Default.Antialias,
@@ -40,13 +57,28 @@ internal sealed record LinuxFontRenderingSettings(bool Antialias, SKFontHinting 
 				4 => SKPixelGeometry.BgrVertical,
 				_ => SKPixelGeometry.Unknown,
 			},
-			lcdFilter ?? Default.LcdFilter, autohint ?? Default.ForceAutoHinting);
+			lcdFilter ?? Default.LcdFilter, autohint ?? Default.ForceAutoHinting)
+		{
+			GeometrySource = rgba is >= 1 and <= 5 ? LinuxTextGeometrySource.FontConfig : LinuxTextGeometrySource.Unknown,
+			ExplicitNone = rgba == 5,
+		};
 
 	// Startup overrides: UNO_SKIA_TEXT_HINTING=none|slight|normal|full, UNO_SKIA_TEXT_RGBA=none|rgb|bgr|vrgb|vbgr and
-	// UNO_SKIA_TEXT_GAMMA=linear|skia. Invalid values keep the current preference.
-	internal LinuxFontRenderingSettings WithOverrides(string? hinting, string? rgba, string? gamma = null)
-		=> this with
+	// UNO_SKIA_TEXT_GAMMA=linear|skia, UNO_SKIA_TEXT_LCD=auto|on|off. Invalid values keep the current preference.
+	internal LinuxFontRenderingSettings WithOverrides(string? hinting, string? rgba, string? gamma = null, string? lcd = null)
+	{
+		var geometry = LinuxTextGeometry.Parse(rgba, LinuxTextGeometrySource.Environment);
+		return this with
 		{
+			LcdMode = lcd?.Trim().ToLowerInvariant() switch
+			{
+				"auto" => LcdMode.Auto,
+				"on" => LcdMode.On,
+				"off" => LcdMode.Off,
+				_ => LcdMode,
+			},
+			GeometrySource = geometry?.Source ?? GeometrySource,
+			ExplicitNone = geometry?.ExplicitNone ?? ExplicitNone,
 			LinearCoverage = gamma?.Trim().ToLowerInvariant() switch
 			{
 				"linear" => true,
@@ -62,25 +94,19 @@ internal sealed record LinuxFontRenderingSettings(bool Antialias, SKFontHinting 
 				"full" => SKFontHinting.Full,
 				_ => Hinting,
 			},
-			PixelGeometry = rgba?.Trim().ToLowerInvariant() switch
-			{
-				"none" => SKPixelGeometry.Unknown,
-				"rgb" => SKPixelGeometry.RgbHorizontal,
-				"bgr" => SKPixelGeometry.BgrHorizontal,
-				"vrgb" => SKPixelGeometry.RgbVertical,
-				"vbgr" => SKPixelGeometry.BgrVertical,
-				_ => PixelGeometry,
-			},
+			PixelGeometry = geometry?.PixelGeometry ?? PixelGeometry,
 		};
+	}
 
 	internal SKPixelGeometry GetSurfaceGeometry(double scale, bool pixelPreserving = true)
 		=> Antialias && pixelPreserving && double.IsFinite(scale) && scale >= 1 && scale == Math.Truncate(scale)
-			? PixelGeometry : SKPixelGeometry.Unknown;
+			? GetPreferredGeometry() : SKPixelGeometry.Unknown;
 
-	// Skia's raster path allows LCD on translucent paint and affine transforms; it does not
-	// enforce our presentation policy. Ordinary saveLayer/effect surfaces do lose LCD geometry.
+	// Skia allows LCD under any affine transform, so Uno enforces axis alignment. A translucent SrcOver colour blends
+	// each subpixel's coverage correctly over the opaque destination the frame gate requires (Fluent text brushes
+	// are translucent). Ordinary saveLayer/effect surfaces do lose LCD geometry.
 	internal static bool CanUseLcd(SKMatrix matrix, SKPaint paint)
-		=> paint.Color.Alpha == 255 && paint.Shader is null && paint.ColorFilter is null
+		=> paint.Shader is null && paint.ColorFilter is null
 			&& paint.MaskFilter is null && paint.ImageFilter is null && paint.BlendMode == SKBlendMode.SrcOver
 			&& matrix.SkewX == 0 && matrix.SkewY == 0 && matrix.Persp0 == 0 && matrix.Persp1 == 0 && matrix.Persp2 == 1
 			&& matrix.ScaleX > 0 && matrix.ScaleY > 0 && float.IsFinite(matrix.ScaleX) && float.IsFinite(matrix.ScaleY);
