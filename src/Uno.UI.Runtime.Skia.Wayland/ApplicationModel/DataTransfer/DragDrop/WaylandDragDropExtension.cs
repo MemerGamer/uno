@@ -67,7 +67,10 @@ internal sealed class WaylandDragDropExtension : IImmediateDragDropExtension
 			WaylandDataFormats.Fill(package, offer);
 			session = new Session(offer, serial, _fakePointerId);
 
-			WaylandDiagnostics.Trace($"dnd: drag entered with operations {operations} and formats {string.Join(", ", offer.MimeTypes)}");
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace($"dnd: drag entered with operations {operations} and formats {string.Join(", ", offer.MimeTypes)}");
+			}
 
 			var info = new CoreDragInfo(Source(session, position), package.GetView(), operations);
 			info.RegisterCompletedCallback(result => Complete(session, result));
@@ -123,7 +126,10 @@ internal sealed class WaylandDragDropExtension : IImmediateDragDropExtension
 				? WaylandDropNegotiation.ChooseOwnDragAction(WaylandDataFormats.ToDndActions(accepted), sourceActions, accepted != DataPackageOperation.None)
 				: WaylandDropNegotiation.ChooseAction(WaylandDataFormats.ToDndActions(accepted), sourceActions);
 			session.Offer.Accept(session.Serial, action != 0 && session.Offer.MimeTypes is [var mime, ..] ? mime : null, action, action);
-			WaylandDiagnostics.Trace($"dnd: target accepts {accepted} at {session.Position}, offering action {action}");
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace($"dnd: target accepts {accepted} at {session.Position}, offering action {action}");
+			}
 		}
 	}
 
@@ -170,7 +176,10 @@ internal sealed class WaylandDragDropExtension : IImmediateDragDropExtension
 		}
 		var accepted = CoreDragDropManager.ProcessDropped(Source(session, session.Position));
 
-		WaylandDiagnostics.Trace($"dnd: drop processed, last accepted operation {accepted}");
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"dnd: drop processed, last accepted operation {accepted}");
+		}
 	}
 
 	// Called once the drop handlers completed (or the drag was aborted). The offer stays alive until
@@ -208,18 +217,22 @@ internal sealed class WaylandDragDropExtension : IImmediateDragDropExtension
 		{
 			return false;
 		}
+		var grabSerial = host.Input?.GrabSerial;
 		string? reason = !_device.SupportsDragOutcome ? "wl_data_device_manager below v3"
-			: host.Input?.GrabSerial is null ? "no implicit grab"
+			: grabSerial is null ? "no implicit grab"
 			: WaylandDataFormats.GetDragMimeTypes(info.Data).Count == 0 ? "nothing to offer"
 			: null;
 		if (reason is not null)
 		{
-			WaylandDiagnostics.Trace($"dnd: drag stays internal ({reason})");
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace($"dnd: drag stays internal ({reason})");
+			}
 			return false;
 		}
 		// A drag that never completed (a target holding its offer) would block the compositor's single drag slot.
 		_device.OutgoingDrag?.Cancel();
-		var drag = new WaylandOutgoingDrag(_device, host, XamlRoot, info, onCompleted);
+		var drag = new WaylandOutgoingDrag(_device, host, XamlRoot, info, grabSerial!.Value, onCompleted);
 		_device.OutgoingDrag = drag;
 		drag.Start();
 		return true;

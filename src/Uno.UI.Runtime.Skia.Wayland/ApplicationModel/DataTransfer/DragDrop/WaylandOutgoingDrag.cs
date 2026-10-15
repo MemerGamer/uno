@@ -21,6 +21,8 @@ internal sealed class WaylandOutgoingDrag
 	private readonly WaylandXamlRootHost _host;
 	private readonly Action<DataPackageOperation> _onCompleted;
 	private readonly WaylandDragSourceState _state = new();
+	// The implicit grab the drag belongs to; a press that replaced it must not be converted into this drag.
+	private readonly uint _grabSerial;
 	// Dispatch thread.
 	private WlDataSource? _source;
 	private WaylandDataSourceContent? _content;
@@ -28,10 +30,11 @@ internal sealed class WaylandOutgoingDrag
 	private bool _cancelled;
 	private int _completed;
 
-	internal WaylandOutgoingDrag(WaylandDataDevice device, WaylandXamlRootHost host, XamlRoot xamlRoot, CoreDragInfo info, Action<DataPackageOperation> onCompleted)
+	internal WaylandOutgoingDrag(WaylandDataDevice device, WaylandXamlRootHost host, XamlRoot xamlRoot, CoreDragInfo info, uint grabSerial, Action<DataPackageOperation> onCompleted)
 	{
 		_device = device;
 		_host = host;
+		_grabSerial = grabSerial;
 		XamlRoot = xamlRoot;
 		Info = info;
 		_onCompleted = onCompleted;
@@ -82,18 +85,22 @@ internal sealed class WaylandOutgoingDrag
 		}
 		try
 		{
-			if (_host.Input?.GrabSerial is not { } serial)
+			if (_host.Input?.GrabSerial != _grabSerial)
 			{
-				// The press ended before the request could be sent; Uno's internal drag goes on.
+				// The press ended (or another began) before the request could be sent; Uno's internal drag goes on.
 				WaylandDiagnostics.Trace("dnd: grab ended before start_drag, the drag stays internal");
 				Abandon();
 				return;
 			}
+			var serial = _grabSerial;
 			var source = _device.CreateSource();
 			if (source.Version < 3)
 			{
 				// Before v3 a source learns nothing after the drop (no dnd_finished), so the drag could never complete.
-				WaylandDiagnostics.Trace($"dnd: wl_data_source v{source.Version} cannot report an outcome, the drag stays internal");
+				if (WaylandDiagnostics.IsEnabled)
+				{
+					WaylandDiagnostics.Trace($"dnd: wl_data_source v{source.Version} cannot report an outcome, the drag stays internal");
+				}
 				source.Dispose();
 				Abandon();
 				return;
@@ -109,12 +116,18 @@ internal sealed class WaylandOutgoingDrag
 			source.Target += (_, e) =>
 			{
 				_state.Target(e.MimeType);
-				WaylandDiagnostics.Trace($"dnd: source target {e.MimeType ?? "(none)"}");
+				if (WaylandDiagnostics.IsEnabled)
+				{
+					WaylandDiagnostics.Trace($"dnd: source target {e.MimeType ?? "(none)"}");
+				}
 			};
 			source.Action += (_, e) =>
 			{
 				_state.SetAction(e.DndAction);
-				WaylandDiagnostics.Trace($"dnd: source action {e.DndAction}");
+				if (WaylandDiagnostics.IsEnabled)
+				{
+					WaylandDiagnostics.Trace($"dnd: source action {e.DndAction}");
+				}
 			};
 			source.Send += (_, e) =>
 			{
@@ -154,7 +167,10 @@ internal sealed class WaylandOutgoingDrag
 			_host.PointerSource.BeginNativeDrag();
 			_device.StartDrag(source, _host.Surface, _icon?.Surface, serial);
 			_icon?.Present();
-			WaylandDiagnostics.Trace($"dnd: start_drag serial={serial} actions={actions} icon={_icon is not null} formats={string.Join(",", mimeTypes)}");
+			if (WaylandDiagnostics.IsEnabled)
+			{
+				WaylandDiagnostics.Trace($"dnd: start_drag serial={serial} actions={actions} icon={_icon is not null} formats={string.Join(",", mimeTypes)}");
+			}
 		}
 		catch (Exception error)
 		{
@@ -203,7 +219,10 @@ internal sealed class WaylandOutgoingDrag
 			return;
 		}
 		var result = WaylandDataFormats.ToOperations(_state.Result);
-		WaylandDiagnostics.Trace($"dnd: source {_state.Phase} action={_state.Result} ({result}) targetAccepts={_state.TargetAccepts} sent={_state.DataSent}");
+		if (WaylandDiagnostics.IsEnabled)
+		{
+			WaylandDiagnostics.Trace($"dnd: source {_state.Phase} action={_state.Result} ({result}) targetAccepts={_state.TargetAccepts} sent={_state.DataSent}");
+		}
 		_icon?.Dispose();
 		_icon = null;
 		_content?.Dispose();
