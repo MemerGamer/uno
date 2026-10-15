@@ -327,6 +327,7 @@ internal partial class X11PointerInputSource
 			properties // We don't SetUpdateKind here. We already did that above
 		);
 
+		_lastPoint = point;
 		_previousPointerPointProperties = properties;
 
 		var modifiers = X11XamlRootHost.XModifierMaskToVirtualKeyModifiers((XModifierMask)(data.mods.Base & 0xffff));
@@ -374,6 +375,7 @@ internal partial class X11PointerInputSource
 			properties.SetUpdateKindFromPrevious(_previousPointerPointProperties)
 		);
 
+		_lastPoint = point;
 		_previousPointerPointProperties = properties;
 
 		var modifiers = X11XamlRootHost.XModifierMaskToVirtualKeyModifiers((XModifierMask)(data.mods.Base & 0xffff));
@@ -385,6 +387,11 @@ internal partial class X11PointerInputSource
 	// while a button is held.
 	public void HandleXI2Event(IntPtr display, XEvent ev)
 	{
+		if (_nativeDrag)
+		{
+			return;
+		}
+
 		var evtype = (XiEventType)ev.GenericEventCookie.evtype;
 
 		switch (evtype)

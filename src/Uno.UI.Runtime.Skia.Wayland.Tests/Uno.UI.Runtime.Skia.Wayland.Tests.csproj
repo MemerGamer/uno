@@ -11,6 +11,11 @@
 	<Import Project="../targetframework-override.props" />
 	<ItemGroup>
 		<Compile Include="../Uno.UI.Runtime.Skia.X11/Rendering/X11TextPixelGeometryPolicy.cs" Link="X11TextPixelGeometryPolicy.cs" />
+		<Compile Include="../Uno.UI.Runtime.Skia.X11/ApplicationModel/DataTransfer/DragDrop/X11DragFormats.cs" Link="X11DragFormats.cs" />
+		<Compile Include="../Uno.UI.Runtime.Skia.X11/ApplicationModel/DataTransfer/DragDrop/X11FileUris.cs" Link="X11FileUris.cs" />
+		<Compile Include="../Uno.UI.Runtime.Skia.X11/ApplicationModel/DataTransfer/DragDrop/X11DragActions.cs" Link="X11DragActions.cs" />
+		<Compile Include="../Uno.UI.Runtime.Skia.X11/ApplicationModel/DataTransfer/DragDrop/X11DragSourceState.cs" Link="X11DragSourceState.cs" />
+		<Compile Include="../Uno.UI.Runtime.Skia.X11/ApplicationModel/DataTransfer/DragDrop/X11DragIconLayout.cs" Link="X11DragIconLayout.cs" />
 		<PackageReference Include="MSTest" />
 		<ProjectReference Include="..\Uno.UI.Runtime.Skia.Wayland\Uno.UI.Runtime.Skia.Wayland.csproj" />
 		<ProjectReference Include="..\Uno.UWP\Uno.Skia.csproj" />

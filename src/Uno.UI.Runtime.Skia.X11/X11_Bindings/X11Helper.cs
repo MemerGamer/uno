@@ -338,6 +338,44 @@ internal static partial class X11Helper
 		return _getAtom(display, name, only_if_exists);
 	}
 
+	[LibraryImport(libX11)]
+	public static partial int XGrabPointer(IntPtr display, IntPtr window, [MarshalAs(UnmanagedType.Bool)] bool ownerEvents,
+		uint eventMask, int pointerMode, int keyboardMode, IntPtr confineTo, IntPtr cursor, IntPtr time);
+
+	[LibraryImport(libX11)]
+	public static partial int XUngrabPointer(IntPtr display, IntPtr time);
+
+	[LibraryImport(libX11)]
+	public static partial int XGrabKeyboard(IntPtr display, IntPtr window, [MarshalAs(UnmanagedType.Bool)] bool ownerEvents,
+		int pointerMode, int keyboardMode, IntPtr time);
+
+	[LibraryImport(libX11)]
+	public static partial int XUngrabKeyboard(IntPtr display, IntPtr time);
+
+	[LibraryImport(libX11)]
+	public static partial int XChangeActivePointerGrab(IntPtr display, uint eventMask, IntPtr cursor, IntPtr time);
+
+	[LibraryImport(libX11)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static partial bool XQueryPointer(IntPtr display, IntPtr window, out IntPtr root, out IntPtr child,
+		out int rootX, out int rootY, out int windowX, out int windowY, out uint mask);
+
+	[LibraryImport(libX11)]
+	public static partial byte XKeysymToKeycode(IntPtr display, IntPtr keysym);
+
+	[LibraryImport(libXInput)]
+	public static partial int XIUngrabDevice(IntPtr display, int deviceId, IntPtr time);
+
+	[LibraryImport(libXInput)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static partial bool XIGetClientPointer(IntPtr display, IntPtr window, out int deviceId);
+
+	[LibraryImport(libX11)]
+	public static partial int XFreeGC(IntPtr display, IntPtr gc);
+
+	[LibraryImport(libX11)]
+	public static partial int XFreeColormap(IntPtr display, IntPtr colormap);
+
 	[LibraryImport("libc")]
 	public unsafe static partial int poll(Pollfd* __fds, IntPtr __nfds, int __timeout);
 
