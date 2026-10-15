@@ -65,6 +65,14 @@ public sealed class DragFormatsTests
 	}
 
 	[TestMethod]
+	public void PrivateOnlyContentOffersNothing()
+	{
+		var package = CreatePackage();
+		package.Properties["Files_ActionBinder"] = "x";
+		Assert.AreEqual(0, WaylandDataFormats.GetDragMimeTypes(package.GetView()).Count);
+	}
+
+	[TestMethod]
 	public void OperationsMapToDndActionsWithoutLink()
 	{
 		Assert.AreEqual(3u, WaylandDataFormats.ToDndActions(DataPackageOperation.Copy | DataPackageOperation.Move | DataPackageOperation.Link));

@@ -48,6 +48,13 @@ internal sealed class WaylandOutgoingDrag
 		{
 			var view = Info.Data;
 			var mimeTypes = WaylandDataFormats.GetDragMimeTypes(view);
+			if (mimeTypes.Count == 0)
+			{
+				// Only Uno-private content (a ListView reorder, say): no client could accept it, and a compositor
+				// drag would end the internal one. Uno's drag keeps the implicit grab and can come back.
+				_device.Display.Post(Abandon);
+				return;
+			}
 			// Link has no Wayland action; a drag with nothing else to offer is still a copy for the target.
 			var actions = WaylandDataFormats.ToDndActions(Info.AllowedOperations);
 			if (actions == 0)
@@ -93,15 +100,23 @@ internal sealed class WaylandOutgoingDrag
 				return;
 			}
 			var source = _device.CreateSource();
+			if (source.Version < 3)
+			{
+				// Before v3 a source learns nothing after the drop (no dnd_finished), so the drag could never complete.
+				if (this.Log().IsEnabled(LogLevel.Debug))
+				{
+					this.Log().Debug($"wl_data_source v{source.Version} cannot report a drag's outcome; the drag stays internal.");
+				}
+				source.Dispose();
+				Abandon();
+				return;
+			}
 			_source = source;
 			foreach (var mimeType in mimeTypes)
 			{
 				source.Offer(mimeType);
 			}
-			if (source.Version >= 3)
-			{
-				source.SetActions(actions);
-			}
+			source.SetActions(actions);
 			var content = new WaylandDataSourceContent(_device, view, "drag");
 			_content = content;
 			source.Target += (_, e) => _state.Target(e.MimeType);

@@ -119,7 +119,9 @@ internal sealed class WaylandDragDropExtension : IDragDropExtension
 			session.Accepted = accepted;
 			// A single action is offered, so the action the compositor selects is the one the target accepted.
 			var sourceActions = session.Offer.Version >= 3 ? session.Offer.SourceActions : WaylandDataFormats.DndActionCopy;
-			var action = WaylandDropNegotiation.ChooseAction(WaylandDataFormats.ToDndActions(accepted), sourceActions);
+			var action = session.IsOwnDrag
+				? WaylandDropNegotiation.ChooseOwnDragAction(WaylandDataFormats.ToDndActions(accepted), sourceActions, accepted != DataPackageOperation.None)
+				: WaylandDropNegotiation.ChooseAction(WaylandDataFormats.ToDndActions(accepted), sourceActions);
 			session.Offer.Accept(session.Serial, action != 0 && session.Offer.MimeTypes is [var mime, ..] ? mime : null, action, action);
 		}
 	}

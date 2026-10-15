@@ -128,3 +128,51 @@ public sealed class DragSourceTests
 		Assert.AreEqual((1, 1, 1), (unscaled.LogicalWidth, unscaled.LogicalHeight, unscaled.BufferScale));
 	}
 }
+
+[TestClass]
+public sealed class GrabSerialTests
+{
+	[TestMethod]
+	public void GrabEndsWithItsButtonOrTouch()
+	{
+		var grab = new Uno.WinUI.Runtime.Skia.Wayland.Input.WaylandGrabSerial();
+		Assert.IsNull(grab.Serial);
+		grab.Press(10, 0x110);
+		Assert.AreEqual(10u, grab.Serial);
+		// Releasing another button keeps the grab of the pressed one.
+		grab.Release(0x111);
+		Assert.AreEqual(10u, grab.Serial);
+		grab.Release(0x110);
+		Assert.IsNull(grab.Serial);
+		grab.TouchDown(20, 3);
+		Assert.AreEqual(20u, grab.Serial);
+		grab.TouchUp(4);
+		Assert.AreEqual(20u, grab.Serial);
+		grab.TouchUp(3);
+		Assert.IsNull(grab.Serial);
+	}
+
+	[TestMethod]
+	public void LeaveAndDeviceLossForgetTheGrab()
+	{
+		var grab = new Uno.WinUI.Runtime.Skia.Wayland.Input.WaylandGrabSerial();
+		grab.Press(5, 0x110);
+		grab.ClearPointer();
+		Assert.IsNull(grab.Serial);
+		grab.TouchDown(6, 1);
+		grab.Press(7, 0x110);
+		grab.ClearTouch();
+		Assert.AreEqual(7u, grab.Serial);
+	}
+
+	[TestMethod]
+	public void OwnDragKeepsTheOfferAliveForUnoOnlyOperations()
+	{
+		// Link accepted by Uno maps to no protocol action; the source's copy stands in for it.
+		Assert.AreEqual(1u, WaylandDropNegotiation.ChooseOwnDragAction(0, 3, accepted: true));
+		Assert.AreEqual(2u, WaylandDropNegotiation.ChooseOwnDragAction(0, 2, accepted: true));
+		Assert.AreEqual(0u, WaylandDropNegotiation.ChooseOwnDragAction(0, 3, accepted: false));
+		// A real protocol action is preferred over the stand-in.
+		Assert.AreEqual(2u, WaylandDropNegotiation.ChooseOwnDragAction(2, 3, accepted: true));
+	}
+}
