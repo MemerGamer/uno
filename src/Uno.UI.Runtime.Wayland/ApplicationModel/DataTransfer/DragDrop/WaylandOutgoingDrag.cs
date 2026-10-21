@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Threading;
 using Microsoft.UI.Xaml;
 using Uno.Foundation.Logging;
+using Uno.UI.Runtime.Linux;
 using Uno.UI.Runtime.Wayland.Protocols;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.ApplicationModel.DataTransfer.DragDrop.Core;
@@ -56,7 +57,7 @@ internal sealed class WaylandOutgoingDrag
 				actions = WaylandDataFormats.DndActionCopy;
 			}
 			var scale = XamlRoot.RasterizationScale;
-			var image = await WaylandDragIcon.CaptureAsync(Info);
+			var image = await LinuxDragIconImage.CaptureAsync(Info);
 			_device.Display.Send(() => StartOnDispatch(view, mimeTypes, actions, image, scale));
 		}
 		catch (Exception error)
@@ -75,7 +76,7 @@ internal sealed class WaylandOutgoingDrag
 		}
 	}
 
-	private void StartOnDispatch(DataPackageView view, List<string> mimeTypes, uint actions, WaylandDragIconImage? image, double scale)
+	private void StartOnDispatch(DataPackageView view, List<string> mimeTypes, uint actions, LinuxDragIconImage? image, double scale)
 	{
 		if (_cancelled)
 		{

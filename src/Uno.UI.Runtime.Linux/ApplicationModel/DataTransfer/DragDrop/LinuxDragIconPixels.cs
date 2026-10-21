@@ -2,15 +2,15 @@
 
 using System;
 
-namespace Uno.UI.Runtime.Wayland;
+namespace Uno.UI.Runtime.Linux;
 
-// Fills the drag icon's shared-memory buffer (premultiplied BGRA8, tightly packed) on the CPU.
-internal static class WaylandDragIconPixels
+// Fills a drag icon buffer (premultiplied BGRA8, tightly packed) on the CPU.
+internal static class LinuxDragIconPixels
 {
 	internal const int FallbackLogicalSize = 32;
 
 	/// <summary>Resamples <paramref name="image"/> into the buffer, or draws a generic page when there is none.</summary>
-	internal static void Render(Span<byte> buffer, int width, int height, WaylandDragIconImage? image)
+	internal static void Render(Span<byte> buffer, int width, int height, LinuxDragIconImage? image)
 	{
 		buffer.Slice(0, width * height * 4).Clear();
 		if (image is not null && image.Width > 0 && image.Height > 0 && image.Pixels.Length >= image.Width * image.Height * 4)
