@@ -378,6 +378,10 @@ internal static partial class X11Helper
 	public static partial int XIUngrabDevice(IntPtr display, int deviceId, IntPtr time);
 
 	[LibraryImport(libXInput)]
+	public static unsafe partial int XIGrabDevice(IntPtr display, int deviceId, IntPtr window, IntPtr time, IntPtr cursor,
+		int grabMode, int pairedDeviceMode, [MarshalAs(UnmanagedType.Bool)] bool ownerEvents, XIEventMask* mask);
+
+	[LibraryImport(libXInput)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static partial bool XIGetClientPointer(IntPtr display, IntPtr window, out int deviceId);
 

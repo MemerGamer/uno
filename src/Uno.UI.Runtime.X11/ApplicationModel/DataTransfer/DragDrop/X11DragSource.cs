@@ -35,7 +35,7 @@ internal sealed class X11DragSource
 	private IntPtr _root;
 	private Session? _starting;
 	private Session? _drag;
-	private Session? _selectionOwner;
+	private X11DragSelection? _selectionOwner;
 	private bool _keyboardGrabbed;
 	private bool _pointerGrabbed;
 	private byte _escape;
@@ -67,6 +67,7 @@ internal sealed class X11DragSource
 		try
 		{
 			info.RegisterCompletedCallback(_ => Post(() => EndFromUno(session)));
+			session.GrabReleased = true;
 			host.ReleasePointerGrabForDrag();
 			Post(() => Begin(session));
 			var remaining = (int)Math.Max(0, deadline - Environment.TickCount64);
@@ -78,7 +79,6 @@ internal sealed class X11DragSource
 			Interlocked.CompareExchange(ref session.StartResult, 2, 0);
 			if (Volatile.Read(ref session.StartResult) != 1)
 			{
-				EndInput(session);
 				Post(() => RejectStart(session));
 				return false;
 			}
@@ -93,7 +93,6 @@ internal sealed class X11DragSource
 				return true;
 			}
 			Interlocked.CompareExchange(ref session.StartResult, 2, 0);
-			EndInput(session);
 			Post(() => RejectStart(session));
 			if (this.Log().IsEnabled(LogLevel.Error))
 			{
@@ -230,7 +229,7 @@ internal sealed class X11DragSource
 			if (_starting is { } starting)
 			{
 				Interlocked.CompareExchange(ref starting.StartResult, 2, 0);
-				EndInput(starting);
+				RollbackInput(starting);
 				starting.Started.TrySetResult(false);
 			}
 			if (_drag is { } drag)
@@ -314,11 +313,10 @@ internal sealed class X11DragSource
 			return;
 		}
 		var previousOwner = _selectionOwner;
-		_selectionOwner = session;
-		session.SelectionTime = session.Time;
-		RetireWindow(previousOwner);
-		session.SelectionContent = session.Content.ToDictionary(pair => Atom(pair.Key), pair => pair.Value);
-		session.Types = session.SelectionContent.Keys.ToArray();
+		var content = session.Content.ToDictionary(pair => Atom(pair.Key), pair => pair.Value);
+		_selectionOwner = new X11DragSelection(session.Window, session.Time, content);
+		RetireSelection(previousOwner);
+		session.Types = content.Keys.ToArray();
 		if (session.Types.Length > 3)
 		{
 			XLib.XChangeProperty(_display, session.Window, Atom("XdndTypeList"), Atom("ATOM"), 32, PropertyMode.Replace, session.Types, session.Types.Length);
@@ -344,7 +342,7 @@ internal sealed class X11DragSource
 		{
 			_starting = null;
 			ReleaseGrabs();
-			if (_selectionOwner == session)
+			if (_selectionOwner?.Window == session.Window)
 			{
 				if (XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) == session.Window)
 				{
@@ -358,8 +356,21 @@ internal sealed class X11DragSource
 		session.Cursors?.Dispose();
 		session.Cursors = null;
 		RetireWindow(session);
-		EndInput(session);
+		RollbackInput(session);
 		session.Started.TrySetResult(false);
+	}
+
+	private void RetireSelection(X11DragSelection? selection)
+	{
+		if (selection is null)
+		{
+			return;
+		}
+		if (XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) == selection.Window)
+		{
+			XLib.XSetSelectionOwner(_display, Atom("XdndSelection"), IntPtr.Zero, IntPtr.Zero);
+		}
+		XLib.XDestroyWindow(_display, selection.Window);
 	}
 
 	private void RetireWindow(Session? session)
@@ -377,6 +388,14 @@ internal sealed class X11DragSource
 		if (Interlocked.Exchange(ref session.InputEnded, 1) == 0)
 		{
 			session.Pointer.EndNativeDrag(session.Generation);
+		}
+	}
+
+	private static void RollbackInput(Session session)
+	{
+		if (Interlocked.Exchange(ref session.InputEnded, 1) == 0)
+		{
+			session.Pointer.RollbackNativeDrag(session.Generation, session.GrabReleased);
 		}
 	}
 
@@ -400,11 +419,14 @@ internal sealed class X11DragSource
 					&& XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) != owner.Window)
 				{
 					_selectionOwner = null;
-					if (_drag == owner)
+					if (_drag is { } active && active.Window == owner.Window)
 					{
-						Cancel(owner);
+						Cancel(active);
 					}
-					RetireWindow(owner);
+					else
+					{
+						RetireSelection(owner);
+					}
 				}
 				break;
 			case XEventName.ClientMessage:
@@ -440,6 +462,11 @@ internal sealed class X11DragSource
 	private void Tick()
 	{
 		var now = Environment.TickCount64;
+		if (_selectionOwner is { } selection && selection.IsExpired(now))
+		{
+			_selectionOwner = null;
+			RetireSelection(selection);
+		}
 		if (_starting is { } starting)
 		{
 			TryGrab(starting, now);
@@ -823,8 +850,20 @@ internal sealed class X11DragSource
 		drag.Icon = null;
 		drag.Cursors?.Dispose();
 		drag.Cursors = null;
+		if (_selectionOwner is { } selection && selection.Window == drag.Window)
+		{
+			selection.RetainCompleted(Environment.TickCount64);
+		}
+		for (var i = _reads.Count - 1; i >= 0; i--)
+		{
+			if (_reads[i].Request.owner == drag.Window)
+			{
+				var read = _reads[i];
+				_reads.RemoveAt(i);
+				ReplyData(read.Request, read.Data.IsCompletedSuccessfully ? read.Data.Result : null);
+			}
+		}
 		RetireWindow(drag);
-		// Keep the selection and its cached data alive for targets that read after Finished.
 		CompleteOnUI(drag, notify);
 	}
 
@@ -958,7 +997,7 @@ internal sealed class X11DragSource
 	{
 		if (request.selection != Atom("XdndSelection") || _selectionOwner is not { } owner
 			|| request.owner != owner.Window || XLib.XGetSelectionOwner(_display, request.selection) != owner.Window
-			|| !X11DragSourceState.IsSelectionTimeValid(unchecked((uint)request.time), unchecked((uint)owner.SelectionTime)))
+			|| !X11DragSourceState.IsSelectionTimeValid(unchecked((uint)request.time), unchecked((uint)owner.Timestamp)))
 		{
 			Notify(request, IntPtr.Zero);
 			return;
@@ -966,16 +1005,16 @@ internal sealed class X11DragSource
 		var property = request.property == IntPtr.Zero ? request.target : request.property;
 		if (request.target == Atom("TARGETS"))
 		{
-			var targets = owner.SelectionContent.Keys.Concat(new[] { Atom("TARGETS"), Atom("TIMESTAMP") }).ToArray();
+			var targets = owner.Content.Keys.Concat(new[] { Atom("TARGETS"), Atom("TIMESTAMP") }).ToArray();
 			XLib.XChangeProperty(_display, request.requestor, property, Atom("ATOM"), 32, PropertyMode.Replace, targets, targets.Length);
 			Notify(request, property);
 		}
 		else if (request.target == Atom("TIMESTAMP"))
 		{
-			XLib.XChangeProperty(_display, request.requestor, property, Atom("INTEGER"), 32, PropertyMode.Replace, new[] { owner.SelectionTime }, 1);
+			XLib.XChangeProperty(_display, request.requestor, property, Atom("INTEGER"), 32, PropertyMode.Replace, new[] { owner.Timestamp }, 1);
 			Notify(request, property);
 		}
-		else if (owner.SelectionContent.TryGetValue(request.target, out var data))
+		else if (owner.Content.TryGetValue(request.target, out var data))
 		{
 			if (data.IsCompleted)
 			{
@@ -1108,8 +1147,6 @@ internal sealed class X11DragSource
 		internal uint Button { get; } = button;
 		internal Action<DataPackageOperation> OnCompleted { get; } = onCompleted;
 		internal Dictionary<string, Task<byte[]?>> Content { get; } = content;
-		internal Dictionary<IntPtr, Task<byte[]?>> SelectionContent { get; set; } = new();
-		internal IntPtr SelectionTime { get; set; }
 		internal IntPtr Window { get; set; }
 		internal IntPtr OriginWindow { get; } = host.RootX11Window.Window;
 		internal long StartDeadline { get; } = deadline;
@@ -1124,6 +1161,7 @@ internal sealed class X11DragSource
 		internal X11DragCursors? Cursors { get; set; }
 		internal IntPtr Time { get; set; }
 		internal long GrabDeadline { get; set; }
+		internal bool GrabReleased { get; set; }
 		internal int X { get; set; } = int.MinValue;
 		internal int Y { get; set; } = int.MinValue;
 		internal uint Mask { get; set; }

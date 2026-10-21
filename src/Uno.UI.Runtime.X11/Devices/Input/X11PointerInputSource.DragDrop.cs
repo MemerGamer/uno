@@ -40,6 +40,23 @@ internal partial class X11PointerInputSource
 		}
 	}
 
+	internal void RollbackNativeDrag(int generation, bool restoreGrab)
+	{
+		X11XamlRootHost.QueueAction(_host, () =>
+		{
+			if (generation != _nativeDragGeneration)
+			{
+				return;
+			}
+			if (restoreGrab)
+			{
+				_host.RestorePointerGrabAfterDrag();
+			}
+			_nativeDragPoint = null;
+			_nativeDrag = false;
+		});
+	}
+
 	// The generation protects a newer drag from a previous drag's queued cleanup.
 	internal void EndNativeDrag(int generation)
 	{
@@ -51,6 +68,7 @@ internal partial class X11PointerInputSource
 				return;
 			}
 			_nativeDrag = false;
+			_nativeDragPoint = null;
 			_pressedButtons = 0;
 			if (last is null)
 			{

@@ -41,7 +41,6 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
@@ -66,7 +65,6 @@ internal class X11ClipboardExtension : IClipboardExtension
 {
 	private static readonly Logger _logger = typeof(X11ClipboardExtension).Log();
 
-	private const uint IncrMaxDelayMS = 500;
 	private readonly ImmutableList<IntPtr> _supportedAtoms;
 
 	public static readonly ImmutableDictionary<string, Encoding> TextFormats = new Dictionary<string, Encoding>
@@ -631,36 +629,35 @@ internal class X11ClipboardExtension : IClipboardExtension
 	}
 
 	/// <param name="eager">Read text and file lists now. Otherwise every format is read on first use, off the UI thread.</param>
-	public static void FillDataPackage(X11Window x11Window, IntPtr selectionAtom, DataPackage dataPackage, IntPtr[] formatAtoms, bool eager = true)
+	public static void FillDataPackage(X11Window x11Window, IntPtr selectionAtom, DataPackage dataPackage, IntPtr[] formatAtoms,
+		bool eager = true, X11SelectionReadSession readSession = null)
 	{
-		using var _ = X11Helper.XLock(x11Window.Display);
+		List<(string name, IntPtr atom)> formats;
+		using (X11Helper.XLock(x11Window.Display))
+		{
+			formats = formatAtoms.Select(a => (XLib.GetAtomName(x11Window.Display, a), a)).ToList();
+			readSession ??= new X11SelectionReadSession(XLib.XGetSelectionOwner(x11Window.Display, selectionAtom));
+		}
 
-		var formats = formatAtoms
-			.Select(a => (name: XLib.GetAtomName(x11Window.Display, a), atom: a))
-			.ToList();
-		// Bmp will fail on Linux since skia isn't compiled with a Bmp codec by default. https://github.com/mono/SkiaSharp/issues/320#issuecomment-310805723
-		// So on X11, we only support image/png and image/jpeg for images.
+		Task<byte[]> ReadAsync(IntPtr format, CancellationToken ct) => readSession.GetBytesAsync(format,
+			(owner, timestamp, token) => ReadSelection(format, selectionAtom, owner, timestamp, token), ct);
+
 		foreach (var format in formats)
 		{
-			dataPackage.SetDataProvider(format.name, async ct => await Task.Run(() => WaitForBytes(x11Window, format.atom, selectionAtom), ct));
-			// For easier deadlock debugging, replace Task.Run with
-			// return await Task.Factory.StartNew(() =>
-			// {
-			//    Thread.CurrentThread.Name = $"XSEL {DateTime.Now}";
-			//    return <your method>();
-			// }, TaskCreationOptions.LongRunning);
+			dataPackage.SetDataProvider(format.name, async ct => await ReadAsync(format.atom, ct));
 		}
 
 		if (!eager)
 		{
 			if (formats.FirstOrDefault(f => TextFormats.ContainsKey(f.name)) is var text && text.atom != IntPtr.Zero)
 			{
-				dataPackage.SetDataProvider(StandardDataFormats.Text, async ct => await Task.Run(() => WaitForText(x11Window, text.atom, selectionAtom), ct));
+				dataPackage.SetDataProvider(StandardDataFormats.Text, async ct =>
+					await ReadAsync(text.atom, ct) is { } bytes ? TextFormats[text.name].GetString(bytes) : null);
 			}
 			if (formats.FirstOrDefault(f => f.name == "text/uri-list") is var uris && uris.atom != IntPtr.Zero)
 			{
-				dataPackage.SetDataProvider(StandardDataFormats.StorageItems, async ct => await Task.Run(() =>
-					WaitForBytes(x11Window, uris.atom, selectionAtom) is { } bytes ? ProcessUriList(Encoding.UTF8.GetString(bytes)).ToList() : new List<IStorageItem>(), ct));
+				dataPackage.SetDataProvider(StandardDataFormats.StorageItems, async ct =>
+					await ReadAsync(uris.atom, ct) is { } bytes ? ProcessUriList(Encoding.UTF8.GetString(bytes)).ToList() : new List<IStorageItem>());
 			}
 			return;
 		}
@@ -672,8 +669,10 @@ internal class X11ClipboardExtension : IClipboardExtension
 
 		if (formats.FirstOrDefault(f => f.name == "text/uri-list") is var f3 && f3.atom != IntPtr.Zero)
 		{
-			// Actually, Encoding.ASCII should be enough, but using UTF8 (which is an ASCII superset) is safer.
-			dataPackage.SetStorageItems(ProcessUriList(Encoding.UTF8.GetString(WaitForBytes(x11Window, f3.atom, selectionAtom))));
+			if (WaitForBytes(x11Window, f3.atom, selectionAtom) is { } bytes)
+			{
+				dataPackage.SetStorageItems(ProcessUriList(Encoding.UTF8.GetString(bytes)));
+			}
 		}
 	}
 
@@ -799,208 +798,29 @@ internal class X11ClipboardExtension : IClipboardExtension
 
 	private static byte[] WaitForBytes(X11Window x11Window, IntPtr format, IntPtr selection, CancellationToken ct = default)
 	{
-		using var xLock = X11Helper.XLock(x11Window.Display);
-
-		if (!HasOwner(x11Window, selection))
+		IntPtr owner;
+		using (X11Helper.XLock(x11Window.Display))
 		{
-			if (_logger.IsEnabled(LogLevel.Error))
-			{
-				_logger.Error($"{nameof(WaitForBytes)}: Found the X11 clipboard to be owner-less.");
-			}
-
-			return null;
+			owner = XLib.XGetSelectionOwner(x11Window.Display, selection);
 		}
+		return ReadSelection(format, selection, owner, X11Helper.CurrentTime, ct);
+	}
 
-		// INCR chunks are announced with PropertyNotify, which must be selected before the INCR property is deleted.
-		// The window's own mask (a host window's) is kept and restored.
-		XWindowAttributes attributes = default;
-		_ = XLib.XGetWindowAttributes(x11Window.Display, x11Window.Window, ref attributes);
-		using var maskDisposable = new DisposableStruct<X11Window, XWindowAttributes>(static (window, attrs) =>
-		{
-			_ = XLib.XSelectInput(window.Display, window.Window, attrs.your_event_mask);
-		}, x11Window, attributes);
-		_ = XLib.XSelectInput(x11Window.Display, x11Window.Window, attributes.your_event_mask | (IntPtr)EventMask.PropertyChangeMask);
-
-		_ = XLib.XConvertSelection(x11Window.Display, selection, format, format,
-			x11Window.Window, X11Helper.CurrentTime);
-
-		// Wait for SelectionNotify with a timeout to avoid blocking forever
-		// if the selection owner doesn't respond (e.g. headless/minimal WM).
-		var deadline = System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency * 2;
-		XEvent event_ = default;
-		bool gotSelection = false;
-
-		while (System.Diagnostics.Stopwatch.GetTimestamp() < deadline)
-		{
-			// Only the SelectionNotify: a host window's other events belong to its event loop.
-			if (X11Helper.XCheckTypedWindowEvent(x11Window.Display, x11Window.Window, (int)XEventName.SelectionNotify, out event_))
-			{
-				gotSelection = true;
-				break;
-			}
-			else
-			{
-				Thread.Sleep(10);
-			}
-		}
-
-		if (!gotSelection)
-		{
-			return null;
-		}
-
-		var sel = event_.SelectionEvent;
-		if (sel.property != format)
-		{
-			if (_logger.IsEnabled(LogLevel.Error))
-			{
-				_logger.Error($"{nameof(WaitForBytes)}: Expected property {XLib.GetAtomName(x11Window.Display, format)}, instead found {XLib.GetAtomName(x11Window.Display, sel.property)}");
-			}
-
-			return null;
-		}
-
-		if (sel.selection != selection)
-		{
-			if (_logger.IsEnabled(LogLevel.Error))
-			{
-				_logger.Error($"{nameof(WaitForBytes)}: Expected SelectionEvent.selection to be {XLib.GetAtomName(x11Window.Display, selection)}, INSTEAD FOUND {XLib.GetAtomName(x11Window.Display, event_.SelectionEvent.selection)}");
-			}
-		}
-
-		if (_logger.IsEnabled(LogLevel.Trace))
-		{
-			_logger.Trace($"{nameof(WaitForBytes)}: XSELELECTION EVENT: {event_.type} {event_.SelectionEvent}");
-		}
-
-		_ = XLib.XGetWindowProperty(
-			x11Window.Display,
-			x11Window.Window,
-			sel.property,
-			IntPtr.Zero,
-			X11Helper.LONG_LENGTH,
-			true,
-			X11Helper.AnyPropertyType,
-			out var actualTypeAtom,
-			out var actualFormat,
-			out var nitems,
-			out var bytes_after,
-			out var prop);
-		var readonlyProp = prop;
-		using var propDisposable = new DisposableStruct<IntPtr>(static rop => { _ = XLib.XFree(rop); }, readonlyProp);
-
-		var incrAtom = X11Helper.GetAtom(x11Window.Display, X11Helper.INCR);
-		if (actualTypeAtom == incrAtom)
-		{
-			// INCR state as of 28/12/2023: xsel implements INCR with an MIT License
-			// xclip implements INCR with nice comments but is GPL2. Avalonia doesn't implement it.
-
-			// This is particularly important for copying and pasting images.
-			// We follow https://tronche.com/gui/x/icccm/sec-2.html#s-2.7.2 and xsel
-
-			// prop contains a lower bound on the number of bytes, maybe we should use that to set the initial capacity somehow?
-			var stream = new MemoryStream();
-
-			_ = XLib.XDeleteProperty(x11Window.Display, x11Window.Window, sel.property);
-			_ = XLib.XFlush(x11Window.Display); // just a precaution
-
-			while (true)
-			{
-				var start = Stopwatch.GetTimestamp();
-				var received = false;
-				SpinWait.SpinUntil(() =>
-				{
-					_ = XLib.XFlush(x11Window.Display);
-					received = X11Helper.XCheckTypedWindowEvent(x11Window.Display, x11Window.Window, (int)XEventName.PropertyNotify, out event_);
-					return received || Stopwatch.GetElapsedTime(start).TotalMilliseconds > IncrMaxDelayMS;
-				});
-				if (ct.IsCancellationRequested || !received)
-				{
-					return null;
-				}
-
-				if (event_.PropertyEvent.atom != sel.property || event_.PropertyEvent.state != X11Helper.PropertyNewValue)
-				{
-					continue;
-				}
-
-				_ = XLib.XGetWindowProperty(
-					x11Window.Display,
-					x11Window.Window,
-					sel.property,
-					IntPtr.Zero,
-					X11Helper.LONG_LENGTH,
-					true,
-					X11Helper.AnyPropertyType,
-					out actualTypeAtom,
-					out actualFormat,
-					out nitems,
-					out bytes_after,
-					out prop);
-				var readonlyProp2 = prop;
-				using var propDisposable2 = new DisposableStruct<IntPtr>(static rop => { _ = XLib.XFree(rop); }, readonlyProp2);
-
-				if (_logger.IsEnabled(LogLevel.Trace))
-				{
-					_logger.Trace($"{nameof(WaitForBytes)}: received INCR chunk, {bytes_after} remaining");
-				}
-
-				if (actualTypeAtom == IntPtr.Zero)
-				{
-					// No property: a notification already consumed, such as the one for the INCR header itself.
-					continue;
-				}
-
-				if (nitems == 0)
-				{
-					// An existing zero-length property ends the transfer.
-					break;
-				}
-
-				unsafe
-				{
-					var span = new ReadOnlySpan<byte>(prop.ToPointer(), (int)nitems * (actualFormat / 8));
-					stream.Write(span);
-				}
-			}
-
-			return stream.ToArray();
-		}
-
-		if (actualTypeAtom != format)
-		{
-			if (_logger.IsEnabled(LogLevel.Error))
-			{
-				_logger.Error($"{nameof(WaitForBytes)}: expected format {XLib.GetAtomName(x11Window.Display, format)}, instead found {XLib.GetAtomName(x11Window.Display, actualTypeAtom)}");
-			}
-
-			return null;
-		}
-
-		if (nitems == IntPtr.Zero)
-		{
-			return null;
-		}
-
-		var data = new byte[(int)nitems * (actualFormat / 8)];
-		Marshal.Copy(prop, data, 0, data.Length);
-		return data;
+	private static byte[] ReadSelection(IntPtr format, IntPtr selection, IntPtr owner, IntPtr timestamp, CancellationToken ct)
+	{
+		ct.ThrowIfCancellationRequested();
+		using var connection = new X11SelectionConnection();
+		return X11SelectionReader.Read(connection, selection, format, timestamp, owner, ct);
 	}
 
 	public static string WaitForText(X11Window x11Window, IntPtr format, IntPtr selection)
 	{
-		using var _ = X11Helper.XLock(x11Window.Display);
-
-		if (TextFormats.TryGetValue(XLib.GetAtomName(x11Window.Display, format), out var enc))
+		Encoding encoding;
+		using (X11Helper.XLock(x11Window.Display))
 		{
-			if (_logger.IsEnabled(LogLevel.Trace))
-			{
-				_logger.Trace($"{nameof(WaitForText)}: found acceptable text format, using encoding {enc}");
-			}
-			return enc.GetString(WaitForBytes(x11Window, format, selection));
+			TextFormats.TryGetValue(XLib.GetAtomName(x11Window.Display, format), out encoding);
 		}
-
-		return null;
+		return encoding is not null && WaitForBytes(x11Window, format, selection) is { } bytes ? encoding.GetString(bytes) : null;
 	}
 
 	private IntPtr GetTimestamp()

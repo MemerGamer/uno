@@ -134,6 +134,10 @@ internal partial class X11PointerInputSource : IUnoCorePointerInputSource
 	{
 		if (!_nativeDrag)
 		{
+			if (!args.CurrentPoint.Properties.HasPressedButton)
+			{
+				_host.ReleaseRestoredPointerGrab();
+			}
 			PointerReleased?.Invoke(this, args);
 		}
 	}

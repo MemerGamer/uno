@@ -109,6 +109,56 @@ internal partial class X11XamlRootHost
 		(1 << (int)XiEventType.XI_TouchEnd);
 
 	private (XIVersion, int)? _xi2Details;
+	private int? _restoredDragDevice;
+	private bool _restoredDragGrab;
+
+	internal unsafe void RestorePointerGrabAfterDrag()
+	{
+		if (Closed.IsCompleted)
+		{
+			return;
+		}
+		var window = TopX11Window;
+		using var xlock = X11Helper.XLock(window.Display);
+		if (_xi2Details is { Item1: >= XIVersion.XI2_2 }
+			&& X11Helper.XIGetClientPointer(window.Display, window.Window, out var device))
+		{
+			var bits = XI2Mask;
+			var mask = new XIEventMask { Deviceid = device, MaskLen = sizeof(int), Mask = &bits };
+			if (X11Helper.XIGrabDevice(window.Display, device, window.Window, IntPtr.Zero, IntPtr.Zero, 1, 1, true, &mask) == 0)
+			{
+				_restoredDragDevice = device;
+				_restoredDragGrab = true;
+			}
+		}
+		else
+		{
+			_restoredDragGrab = X11Helper.XGrabPointer(window.Display, window.Window, true,
+				(uint)(XEventMask.ButtonPressMask | XEventMask.ButtonReleaseMask | XEventMask.PointerMotionMask),
+				1, 1, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero) == 0;
+		}
+		XLib.XFlush(window.Display);
+	}
+
+	internal void ReleaseRestoredPointerGrab()
+	{
+		if (!_restoredDragGrab)
+		{
+			return;
+		}
+		using var xlock = X11Helper.XLock(TopX11Window.Display);
+		if (_restoredDragDevice is { } device)
+		{
+			X11Helper.XIUngrabDevice(TopX11Window.Display, device, IntPtr.Zero);
+		}
+		else
+		{
+			X11Helper.XUngrabPointer(TopX11Window.Display, IntPtr.Zero);
+		}
+		_restoredDragDevice = null;
+		_restoredDragGrab = false;
+		XLib.XFlush(TopX11Window.Display);
+	}
 
 	internal void ReleasePointerGrabForDrag()
 	{

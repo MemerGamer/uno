@@ -136,12 +136,7 @@ internal class X11DragDropExtension : IDragDropExtension
 			X11DragDiagnostics.Trace($"XDndEnter: version={version}, sourceWindow={sourceWindow}, types in message: [{GetAtomNameSafe(ev.ptr3)}, {GetAtomNameSafe(ev.ptr4)}, {GetAtomNameSafe(ev.ptr5)}]");
 		}
 
-		IntPtr[] formats;
-		if ((ev.ptr2 & 1) == 0)
-		{
-			formats = new[] { ev.ptr3, ev.ptr4, ev.ptr5 };
-		}
-		else
+		var formats = X11DragTypeList.Read((ev.ptr2 & 1) != 0, ev.ptr3, ev.ptr4, ev.ptr5, delete =>
 		{
 			_ = XLib.XGetWindowProperty(
 				_host.RootX11Window.Display,
@@ -149,7 +144,7 @@ internal class X11DragDropExtension : IDragDropExtension
 				X11Helper.GetAtom(_host.RootX11Window.Display, X11Helper.XdndTypeList),
 				IntPtr.Zero,
 				X11Helper.LONG_LENGTH,
-				true,
+				delete,
 				X11Helper.AnyPropertyType,
 				out IntPtr actualType,
 				out var actualFormat,
@@ -160,15 +155,13 @@ internal class X11DragDropExtension : IDragDropExtension
 
 			if (nitems == 0 || actualFormat != 32 || actualType != X11Helper.GetAtom(_host.RootX11Window.Display, X11Helper.XA_ATOM))
 			{
-				formats = Array.Empty<IntPtr>();
+				return Array.Empty<IntPtr>();
 			}
 			else
 			{
-				formats = new Span<IntPtr>((void*)prop, (int)nitems).ToArray();
+				return new Span<IntPtr>((void*)prop, (int)nitems).ToArray();
 			}
-		}
-
-		formats = formats.Where(t => t != IntPtr.Zero).ToArray();
+		});
 
 		if (X11DragDiagnostics.IsEnabled)
 		{
@@ -199,7 +192,7 @@ internal class X11DragDropExtension : IDragDropExtension
 
 	private void ProcessXdndPosition(XClientMessageEvent ev)
 	{
-		if (_currentSession is not { } session)
+		if (_currentSession is not { } session || ev.ptr1 != session.SourceWindow)
 		{
 			if (this.Log().IsEnabled(LogLevel.Error))
 			{
@@ -208,7 +201,11 @@ internal class X11DragDropExtension : IDragDropExtension
 
 			return;
 		}
+		session.Status.ProcessPosition(() => ProcessXdndPosition(session, ev));
+	}
 
+	private void ProcessXdndPosition(XdndSession session, XClientMessageEvent ev)
+	{
 		var display = _host.RootX11Window.Display;
 
 		var rootX = (int)(ev.ptr3 >> 16);
@@ -219,6 +216,7 @@ internal class X11DragDropExtension : IDragDropExtension
 		// Versions before 2 carry no action; the source then copies.
 		session.Requested = session.Version >= 2 ? X11DragActions.FromTargetActionName(GetAtomNameSafe(ev.ptr5)) : DataPackageOperation.Copy;
 		session.Position = position;
+		session.Selection.Timestamp = ev.ptr4;
 
 		if (session.Info is null)
 		{
@@ -226,7 +224,7 @@ internal class X11DragDropExtension : IDragDropExtension
 			// XdndPosition never waits for a selection transfer.
 			var package = new DataPackage();
 			var formats = session.AvailableFormats;
-			X11ClipboardExtension.FillDataPackage(_host.RootX11Window, XdndSelection, package, formats, eager: false);
+			X11ClipboardExtension.FillDataPackage(_host.RootX11Window, XdndSelection, package, formats, eager: false, readSession: session.Selection);
 
 			var operations = X11DragActions.TargetAllowed(session.SourceActions, session.Requested);
 			var info = new CoreDragInfo(new DragEventSource(position), package.GetView(), operations);
@@ -242,17 +240,15 @@ internal class X11DragDropExtension : IDragDropExtension
 			_sourceWatch = new Timer(_ => X11XamlRootHost.QueueAction(_host, WatchSource), null, _sourceWatchInterval, _sourceWatchInterval);
 		}
 
-		UpdateStatus(session, _coreDragDropManager.ProcessMoved(new DragEventSource(position)), force: true);
+		_coreDragDropManager.ProcessMoved(new DragEventSource(position));
 	}
 
-	// The Enter/Over handlers may settle after the XdndPosition that raised them, and a source sends the next one only
-	// when the pointer moves: the late answer is sent as an unsolicited XdndStatus (a drop right after entering would
-	// otherwise be refused).
+	// Each position is acknowledged only after its Enter/Over deferrals have settled.
 	public void AcceptedOperationChanged(CoreDragInfo info, DataPackageOperation accepted)
 	{
 		if (_currentSession is { Dropped: false } session && session.Info == info)
 		{
-			UpdateStatus(session, accepted, force: false);
+			session.Status.CompletePosition(accepted, operation => UpdateStatus(session, operation));
 		}
 	}
 
@@ -286,15 +282,9 @@ internal class X11DragDropExtension : IDragDropExtension
 		_coreDragDropManager.ProcessAborted(_fakePointerId);
 	}
 
-	private void UpdateStatus(XdndSession session, DataPackageOperation accepted, bool force)
+	private void UpdateStatus(XdndSession session, DataPackageOperation accepted)
 	{
 		var action = X11DragActions.ChooseTargetAction(accepted & session.Info!.AllowedOperations, session.Requested);
-		if (!force && action == session.Accepted)
-		{
-			return;
-		}
-		session.Accepted = action;
-
 		var display = _host.RootX11Window.Display;
 		using var lockDisposable = X11Helper.XLock(display);
 		XClientMessageEvent m = default;
@@ -317,7 +307,7 @@ internal class X11DragDropExtension : IDragDropExtension
 
 		if (X11DragDiagnostics.IsEnabled)
 		{
-			X11DragDiagnostics.Trace($"XDndStatus: to {session.SourceWindow:X} from {_host.RootX11Window.Window:X} at {session.Position} accepted={accepted} action={action} requested={session.Requested}{(force ? "" : " (update)")}");
+			X11DragDiagnostics.Trace($"XDndStatus: to {session.SourceWindow:X} from {_host.RootX11Window.Window:X} at {session.Position} accepted={accepted} action={action} requested={session.Requested}");
 		}
 	}
 
@@ -325,6 +315,10 @@ internal class X11DragDropExtension : IDragDropExtension
 
 	private void ProcessXdndLeave(XClientMessageEvent ev)
 	{
+		if (_currentSession?.SourceWindow != ev.ptr1)
+		{
+			return;
+		}
 		StopSourceWatch();
 		_coreDragDropManager.ProcessAborted(_fakePointerId);
 		_currentSession = null;
@@ -337,13 +331,14 @@ internal class X11DragDropExtension : IDragDropExtension
 
 	private void ProcessXdndDrop(XClientMessageEvent ev)
 	{
-		StopSourceWatch();
-		if (_currentSession is not { } session)
+		if (_currentSession is not { } session || session.SourceWindow != ev.ptr1)
 		{
 			return;
 		}
+		StopSourceWatch();
 		_currentSession = null;
 		session.Dropped = true;
+		session.Selection.Timestamp = ev.ptr3;
 		if (session.Info is null)
 		{
 			Complete(session, DataPackageOperation.None);
@@ -462,11 +457,11 @@ internal class X11DragDropExtension : IDragDropExtension
 		public IntPtr SourceWindow { get; } = sourceWindow;
 		public IntPtr[] AvailableFormats { get; } = availableFormats;
 		public DataPackageOperation SourceActions { get; } = sourceActions;
+		public X11DragTargetStatus Status { get; } = new();
+		public X11SelectionReadSession Selection { get; } = new(sourceWindow);
 		public CoreDragInfo? Info { get; set; }
 		public Point Position { get; set; }
 		public DataPackageOperation Requested { get; set; }
-		// The action of the last XdndStatus, None when refused.
-		public DataPackageOperation Accepted { get; set; }
 		public bool Dropped { get; set; }
 		public bool Finished { get; set; }
 	}
