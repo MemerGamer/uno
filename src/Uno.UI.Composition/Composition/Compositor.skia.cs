@@ -110,6 +110,9 @@ public partial class Compositor
 		}
 	}
 
+	/// <summary>Whether the animation is evaluated on its target's frames.</summary>
+	internal bool IsRunning(CompositionAnimation animation) => _runningAnimations.ContainsKey(animation);
+
 	internal void UnregisterAnimation(CompositionAnimation animation, CompositionObject visual)
 	{
 		if (animation.IsTrackedByCompositor)

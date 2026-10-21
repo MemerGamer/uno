@@ -158,6 +158,13 @@ internal sealed class KeyFrameEvaluator<T> : IKeyFrameEvaluator
 		_lastTimestamp = _compositor.AnimationTimestampInTicks;
 	}
 
+	public void Finish()
+	{
+		_isAwaitingFirstFrame = false;
+		_lastTimestamp = _compositor.AnimationTimestampInTicks;
+		_playhead = _playbackRate < 0.0f ? 0.0 : _iterationCount;
+	}
+
 	public float PlaybackRate
 	{
 		get => _playbackRate;
@@ -184,26 +191,42 @@ internal sealed class KeyFrameEvaluator<T> : IKeyFrameEvaluator
 	{
 		get
 		{
-			if (_iterationBehavior == AnimationIterationBehavior.Forever || _playbackRate == 0.0f)
-			{
-				return TimeSpan.MaxValue;
-			}
-
 			AdvanceToCurrentTimestamp();
-
-			var boundedPlayhead = Math.Clamp(_playhead, 0.0, _iterationCount);
-			var remainingProgress = _playbackRate < 0.0f
-				? boundedPlayhead
-				: _iterationCount - boundedPlayhead;
-
-			if (remainingProgress <= 0.0)
-			{
-				return TimeSpan.Zero;
-			}
-
-			var remainingTicks = remainingProgress * _duration.Ticks / Math.Abs(_playbackRate);
-			return TimeSpan.FromTicks((long)Math.Ceiling(remainingTicks));
+			return RemainingFrom(_playhead);
 		}
+	}
+
+	public TimeSpan RemainingAt(long timestamp)
+	{
+		var playhead = _playhead;
+		var delta = timestamp - _lastTimestamp;
+		if (!_isPaused && !_isAwaitingFirstFrame && delta > 0 && _duration != TimeSpan.Zero)
+		{
+			playhead += (double)delta * _playbackRate / _duration.Ticks;
+		}
+
+		return RemainingFrom(playhead);
+	}
+
+	private TimeSpan RemainingFrom(double playhead)
+	{
+		if (_iterationBehavior == AnimationIterationBehavior.Forever || _playbackRate == 0.0f)
+		{
+			return TimeSpan.MaxValue;
+		}
+
+		var boundedPlayhead = Math.Clamp(playhead, 0.0, _iterationCount);
+		var remainingProgress = _playbackRate < 0.0f
+			? boundedPlayhead
+			: _iterationCount - boundedPlayhead;
+
+		if (remainingProgress <= 0.0)
+		{
+			return TimeSpan.Zero;
+		}
+
+		var remainingTicks = remainingProgress * _duration.Ticks / Math.Abs(_playbackRate);
+		return TimeSpan.FromTicks((long)Math.Ceiling(remainingTicks));
 	}
 
 	private void AdvanceToCurrentTimestamp()

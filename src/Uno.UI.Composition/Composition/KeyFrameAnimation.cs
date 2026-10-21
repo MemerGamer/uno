@@ -3,8 +3,10 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Threading;
 using Uno;
 using Uno.Foundation.Logging;
+using Uno.UI.Dispatching;
 
 namespace Microsoft.UI.Composition
 {
@@ -24,6 +26,8 @@ namespace Microsoft.UI.Composition
 				if (value is not null)
 				{
 					value.PlaybackRate = _playbackRate;
+					_lastFrameTimestamp = null;
+					ArmEndTimer();
 				}
 			}
 		}
@@ -59,8 +63,19 @@ namespace Microsoft.UI.Composition
 
 		private bool _stopOnceValueApplied;
 
+		// Frames stop while nothing is on screen (a hidden window), so a finite animation also ends on a timer.
+		private Timer? _endTimer;
+		private long? _lastFrameTimestamp;
+		private long _armTimestamp;
+		private long _remainingAtArm;
+
+		// How long the timer leaves for a frame to land before ending the animation itself. Longer than any frame
+		// interval, so it never ends an animation a frame is about to evaluate.
+		private static readonly long _frameGraceInTicks = TimeSpan.FromMilliseconds(250).Ticks;
+
 		internal override object Evaluate()
 		{
+			_lastFrameTimestamp = Compositor.TimestampInTicks;
 			var (value, shouldStop) = _keyframeEvaluator!.Evaluate();
 			if (shouldStop)
 			{
@@ -89,15 +104,24 @@ namespace Microsoft.UI.Composition
 		internal override void Stop()
 		{
 			base.Stop();
+			if (StartedObjectCount == 0)
+			{
+				DisarmEndTimer();
+			}
+
 			Stopped?.Invoke(this, EventArgs.Empty);
 		}
 
 		internal void Pause()
-			=> _keyframeEvaluator!.Pause();
+		{
+			_keyframeEvaluator!.Pause();
+			DisarmEndTimer();
+		}
 
 		internal void Seek(float progress)
 		{
 			_keyframeEvaluator!.Seek(progress);
+			ArmEndTimer();
 		}
 
 		// These match WinUI's non-virtual KeyFrameAnimation API surface; per-type behaviour is provided
@@ -123,7 +147,11 @@ namespace Microsoft.UI.Composition
 		}
 
 		internal void Resume()
-			=> _keyframeEvaluator!.Resume();
+		{
+			_keyframeEvaluator!.Resume();
+			_lastFrameTimestamp = null;
+			ArmEndTimer();
+		}
 
 		internal bool IsPaused => _keyframeEvaluator?.IsPaused == true;
 
@@ -135,13 +163,99 @@ namespace Microsoft.UI.Composition
 			if (_keyframeEvaluator is { } evaluator)
 			{
 				evaluator.PlaybackRate = value;
+				ArmEndTimer();
 			}
 		}
 
-		internal void SeekTo(float progress) => _keyframeEvaluator?.SeekTo(progress);
+		internal void SeekTo(float progress)
+		{
+			if (_keyframeEvaluator is { } evaluator)
+			{
+				evaluator.SeekTo(progress);
+				ArmEndTimer();
+			}
+		}
 
 		internal float Progress => _keyframeEvaluator!.Progress;
 
 		internal TimeSpan Remaining => _keyframeEvaluator!.Remaining;
+
+		// Not used for animations that repeat forever or are halted (Remaining is then unbounded).
+		private void ArmEndTimer()
+		{
+			if (StartedObjectCount == 0 || _keyframeEvaluator is not { IsPaused: false } evaluator)
+			{
+				DisarmEndTimer();
+				return;
+			}
+
+			var now = Compositor.TimestampInTicks;
+			var remaining = evaluator.RemainingAt(now);
+			if (remaining == TimeSpan.MaxValue)
+			{
+				DisarmEndTimer();
+				return;
+			}
+
+			// Until a frame evaluates it, the evaluator does not advance (the animation starts at its first frame), so
+			// time without frames is counted from here.
+			if (_lastFrameTimestamp is null)
+			{
+				_armTimestamp = now;
+				_remainingAtArm = remaining.Ticks;
+			}
+
+			_endTimer ??= new Timer(_ => NativeDispatcher.Main.Enqueue(OnEndTimer));
+			ScheduleEndTimer(remaining.Ticks);
+		}
+
+		private void ScheduleEndTimer(long ticks)
+			=> _endTimer?.Change((long)Math.Min(Math.Ceiling(ticks / (double)TimeSpan.TicksPerMillisecond), int.MaxValue), Timeout.Infinite);
+
+		private void DisarmEndTimer() => _endTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+
+		// Runs the normal end, as a frame would, unless a frame got there first or may still do so.
+		private void OnEndTimer()
+		{
+			if (StartedObjectCount == 0 || _keyframeEvaluator is not { IsPaused: false } evaluator || !Compositor.IsRunning(this))
+			{
+				return;
+			}
+
+			var now = Compositor.TimestampInTicks;
+			long remaining, sinceLastFrame;
+			if (_lastFrameTimestamp is { } lastFrame)
+			{
+				remaining = evaluator.RemainingAt(now).Ticks;
+				sinceLastFrame = now - lastFrame;
+			}
+			else
+			{
+				sinceLastFrame = now - _armTimestamp;
+				remaining = _remainingAtArm - sinceLastFrame;
+			}
+
+			var wait = Math.Max(remaining, _frameGraceInTicks - sinceLastFrame);
+			if (wait > 0)
+			{
+				ScheduleEndTimer(wait);
+				return;
+			}
+
+			evaluator.Finish();
+			try
+			{
+				RaiseAnimationFrame();
+			}
+			catch (Exception e)
+			{
+				if (this.Log().IsEnabled(LogLevel.Error))
+				{
+					this.Log().Error("Stopping animation after an unhandled evaluation error.", e);
+				}
+
+				Stop();
+			}
+		}
 	}
 }
