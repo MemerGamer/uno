@@ -47,11 +47,9 @@ wayland() {
 		build "$port_project"
 		if [[ -f src/Uno.UI.Runtime.Wayland.Tests/Uno.UI.Runtime.Wayland.Tests.csproj ]]; then
 			test_project src/Uno.UI.Runtime.Wayland.Tests/Uno.UI.Runtime.Wayland.Tests.csproj
-		elif [[ $mode == commit ]]; then
-			note 'Wayland tests do not exist at this commit; the strict build is the check.'
 		else
-			echo 'Wayland unit test project missing' >&2
-			exit 1
+			# Removed upstream (review point 24); runtime tests cover the host.
+			note 'Wayland tests do not exist at this commit; the strict build is the check.'
 		fi
 	fi
 }
