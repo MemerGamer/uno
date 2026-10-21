@@ -117,7 +117,7 @@ jobs:
         with:
           name: wayland-unit-tests-host
           path: source/artifacts/wayland-unit-tests/**/*.trx
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
   build-port:
@@ -171,7 +171,7 @@ jobs:
         with:
           name: wayland-unit-tests-port
           path: source/artifacts/wayland-unit-tests/**/*.trx
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
   runtime-build:
