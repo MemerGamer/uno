@@ -112,6 +112,17 @@ internal partial class X11XamlRootHost
 	private int? _restoredDragDevice;
 	private bool _restoredDragGrab;
 
+	internal uint GetPointerButtonState()
+	{
+		if (Closed.IsCompleted)
+		{
+			return 0;
+		}
+		using var xlock = X11Helper.XLock(TopX11Window.Display);
+		return X11Helper.XQueryPointer(TopX11Window.Display, TopX11Window.Window, out _, out _, out _, out _, out _, out _, out var mask)
+			? mask : 0;
+	}
+
 	internal unsafe void RestorePointerGrabAfterDrag()
 	{
 		if (Closed.IsCompleted)

@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -37,11 +38,83 @@ public sealed class Given_X11DragProtocols
 		host.Drain();
 		Assert.IsFalse(pointer.IsNativeDragActive);
 		Assert.AreEqual(2, pointer.PressedButtons);
-		Assert.AreSame(properties, pointer.PreviousProperties);
+		Assert.IsTrue(pointer.PreviousProperties!.IsLeftButtonPressed);
 		Assert.AreEqual(grabReleased ? 1 : 0, host.RestoredGrabs);
 		Assert.AreEqual(0, cancelled);
 		Assert.AreEqual(0, captureLost);
 		Assert.IsTrue(pointer.InternalDrop());
+	}
+
+	[TestMethod]
+	[DataRow(true, 1, PointerUpdateKind.LeftButtonReleased)]
+	[DataRow(false, 1, PointerUpdateKind.LeftButtonReleased)]
+	[DataRow(true, 2, PointerUpdateKind.MiddleButtonReleased)]
+	[DataRow(true, 3, PointerUpdateKind.RightButtonReleased)]
+	public void StartupReleaseIsCompletedWithoutRestoringGrab(bool grabReleased, int button, PointerUpdateKind update)
+	{
+		var host = new X11XamlRootHost { ButtonState = 0 };
+		var pointer = new X11PointerInputSource(host);
+		var properties = new PointerPointProperties
+		{
+			IsLeftButtonPressed = button == 1,
+			IsMiddleButtonPressed = button == 2,
+			IsRightButtonPressed = button == 3
+		};
+		pointer.Press(new PointerPoint(1, 1, PointerDevice.For(PointerDeviceType.Mouse), 1, default, default, true, properties));
+		var releases = 0;
+		pointer.PointerReleased += (_, args) =>
+		{
+			Assert.IsFalse(pointer.IsNativeDragActive);
+			Assert.IsFalse(args.CurrentPoint.IsInContact);
+			Assert.AreEqual(update, args.CurrentPoint.Properties.PointerUpdateKind);
+			releases++;
+		};
+		pointer.RollbackNativeDrag(pointer.BeginNativeDrag(1, default), grabReleased);
+		host.Drain();
+		Assert.AreEqual(1, releases);
+		Assert.AreEqual(0, pointer.PressedButtons);
+		Assert.IsFalse(pointer.PreviousProperties!.HasPressedButton);
+		Assert.AreEqual(0, host.RestoredGrabs);
+		Assert.IsFalse(host.HasRestoredGrab);
+	}
+
+	[TestMethod]
+	public void RollbackReconcilesReleasedButtonWhileAnotherRemainsPressed()
+	{
+		var host = new X11XamlRootHost { ButtonState = 0x400 };
+		var pointer = new X11PointerInputSource(host);
+		pointer.Press(new PointerPoint(1, 1, PointerDevice.For(PointerDeviceType.Mouse), 1, default, default, true,
+			new PointerPointProperties { IsLeftButtonPressed = true, IsRightButtonPressed = true }));
+		var releases = 0;
+		pointer.PointerReleased += (_, args) =>
+		{
+			Assert.IsTrue(args.CurrentPoint.Properties.IsRightButtonPressed);
+			Assert.IsFalse(args.CurrentPoint.Properties.IsLeftButtonPressed);
+			releases++;
+		};
+		pointer.RollbackNativeDrag(pointer.BeginNativeDrag(1, default), true);
+		host.Drain();
+		Assert.AreEqual(8, pointer.PressedButtons);
+		Assert.IsTrue(host.HasRestoredGrab);
+		Assert.AreEqual(1, releases);
+	}
+
+	[TestMethod]
+	public void ReleaseDuringGrabRestorationReleasesTheExplicitGrab()
+	{
+		var host = new X11XamlRootHost();
+		host.OnRestore = () => host.ButtonState = 0;
+		var pointer = new X11PointerInputSource(host);
+		pointer.Press(new PointerPoint(1, 1, PointerDevice.For(PointerDeviceType.Mouse), 1, default, default, true,
+			new PointerPointProperties { IsLeftButtonPressed = true }));
+		var releases = 0;
+		pointer.PointerReleased += (_, _) => releases++;
+		pointer.RollbackNativeDrag(pointer.BeginNativeDrag(1, default), true);
+		host.Drain();
+		Assert.AreEqual(1, host.RestoredGrabs);
+		Assert.IsFalse(host.HasRestoredGrab);
+		Assert.AreEqual(1, releases);
+		Assert.AreEqual(0, pointer.PressedButtons);
 	}
 
 	[TestMethod]
@@ -113,6 +186,32 @@ public sealed class Given_X11DragProtocols
 	}
 
 	[TestMethod]
+	public void DeferredLeaveDoesNotRouteReentryToTheOldSession()
+	{
+		var old = new X11DragDropExtension.XdndSession(5, 3, [], DataPackageOperation.Copy);
+		var reentry = new X11DragDropExtension.XdndSession(5, 3, [], DataPackageOperation.Copy);
+		var registered = new[] { old, reentry };
+		Assert.IsTrue(old.Status.ProcessPosition(() => { }));
+		Assert.AreNotEqual(old.PointerId, reentry.PointerId);
+		var acknowledgements = 0;
+		void Move()
+		{
+			var source = reentry.CreateEventSource(default);
+			var operation = registered.First(session => session.PointerId == source.Id);
+			if (operation == reentry)
+			{
+				operation.Status.CompletePosition(DataPackageOperation.Copy, _ => acknowledgements++);
+			}
+		}
+		Assert.IsTrue(reentry.Status.ProcessPosition(Move));
+		Assert.AreEqual(1, acknowledgements);
+		old.Status.CompletePosition(DataPackageOperation.None, _ => { });
+		Assert.IsTrue(reentry.Status.ProcessPosition(Move));
+		Assert.AreEqual(2, acknowledgements);
+		Assert.AreEqual(reentry.PointerId, reentry.CreateEventSource(new(1, 2)).Id);
+	}
+
+	[TestMethod]
 	public void ImmediateFirstIncrementSurvivesHeaderAcknowledgement()
 	{
 		using var connection = new SelectionOwner();
@@ -122,6 +221,37 @@ public sealed class Given_X11DragProtocols
 		connection.Properties.Enqueue(new((IntPtr)2, 8, Array.Empty<byte>()));
 		CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4, 5 }, Read(connection));
 		Assert.AreEqual(4, connection.PropertyReads);
+	}
+
+	[TestMethod]
+	public async Task PrivateConnectionsInternAtomsWithoutSharedCache()
+	{
+		using var barrier = new Barrier(2);
+		var tasks = Enumerable.Range(0, 2).Select(_ => Task.Run(() =>
+		{
+			using var display = new XLib.SelectionDisplay { AtomBarrier = barrier };
+			using var connection = new X11SelectionConnection();
+			CollectionAssert.AreEqual(new[] { "_UNO_SELECTION", "INCR" }, display.Atoms);
+			Assert.AreEqual((IntPtr)2, connection.IncrementalType);
+			return display;
+		})).ToArray();
+		foreach (var display in await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(10)))
+		{
+			Assert.AreEqual(1, display.Closed);
+			Assert.AreEqual(1, display.Destroyed);
+		}
+	}
+
+	[TestMethod]
+	[DataRow("window")]
+	[DataRow("_UNO_SELECTION")]
+	[DataRow("INCR")]
+	[DataRow("input")]
+	public void SelectionInitializationFailureClosesTheDisplay(string failure)
+	{
+		using var display = new XLib.SelectionDisplay { Failure = failure };
+		Assert.ThrowsExactly<InvalidOperationException>(() => new X11SelectionConnection());
+		Assert.AreEqual(1, display.Closed);
 	}
 
 	[TestMethod]
@@ -156,14 +286,19 @@ public sealed class Given_X11DragProtocols
 		using var cancellation = new CancellationTokenSource();
 		var session = new X11SelectionReadSession((IntPtr)3) { Timestamp = (IntPtr)100 };
 		var stopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-		var connection = new SelectionOwner { Notify = false, OnWait = cancellation.Cancel };
+		var connection = new SelectionOwner { Notify = false };
 		byte[]? Retrieve(IntPtr owner, IntPtr time, CancellationToken ct)
 		{
+			connection.OnWait = () =>
+			{
+				cancellation.Cancel();
+				Assert.IsTrue(ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(5)));
+			};
 			try
 			{
 				using (connection)
 				{
-					Assert.AreEqual(cancellation.Token, ct);
+					Assert.IsTrue(ct.CanBeCanceled);
 					return X11SelectionReader.Read(connection, (IntPtr)1, (IntPtr)2, time, owner, ct);
 				}
 			}
@@ -177,6 +312,119 @@ public sealed class Given_X11DragProtocols
 		await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
 		Assert.IsTrue(connection.Disposed);
 		Assert.AreEqual(1, connection.Waits);
+	}
+
+	[TestMethod]
+	public async Task CanceledCallerDoesNotCancelAnotherCallersTransfer()
+	{
+		var session = new X11SelectionReadSession((IntPtr)3);
+		using var cancellation = new CancellationTokenSource();
+		using var finish = new ManualResetEventSlim();
+		var entered = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var reads = 0;
+		byte[]? Retrieve(IntPtr owner, IntPtr time, CancellationToken ct)
+		{
+			Interlocked.Increment(ref reads);
+			entered.SetResult(ct);
+			Assert.IsTrue(finish.Wait(TimeSpan.FromSeconds(5), ct));
+			return new byte[] { 7 };
+		}
+		var first = session.GetBytesAsync((IntPtr)2, Retrieve, cancellation.Token);
+		var transferToken = await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		var second = session.GetBytesAsync((IntPtr)2, Retrieve, default);
+		try
+		{
+			cancellation.Cancel();
+			await Assert.ThrowsAsync<OperationCanceledException>(async () => await first);
+			Assert.IsFalse(transferToken.IsCancellationRequested);
+		}
+		finally
+		{
+			finish.Set();
+		}
+		CollectionAssert.AreEqual(new byte[] { 7 }, await second.WaitAsync(TimeSpan.FromSeconds(5)));
+		Assert.AreEqual(1, reads);
+	}
+
+	[TestMethod]
+	[DataRow("timeout")]
+	[DataRow("fault")]
+	[DataRow("canceled")]
+	public async Task FailedReadCanRetryAtDropAndSuccessfulPayloadIsCached(string failure)
+	{
+		var session = new X11SelectionReadSession((IntPtr)3) { Timestamp = (IntPtr)100 };
+		var reads = 0;
+		byte[]? Retrieve(IntPtr owner, IntPtr time, CancellationToken ct)
+		{
+			if (++reads == 1)
+			{
+				if (failure == "fault")
+				{
+					throw new InvalidOperationException();
+				}
+				if (failure == "canceled")
+				{
+					throw new OperationCanceledException(new CancellationToken(true));
+				}
+				using var silent = new SelectionOwner { Notify = false };
+				return X11SelectionReader.Read(silent, (IntPtr)1, (IntPtr)2, time, owner, ct);
+			}
+			Assert.AreEqual((IntPtr)200, time);
+			return new byte[] { 9 };
+		}
+		if (failure == "fault")
+		{
+			await Assert.ThrowsAsync<InvalidOperationException>(async () => await session.GetBytesAsync((IntPtr)2, Retrieve, default));
+		}
+		else if (failure == "canceled")
+		{
+			await Assert.ThrowsAsync<OperationCanceledException>(async () => await session.GetBytesAsync((IntPtr)2, Retrieve, default));
+		}
+		else
+		{
+			Assert.IsNull(await session.GetBytesAsync((IntPtr)2, Retrieve, default));
+		}
+		session.Timestamp = (IntPtr)200;
+		CollectionAssert.AreEqual(new byte[] { 9 }, await session.GetBytesAsync((IntPtr)2, Retrieve, default));
+		CollectionAssert.AreEqual(new byte[] { 9 }, await session.GetBytesAsync((IntPtr)2, Retrieve, default));
+		Assert.AreEqual(2, reads);
+	}
+
+	[TestMethod]
+	public async Task CanceledLastCallerCanRetryBeforePreviousWorkerStops()
+	{
+		var session = new X11SelectionReadSession((IntPtr)3);
+		using var cancellation = new CancellationTokenSource();
+		using var finish = new ManualResetEventSlim();
+		var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var stopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		var first = session.GetBytesAsync((IntPtr)2, (_, _, ct) =>
+		{
+			entered.SetResult(true);
+			try
+			{
+				Assert.IsTrue(finish.Wait(TimeSpan.FromSeconds(5)));
+				ct.ThrowIfCancellationRequested();
+				return null;
+			}
+			finally
+			{
+				stopped.SetResult(true);
+			}
+		}, cancellation.Token);
+		await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		try
+		{
+			cancellation.Cancel();
+			await Assert.ThrowsAsync<OperationCanceledException>(async () => await first);
+			CollectionAssert.AreEqual(new byte[] { 8 }, await session.GetBytesAsync((IntPtr)2, (_, _, _) => new byte[] { 8 }, default));
+		}
+		finally
+		{
+			finish.Set();
+		}
+		await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
+		CollectionAssert.AreEqual(new byte[] { 8 }, await session.GetBytesAsync((IntPtr)2, (_, _, _) => throw new AssertFailedException(), default));
 	}
 
 	[TestMethod]
@@ -238,20 +486,52 @@ public sealed class Given_X11DragProtocols
 	{
 		var published = new[] { (IntPtr)1, (IntPtr)2, (IntPtr)3, (IntPtr)4, IntPtr.Zero };
 		var property = published;
-		IntPtr[] ReadProperty(bool delete)
-		{
-			var result = property;
-			if (delete)
-			{
-				property = Array.Empty<IntPtr>();
-			}
-			return result;
-		}
+		IntPtr[] ReadProperty() => property;
 		var first = X11DragTypeList.Read(true, 0, 0, 0, ReadProperty);
 		var reentry = X11DragTypeList.Read(true, 0, 0, 0, ReadProperty);
 		Assert.AreEqual(4, first.Length);
 		CollectionAssert.AreEqual(first, reentry);
 		CollectionAssert.AreEqual(published, property);
+	}
+
+	[TestMethod]
+	public void InlineTypesDoNotReadTheTypeListProperty()
+	{
+		CollectionAssert.AreEqual(new[] { (IntPtr)1, (IntPtr)3 },
+			X11DragTypeList.Read(false, 1, 0, 3, () => throw new AssertFailedException()));
+	}
+
+	[TestMethod]
+	public void SessionFinishAndSelectionClearRetireTheWindowOnce()
+	{
+		var selection = new X11DragSelection((IntPtr)3, (IntPtr)100, new()
+		{
+			[(IntPtr)1] = Task.FromResult<byte[]?>(new byte[] { 8 })
+		});
+		var destroyed = new List<IntPtr>();
+		selection.RetainCompleted(100);
+		selection.Retire(destroyed.Add);
+		selection.Retire(destroyed.Add);
+		Assert.IsTrue(selection.IsRetired);
+		CollectionAssert.AreEqual(new[] { (IntPtr)3 }, destroyed);
+		Assert.AreEqual(0, selection.Content.Count);
+	}
+
+	[TestMethod]
+	public void RetiringPreviousSelectionDoesNotRetireItsReplacement()
+	{
+		var previous = new X11DragSelection((IntPtr)3, (IntPtr)100, new());
+		var replacement = new X11DragSelection((IntPtr)4, (IntPtr)200, new()
+		{
+			[(IntPtr)1] = Task.FromResult<byte[]?>(new byte[] { 9 })
+		});
+		var destroyed = new List<IntPtr>();
+		previous.Retire(destroyed.Add);
+		previous.Retire(destroyed.Add);
+		Assert.IsFalse(replacement.IsRetired);
+		Assert.AreEqual(1, replacement.Content.Count);
+		replacement.Retire(destroyed.Add);
+		CollectionAssert.AreEqual(new[] { (IntPtr)3, (IntPtr)4 }, destroyed);
 	}
 
 	[TestMethod]
@@ -342,8 +622,18 @@ internal sealed class X11XamlRootHost
 {
 	internal readonly System.Collections.Generic.Queue<Action> Actions = new();
 	internal int RestoredGrabs;
+	internal uint ButtonState = 0x100;
+	internal bool HasRestoredGrab;
+	internal Action? OnRestore;
+	internal uint GetPointerButtonState() => ButtonState;
 	internal static void QueueAction(X11XamlRootHost host, Action action) => host.Actions.Enqueue(action);
-	internal void RestorePointerGrabAfterDrag() => RestoredGrabs++;
+	internal void RestorePointerGrabAfterDrag()
+	{
+		RestoredGrabs++;
+		HasRestoredGrab = true;
+		OnRestore?.Invoke();
+	}
+	internal void ReleaseRestoredPointerGrab() => HasRestoredGrab = false;
 	internal void Drain()
 	{
 		while (Actions.TryDequeue(out var action))
@@ -360,6 +650,8 @@ internal partial class X11PointerInputSource
 	private PointerPointProperties? _previousPointerPointProperties;
 	internal event EventHandler<PointerEventArgs>? PointerCancelled;
 	internal event EventHandler<PointerEventArgs>? PointerCaptureLost;
+	internal event EventHandler<PointerEventArgs>? PointerReleased;
+	private void RaisePointerReleased(PointerEventArgs args) => PointerReleased?.Invoke(this, args);
 
 	internal X11PointerInputSource(X11XamlRootHost host) => _host = host;
 	internal int PressedButtons => _pressedButtons;
@@ -367,7 +659,9 @@ internal partial class X11PointerInputSource
 	internal void Press(PointerPoint point)
 	{
 		_lastPoint = point;
-		_pressedButtons = 2;
+		_pressedButtons = (point.Properties.IsLeftButtonPressed ? 2 : 0)
+			| (point.Properties.IsMiddleButtonPressed ? 4 : 0)
+			| (point.Properties.IsRightButtonPressed ? 8 : 0);
 		_previousPointerPointProperties = point.Properties;
 	}
 
@@ -380,4 +674,98 @@ internal partial class X11PointerInputSource
 		_pressedButtons = 0;
 		return true;
 	}
+}
+
+// The connection constructor uses these bindings without opening a real Display.
+internal static class XLib
+{
+	private static readonly AsyncLocal<SelectionDisplay?> _current = new();
+	internal sealed class SelectionDisplay : IDisposable
+	{
+		private readonly SelectionDisplay? _previous = _current.Value;
+		internal readonly List<string> Atoms = new();
+		internal Barrier? AtomBarrier;
+		internal string? Failure;
+		internal int Closed;
+		internal int Destroyed;
+		internal SelectionDisplay() => _current.Value = this;
+		internal void Check(string step)
+		{
+			if (Failure == step)
+			{
+				throw new InvalidOperationException();
+			}
+		}
+		public void Dispose() => _current.Value = _previous;
+	}
+
+	internal static IntPtr XOpenDisplay(IntPtr name) => (IntPtr)1;
+	internal static IntPtr XDefaultRootWindow(IntPtr display) => (IntPtr)2;
+	internal static IntPtr XCreateSimpleWindow(IntPtr display, IntPtr parent, int x, int y, uint width, uint height,
+		uint borderWidth, IntPtr border, IntPtr background)
+	{
+		_current.Value!.Check("window");
+		return (IntPtr)3;
+	}
+	internal static IntPtr XInternAtom(IntPtr display, string name, bool onlyIfExists)
+	{
+		var state = _current.Value!;
+		state.Check(name);
+		Assert.IsFalse(onlyIfExists);
+		if (name == "_UNO_SELECTION" && state.AtomBarrier is { } barrier)
+		{
+			Assert.IsTrue(barrier.SignalAndWait(TimeSpan.FromSeconds(5)));
+		}
+		state.Atoms.Add(name);
+		return (IntPtr)state.Atoms.Count;
+	}
+	internal static void XSelectInput(IntPtr display, IntPtr window, IntPtr mask) => _current.Value!.Check("input");
+	internal static void XDestroyWindow(IntPtr display, IntPtr window) => _current.Value!.Destroyed++;
+	internal static void XCloseDisplay(IntPtr display) => _current.Value!.Closed++;
+	internal static IntPtr XGetSelectionOwner(IntPtr display, IntPtr selection) => throw new NotSupportedException();
+	internal static void XConvertSelection(IntPtr display, IntPtr selection, IntPtr format, IntPtr property, IntPtr window, IntPtr timestamp)
+		=> throw new NotSupportedException();
+	internal static void XFlush(IntPtr display) => throw new NotSupportedException();
+	internal static void XFree(IntPtr data) => throw new NotSupportedException();
+	internal static void XGetWindowProperty(IntPtr display, IntPtr window, IntPtr property, IntPtr offset, IntPtr length,
+		bool delete, IntPtr requestedType, out IntPtr type, out int format, out IntPtr count, out IntPtr remaining, out IntPtr data)
+		=> throw new NotSupportedException();
+}
+
+internal static class X11Helper
+{
+	internal const string INCR = "INCR";
+	internal static readonly IntPtr LONG_LENGTH = (IntPtr)0x1fffffff;
+	internal static readonly IntPtr AnyPropertyType = IntPtr.Zero;
+	internal const int PropertyNewValue = 0;
+	internal static IntPtr GetAtom(IntPtr display, string name) => throw new AssertFailedException("Private readers must not use the shared atom cache.");
+	internal static bool XCheckTypedWindowEvent(IntPtr display, IntPtr window, int type, out XEvent ev) => throw new NotSupportedException();
+}
+
+internal enum XEventMask
+{
+	PropertyChangeMask = 1 << 22
+}
+
+internal enum XEventName
+{
+	SelectionNotify,
+	PropertyNotify
+}
+
+internal readonly struct XEvent
+{
+	internal XSelectionEvent SelectionEvent => default;
+	internal XPropertyEvent PropertyEvent => default;
+}
+internal readonly struct XSelectionEvent
+{
+	internal IntPtr selection => default;
+	internal IntPtr target => default;
+	internal IntPtr property => default;
+}
+internal readonly struct XPropertyEvent
+{
+	internal IntPtr atom => default;
+	internal int state => default;
 }

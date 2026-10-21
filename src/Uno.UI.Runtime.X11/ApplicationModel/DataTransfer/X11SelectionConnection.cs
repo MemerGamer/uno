@@ -21,10 +21,18 @@ internal sealed class X11SelectionConnection : IX11SelectionConnection
 		{
 			throw new InvalidOperationException("Could not open the X11 selection connection.");
 		}
-		_window = XLib.XCreateSimpleWindow(_display, XLib.XDefaultRootWindow(_display), 0, 0, 1, 1, 0, IntPtr.Zero, IntPtr.Zero);
-		_property = X11Helper.GetAtom(_display, "_UNO_SELECTION");
-		IncrementalType = X11Helper.GetAtom(_display, X11Helper.INCR);
-		XLib.XSelectInput(_display, _window, (IntPtr)XEventMask.PropertyChangeMask);
+		try
+		{
+			_window = XLib.XCreateSimpleWindow(_display, XLib.XDefaultRootWindow(_display), 0, 0, 1, 1, 0, IntPtr.Zero, IntPtr.Zero);
+			_property = XLib.XInternAtom(_display, "_UNO_SELECTION", false);
+			IncrementalType = XLib.XInternAtom(_display, X11Helper.INCR, false);
+			XLib.XSelectInput(_display, _window, (IntPtr)XEventMask.PropertyChangeMask);
+		}
+		catch
+		{
+			XLib.XCloseDisplay(_display);
+			throw;
+		}
 	}
 
 	public long TickCount => Environment.TickCount64;

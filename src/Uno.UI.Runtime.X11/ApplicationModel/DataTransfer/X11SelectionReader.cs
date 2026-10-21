@@ -99,7 +99,7 @@ internal static class X11SelectionReader
 
 internal sealed class X11SelectionReadSession(IntPtr owner)
 {
-	private readonly Dictionary<IntPtr, Task<byte[]?>> _reads = new();
+	private readonly Dictionary<IntPtr, Read> _reads = new();
 	private IntPtr _timestamp;
 	internal IntPtr Owner { get; } = owner;
 	internal IntPtr Timestamp
@@ -110,14 +110,57 @@ internal sealed class X11SelectionReadSession(IntPtr owner)
 
 	internal Task<byte[]?> GetBytesAsync(IntPtr format, Func<IntPtr, IntPtr, CancellationToken, byte[]?> read, CancellationToken cancellationToken)
 	{
+		cancellationToken.ThrowIfCancellationRequested();
 		lock (_reads)
 		{
-			if (!_reads.TryGetValue(format, out var result))
+			if (!_reads.TryGetValue(format, out var result)
+				|| (result.Task.IsCompleted && (!result.Task.IsCompletedSuccessfully || result.Task.Result is null)))
 			{
 				var timestamp = Timestamp;
-				_reads[format] = result = Task.Run(() => read(Owner, timestamp, cancellationToken), cancellationToken);
+				var cancellation = new CancellationTokenSource();
+				_reads[format] = result = new Read(Task.Run(() => read(Owner, timestamp, cancellation.Token)), cancellation);
+				_ = result.Task.ContinueWith(_ =>
+				{
+					lock (_reads)
+					{
+						cancellation.Dispose();
+					}
+				}, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
 			}
-			return result.WaitAsync(cancellationToken);
+			result.Waiters++;
+			return WaitAsync(format, result, cancellationToken);
 		}
+	}
+
+	private async Task<byte[]?> WaitAsync(IntPtr format, Read read, CancellationToken cancellationToken)
+	{
+		try
+		{
+			return await read.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+		}
+		finally
+		{
+			lock (_reads)
+			{
+				if (--read.Waiters == 0 && (!read.Task.IsCompletedSuccessfully || read.Task.Result is null))
+				{
+					if (_reads.TryGetValue(format, out var current) && current == read)
+					{
+						_reads.Remove(format);
+					}
+					if (!read.Task.IsCompleted)
+					{
+						read.Cancellation.Cancel();
+					}
+				}
+			}
+		}
+	}
+
+	private sealed class Read(Task<byte[]?> task, CancellationTokenSource cancellation)
+	{
+		internal Task<byte[]?> Task { get; } = task;
+		internal CancellationTokenSource Cancellation { get; } = cancellation;
+		internal int Waiters { get; set; }
 	}
 }

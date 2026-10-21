@@ -33,17 +33,14 @@ using Windows.ApplicationModel.DataTransfer.DragDrop;
 using Windows.ApplicationModel.DataTransfer.DragDrop.Core;
 using Windows.Foundation;
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Input;
 using Uno.Disposables;
 using Uno.Extensions;
 using Uno.Foundation.Logging;
 using Uno.UI.Hosting;
 namespace Uno.UI.Runtime.X11;
 
-internal class X11DragDropExtension : IDragDropExtension
+internal partial class X11DragDropExtension : IDragDropExtension
 {
-	private static readonly long _fakePointerId = Pointer.CreateUniqueIdForUnknownPointer();
-
 	private readonly X11XamlRootHost _host;
 	private readonly CoreDragDropManager _coreDragDropManager;
 	private static readonly TimeSpan _sourceWatchInterval = TimeSpan.FromMilliseconds(250);
@@ -136,7 +133,7 @@ internal class X11DragDropExtension : IDragDropExtension
 			X11DragDiagnostics.Trace($"XDndEnter: version={version}, sourceWindow={sourceWindow}, types in message: [{GetAtomNameSafe(ev.ptr3)}, {GetAtomNameSafe(ev.ptr4)}, {GetAtomNameSafe(ev.ptr5)}]");
 		}
 
-		var formats = X11DragTypeList.Read((ev.ptr2 & 1) != 0, ev.ptr3, ev.ptr4, ev.ptr5, delete =>
+		var formats = X11DragTypeList.Read((ev.ptr2 & 1) != 0, ev.ptr3, ev.ptr4, ev.ptr5, () =>
 		{
 			_ = XLib.XGetWindowProperty(
 				_host.RootX11Window.Display,
@@ -144,7 +141,7 @@ internal class X11DragDropExtension : IDragDropExtension
 				X11Helper.GetAtom(_host.RootX11Window.Display, X11Helper.XdndTypeList),
 				IntPtr.Zero,
 				X11Helper.LONG_LENGTH,
-				delete,
+				delete: false,
 				X11Helper.AnyPropertyType,
 				out IntPtr actualType,
 				out var actualFormat,
@@ -227,7 +224,7 @@ internal class X11DragDropExtension : IDragDropExtension
 			X11ClipboardExtension.FillDataPackage(_host.RootX11Window, XdndSelection, package, formats, eager: false, readSession: session.Selection);
 
 			var operations = X11DragActions.TargetAllowed(session.SourceActions, session.Requested);
-			var info = new CoreDragInfo(new DragEventSource(position), package.GetView(), operations);
+			var info = new CoreDragInfo(session.CreateEventSource(position), package.GetView(), operations);
 			info.RegisterCompletedCallback(result => Complete(session, result));
 			session.Info = info;
 
@@ -240,7 +237,7 @@ internal class X11DragDropExtension : IDragDropExtension
 			_sourceWatch = new Timer(_ => X11XamlRootHost.QueueAction(_host, WatchSource), null, _sourceWatchInterval, _sourceWatchInterval);
 		}
 
-		_coreDragDropManager.ProcessMoved(new DragEventSource(position));
+		_coreDragDropManager.ProcessMoved(session.CreateEventSource(position));
 	}
 
 	// Each position is acknowledged only after its Enter/Over deferrals have settled.
@@ -279,7 +276,7 @@ internal class X11DragDropExtension : IDragDropExtension
 		}
 		StopSourceWatch();
 		_currentSession = null;
-		_coreDragDropManager.ProcessAborted(_fakePointerId);
+		_coreDragDropManager.ProcessAborted(session.PointerId);
 	}
 
 	private void UpdateStatus(XdndSession session, DataPackageOperation accepted)
@@ -315,12 +312,12 @@ internal class X11DragDropExtension : IDragDropExtension
 
 	private void ProcessXdndLeave(XClientMessageEvent ev)
 	{
-		if (_currentSession?.SourceWindow != ev.ptr1)
+		if (_currentSession is not { } session || session.SourceWindow != ev.ptr1)
 		{
 			return;
 		}
 		StopSourceWatch();
-		_coreDragDropManager.ProcessAborted(_fakePointerId);
+		_coreDragDropManager.ProcessAborted(session.PointerId);
 		_currentSession = null;
 
 		if (X11DragDiagnostics.IsEnabled)
@@ -344,7 +341,7 @@ internal class X11DragDropExtension : IDragDropExtension
 			Complete(session, DataPackageOperation.None);
 			return;
 		}
-		var acceptedOperation = _coreDragDropManager.ProcessDropped(new DragEventSource(session.Position));
+		var acceptedOperation = _coreDragDropManager.ProcessDropped(session.CreateEventSource(session.Position));
 
 		if (X11DragDiagnostics.IsEnabled)
 		{
@@ -391,7 +388,7 @@ internal class X11DragDropExtension : IDragDropExtension
 
 	public bool StartNativeDrag(CoreDragInfo info, Action<DataPackageOperation> onCompleted)
 	{
-		if (info.SourceId == _fakePointerId || (Windows.Devices.Input.PointerDeviceType)(info.SourceId >> 32) != Windows.Devices.Input.PointerDeviceType.Mouse
+		if ((Windows.Devices.Input.PointerDeviceType)(info.SourceId >> 32) != Windows.Devices.Input.PointerDeviceType.Mouse
 			|| _host.PointerSource is null || _host.Closed.IsCompleted)
 		{
 			return false;
@@ -414,55 +411,5 @@ internal class X11DragDropExtension : IDragDropExtension
 		return X11DragSource.Instance.TryStart(_host, _coreDragDropManager, info, formats, scale, button, onCompleted);
 	}
 
-	private readonly struct DragEventSource(Point location) : IDragEventSource
-	{
-		private static long _nextFrameId;
-		private readonly Point _location = location;
-
-		public long Id => _fakePointerId;
-
-		public uint FrameId { get; } = (uint)Interlocked.Increment(ref _nextFrameId);
-
-		/// <inheritdoc />
-		public (Point location, DragDropModifiers modifier) GetState() => (_location, DragDropModifiers.None);
-
-		/// <inheritdoc />
-		public Point GetPosition(object? relativeTo)
-		{
-			if (relativeTo is null)
-			{
-				return _location;
-			}
-
-			if (relativeTo is UIElement elt)
-			{
-				var eltToRoot = UIElement.GetTransform(elt, null);
-				var rootToElt = eltToRoot.Inverse();
-
-				return rootToElt.Transform(_location);
-			}
-
-			throw new InvalidOperationException("The relative to must be a UIElement.");
-		}
-	}
-
 	private string GetAtomNameSafe(IntPtr atom) => atom == IntPtr.Zero ? "NULL" : XLib.GetAtomName(_host.RootX11Window.Display, atom);
-
-	// From the spec: "If (the target window) retrieved the data, it should cache it so it does not need to be retrieved again when the actual drop occurs.
-	// XdndEnter doesn't provide pointer coords, so we fire DragEntered with the first XdndPosition that comes after XdndEnter.
-	// The last position is kept because XdndLeave and XdndDrop don't send coordinates. All members are used on the UI thread.
-	private sealed class XdndSession(IntPtr version, IntPtr sourceWindow, IntPtr[] availableFormats, DataPackageOperation sourceActions)
-	{
-		public IntPtr Version { get; } = version;
-		public IntPtr SourceWindow { get; } = sourceWindow;
-		public IntPtr[] AvailableFormats { get; } = availableFormats;
-		public DataPackageOperation SourceActions { get; } = sourceActions;
-		public X11DragTargetStatus Status { get; } = new();
-		public X11SelectionReadSession Selection { get; } = new(sourceWindow);
-		public CoreDragInfo? Info { get; set; }
-		public Point Position { get; set; }
-		public DataPackageOperation Requested { get; set; }
-		public bool Dropped { get; set; }
-		public bool Finished { get; set; }
-	}
 }

@@ -131,9 +131,11 @@
 		<Compile Include="..\Uno.UI.Runtime.X11\ApplicationModel\DataTransfer\DragDrop\X11DragIconLayout.cs" Link="Windows_ApplicationModel_DataTransfer\X11DragIconLayout.cs" />
 		<Compile Include="..\Uno.UI.Runtime.X11\ApplicationModel\DataTransfer\DragDrop\X11DragSourceState.cs" Link="Windows_ApplicationModel_DataTransfer\X11DragSourceState.cs" />
 		<Compile Include="..\Uno.UI.Runtime.X11\ApplicationModel\DataTransfer\DragDrop\X11DragTargetStatus.cs" Link="Windows_ApplicationModel_DataTransfer\X11DragTargetStatus.cs" />
+		<Compile Include="..\Uno.UI.Runtime.X11\ApplicationModel\DataTransfer\DragDrop\X11DragDropExtension.Session.cs" Link="Windows_ApplicationModel_DataTransfer\X11DragDropExtension.Session.cs" />
 		<Compile Include="..\Uno.UI.Runtime.X11\ApplicationModel\DataTransfer\DragDrop\X11DragTypeList.cs" Link="Windows_ApplicationModel_DataTransfer\X11DragTypeList.cs" />
 		<Compile Include="..\Uno.UI.Runtime.X11\ApplicationModel\DataTransfer\DragDrop\X11DragSelection.cs" Link="Windows_ApplicationModel_DataTransfer\X11DragSelection.cs" />
 		<Compile Include="..\Uno.UI.Runtime.X11\ApplicationModel\DataTransfer\X11SelectionReader.cs" Link="Windows_ApplicationModel_DataTransfer\X11SelectionReader.cs" />
+		<Compile Include="..\Uno.UI.Runtime.X11\ApplicationModel\DataTransfer\X11SelectionConnection.cs" Link="Windows_ApplicationModel_DataTransfer\X11SelectionConnection.cs" />
 		<Compile Include="..\Uno.UI.Runtime.X11\Devices\Input\X11PointerInputSource.DragDrop.cs" Link="Windows_ApplicationModel_DataTransfer\X11PointerInputSource.DragDrop.cs" />
 		<Compile Include="..\Uno.UI.Runtime.X11\ApplicationModel\DataTransfer\DragDrop\X11FileUris.cs" Link="Windows_ApplicationModel_DataTransfer\X11FileUris.cs" />
 	</ItemGroup>

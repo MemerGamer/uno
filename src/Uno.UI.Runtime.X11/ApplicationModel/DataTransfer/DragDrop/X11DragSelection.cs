@@ -14,6 +14,18 @@ internal sealed class X11DragSelection(IntPtr window, IntPtr timestamp, Dictiona
 	internal IntPtr Timestamp { get; } = timestamp;
 	internal Dictionary<IntPtr, Task<byte[]?>> Content { get; private set; } = content;
 	internal long Deadline { get; private set; } = long.MaxValue;
+	internal bool IsRetired { get; private set; }
+
+	internal void Retire(Action<IntPtr> destroyWindow)
+	{
+		if (IsRetired)
+		{
+			return;
+		}
+		IsRetired = true;
+		Content.Clear();
+		destroyWindow(Window);
+	}
 
 	internal void RetainCompleted(long now)
 	{

@@ -9,6 +9,6 @@ namespace Uno.UI.Runtime.X11;
 
 internal static class X11DragTypeList
 {
-	internal static IntPtr[] Read(bool hasList, IntPtr first, IntPtr second, IntPtr third, Func<bool, IntPtr[]> readProperty)
-		=> (hasList ? readProperty(false) : new[] { first, second, third }).Where(type => type != IntPtr.Zero).ToArray();
+	internal static IntPtr[] Read(bool hasList, IntPtr first, IntPtr second, IntPtr third, Func<IntPtr[]> readProperty)
+		=> (hasList ? readProperty() : new[] { first, second, third }).Where(type => type != IntPtr.Zero).ToArray();
 }

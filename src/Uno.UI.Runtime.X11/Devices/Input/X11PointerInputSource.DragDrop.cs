@@ -48,12 +48,41 @@ internal partial class X11PointerInputSource
 			{
 				return;
 			}
-			if (restoreGrab)
+			var last = _nativeDragPoint;
+			_nativeDragPoint = null;
+			// A release racing the state query must still reach the internal drag.
+			_nativeDrag = false;
+			var mask = _host.GetPointerButtonState();
+			if (restoreGrab && X11DragActions.ChooseButton(mask) != 0)
 			{
 				_host.RestorePointerGrabAfterDrag();
+				mask = _host.GetPointerButtonState();
 			}
-			_nativeDragPoint = null;
-			_nativeDrag = false;
+			_pressedButtons = (int)(mask >> 7) & 0xe;
+			if (_pressedButtons == 0)
+			{
+				_host.ReleaseRestoredPointerGrab();
+			}
+			if (last is null)
+			{
+				return;
+			}
+			var properties = new PointerPointProperties(last.Properties)
+			{
+				IsLeftButtonPressed = X11DragActions.IsButtonHeld(mask, 1),
+				IsMiddleButtonPressed = X11DragActions.IsButtonHeld(mask, 2),
+				IsRightButtonPressed = X11DragActions.IsButtonHeld(mask, 3)
+			};
+			properties.SetUpdateKindFromPrevious(last.Properties);
+			_previousPointerPointProperties = properties;
+			_lastPoint = new PointerPoint(last.FrameId + 1, last.Timestamp, PointerDevice.For(PointerDeviceType.Mouse),
+				last.PointerId, last.RawPosition, last.Position, properties.HasPressedButton, properties);
+			if ((last.Properties.IsLeftButtonPressed && !properties.IsLeftButtonPressed)
+				|| (last.Properties.IsMiddleButtonPressed && !properties.IsMiddleButtonPressed)
+				|| (last.Properties.IsRightButtonPressed && !properties.IsRightButtonPressed))
+			{
+				RaisePointerReleased(new PointerEventArgs(_lastPoint, Windows.System.VirtualKeyModifiers.None));
+			}
 		});
 	}
 

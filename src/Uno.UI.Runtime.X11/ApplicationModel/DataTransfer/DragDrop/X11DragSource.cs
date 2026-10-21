@@ -314,7 +314,7 @@ internal sealed class X11DragSource
 		}
 		var previousOwner = _selectionOwner;
 		var content = session.Content.ToDictionary(pair => Atom(pair.Key), pair => pair.Value);
-		_selectionOwner = new X11DragSelection(session.Window, session.Time, content);
+		_selectionOwner = session.Selection = new X11DragSelection(session.Window, session.Time, content);
 		RetireSelection(previousOwner);
 		session.Types = content.Keys.ToArray();
 		if (session.Types.Length > 3)
@@ -342,13 +342,9 @@ internal sealed class X11DragSource
 		{
 			_starting = null;
 			ReleaseGrabs();
-			if (_selectionOwner?.Window == session.Window)
+			if (session.Selection is { } selection)
 			{
-				if (XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) == session.Window)
-				{
-					_ = XLib.XSetSelectionOwner(_display, Atom("XdndSelection"), IntPtr.Zero, IntPtr.Zero);
-				}
-				_selectionOwner = null;
+				RetireSelection(selection);
 			}
 		}
 		Interlocked.CompareExchange(ref session.StartResult, 2, 0);
@@ -366,11 +362,18 @@ internal sealed class X11DragSource
 		{
 			return;
 		}
-		if (XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) == selection.Window)
+		if (_selectionOwner == selection)
 		{
-			XLib.XSetSelectionOwner(_display, Atom("XdndSelection"), IntPtr.Zero, IntPtr.Zero);
+			_selectionOwner = null;
 		}
-		XLib.XDestroyWindow(_display, selection.Window);
+		selection.Retire(window =>
+		{
+			if (XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) == window)
+			{
+				XLib.XSetSelectionOwner(_display, Atom("XdndSelection"), IntPtr.Zero, IntPtr.Zero);
+			}
+			XLib.XDestroyWindow(_display, window);
+		});
 	}
 
 	private void RetireWindow(Session? session)
@@ -378,7 +381,14 @@ internal sealed class X11DragSource
 		if (session is { Done: true } && session.Window != IntPtr.Zero
 			&& XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) != session.Window)
 		{
-			_ = XLib.XDestroyWindow(_display, session.Window);
+			if (session.Selection is { } selection)
+			{
+				RetireSelection(selection);
+			}
+			else
+			{
+				_ = XLib.XDestroyWindow(_display, session.Window);
+			}
 			session.Window = IntPtr.Zero;
 		}
 	}
@@ -418,7 +428,6 @@ internal sealed class X11DragSource
 					&& _selectionOwner is { } owner && ev.SelectionClearEvent.window == owner.Window
 					&& XLib.XGetSelectionOwner(_display, Atom("XdndSelection")) != owner.Window)
 				{
-					_selectionOwner = null;
 					if (_drag is { } active && active.Window == owner.Window)
 					{
 						Cancel(active);
@@ -464,7 +473,6 @@ internal sealed class X11DragSource
 		var now = Environment.TickCount64;
 		if (_selectionOwner is { } selection && selection.IsExpired(now))
 		{
-			_selectionOwner = null;
 			RetireSelection(selection);
 		}
 		if (_starting is { } starting)
@@ -1148,6 +1156,7 @@ internal sealed class X11DragSource
 		internal Action<DataPackageOperation> OnCompleted { get; } = onCompleted;
 		internal Dictionary<string, Task<byte[]?>> Content { get; } = content;
 		internal IntPtr Window { get; set; }
+		internal X11DragSelection? Selection { get; set; }
 		internal IntPtr OriginWindow { get; } = host.RootX11Window.Window;
 		internal long StartDeadline { get; } = deadline;
 		internal TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
