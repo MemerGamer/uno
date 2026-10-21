@@ -122,7 +122,6 @@ Enable Debug logging for the `Uno.UI.Runtime.Wayland.WaylandDiagnostics` categor
 - `WebView2` and `MediaPlayerElement` embed X11 windows, so they are not supported by the Wayland host.
 - Input uses the first seat advertised by the compositor. Output tracking follows the outputs entered by the window; the compositor determines its scale.
 - Wayland does not expose global window coordinates. Window placement and focus remain under compositor control.
-- Composition (`Visual`) animations of a hidden window finish only once it is shown again, because nothing is presented while it is hidden.
 - Portal dialogs and IME require the corresponding desktop services; a headless compositor alone does not provide them.
 
 ## Supported features by platform
