@@ -301,11 +301,11 @@ namespace Microsoft.UI.Composition
 				return;
 			}
 
-			animation.Resume();
-			animation.AnimationFrame += ReEvaluateAnimation;
 #if __SKIA__
 			Compositor.RegisterAnimation(animation, this);
 #endif
+			animation.Resume();
+			animation.AnimationFrame += ReEvaluateAnimation;
 		}
 
 		internal void SeekAnimation(KeyFrameAnimation animation, float progress)

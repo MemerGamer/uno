@@ -147,10 +147,21 @@ internal sealed class KeyFrameEvaluator<T> : IKeyFrameEvaluator
 		}
 
 		_isAwaitingFirstFrame = true;
+		_lastTimestamp = _compositor.AnimationTimestampInTicks;
 		_isPaused = false;
 	}
 
 	public bool IsPaused => _isPaused;
+
+	public bool IsRepeating => _iterationBehavior == AnimationIterationBehavior.Forever || _iterationCount > 1;
+
+	public void AdvanceBeforeFirstFrame(long timestamp)
+	{
+		if (_isAwaitingFirstFrame)
+		{
+			AdvanceToTimestamp(timestamp, includeFirstFrame: true);
+		}
+	}
 
 	public void Seek(float progress)
 	{
@@ -200,7 +211,7 @@ internal sealed class KeyFrameEvaluator<T> : IKeyFrameEvaluator
 	{
 		var playhead = _playhead;
 		var delta = timestamp - _lastTimestamp;
-		if (!_isPaused && !_isAwaitingFirstFrame && delta > 0 && _duration != TimeSpan.Zero)
+		if (!_isPaused && delta > 0 && _duration != TimeSpan.Zero)
 		{
 			playhead += (double)delta * _playbackRate / _duration.Ticks;
 		}
@@ -229,16 +240,17 @@ internal sealed class KeyFrameEvaluator<T> : IKeyFrameEvaluator
 		return TimeSpan.FromTicks((long)Math.Ceiling(remainingTicks));
 	}
 
-	private void AdvanceToCurrentTimestamp()
+	private void AdvanceToCurrentTimestamp() => AdvanceToTimestamp(_compositor.AnimationTimestampInTicks);
+
+	private void AdvanceToTimestamp(long now, bool includeFirstFrame = false)
 	{
-		if (_isPaused || _isAwaitingFirstFrame)
+		if (_isPaused || (_isAwaitingFirstFrame && !includeFirstFrame))
 		{
 			return;
 		}
 
 		// Records evaluate against the frame's timestamp and everything else against the real clock, which
 		// can be ahead of it, so a backward step is expected and must not move the playhead.
-		var now = _compositor.AnimationTimestampInTicks;
 		var delta = now - _lastTimestamp;
 		if (delta <= 0)
 		{

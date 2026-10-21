@@ -13,6 +13,10 @@ internal interface IKeyFrameEvaluator
 	/// <summary>Moves playback to its end, so the next <see cref="Evaluate()"/> returns the final value and stops.</summary>
 	void Finish();
 
+	void AdvanceBeforeFirstFrame(long timestamp);
+
+	bool IsRepeating { get; }
+
 	float PlaybackRate { get; set; }
 
 	/// <summary>
@@ -31,8 +35,7 @@ internal interface IKeyFrameEvaluator
 	TimeSpan Remaining { get; }
 
 	/// <summary>
-	/// The time remaining at <paramref name="timestamp"/>, without moving the playhead. Before the first frame
-	/// evaluates the animation, no time has elapsed for it.
+	/// The fallback time remaining at <paramref name="timestamp"/>, including playback before the first frame.
 	/// </summary>
 	TimeSpan RemainingAt(long timestamp);
 }

@@ -26,7 +26,6 @@ namespace Microsoft.UI.Composition
 				if (value is not null)
 				{
 					value.PlaybackRate = _playbackRate;
-					_lastFrameTimestamp = null;
 					ArmEndTimer();
 				}
 			}
@@ -65,17 +64,10 @@ namespace Microsoft.UI.Composition
 
 		// Frames stop while nothing is on screen (a hidden window), so a finite animation also ends on a timer.
 		private Timer? _endTimer;
-		private long? _lastFrameTimestamp;
-		private long _armTimestamp;
-		private long _remainingAtArm;
-
-		// How long the timer leaves for a frame to land before ending the animation itself. Longer than any frame
-		// interval, so it never ends an animation a frame is about to evaluate.
-		private static readonly long _frameGraceInTicks = TimeSpan.FromMilliseconds(250).Ticks;
+		private long _endTimerGeneration;
 
 		internal override object Evaluate()
 		{
-			_lastFrameTimestamp = Compositor.TimestampInTicks;
 			var (value, shouldStop) = _keyframeEvaluator!.Evaluate();
 			if (shouldStop)
 			{
@@ -114,6 +106,7 @@ namespace Microsoft.UI.Composition
 
 		internal void Pause()
 		{
+			AdvanceFallbackPlayback();
 			_keyframeEvaluator!.Pause();
 			DisarmEndTimer();
 		}
@@ -149,7 +142,6 @@ namespace Microsoft.UI.Composition
 		internal void Resume()
 		{
 			_keyframeEvaluator!.Resume();
-			_lastFrameTimestamp = null;
 			ArmEndTimer();
 		}
 
@@ -162,6 +154,7 @@ namespace Microsoft.UI.Composition
 			_playbackRate = value;
 			if (_keyframeEvaluator is { } evaluator)
 			{
+				AdvanceFallbackPlayback();
 				evaluator.PlaybackRate = value;
 				ArmEndTimer();
 			}
@@ -180,12 +173,19 @@ namespace Microsoft.UI.Composition
 
 		internal TimeSpan Remaining => _keyframeEvaluator!.Remaining;
 
-		// Not used for animations that repeat forever or are halted (Remaining is then unbounded).
+		private void AdvanceFallbackPlayback()
+		{
+			if (Compositor.IsRunning(this) && _keyframeEvaluator is { IsRepeating: false } evaluator)
+			{
+				evaluator.AdvanceBeforeFirstFrame(Compositor.TimestampInTicks);
+			}
+		}
+
 		private void ArmEndTimer()
 		{
-			if (StartedObjectCount == 0 || _keyframeEvaluator is not { IsPaused: false } evaluator)
+			DisarmEndTimer();
+			if (StartedObjectCount == 0 || !Compositor.IsRunning(this) || _keyframeEvaluator is not { IsPaused: false, IsRepeating: false } evaluator)
 			{
-				DisarmEndTimer();
 				return;
 			}
 
@@ -193,52 +193,50 @@ namespace Microsoft.UI.Composition
 			var remaining = evaluator.RemainingAt(now);
 			if (remaining == TimeSpan.MaxValue)
 			{
-				DisarmEndTimer();
 				return;
 			}
 
-			// Until a frame evaluates it, the evaluator does not advance (the animation starts at its first frame), so
-			// time without frames is counted from here.
-			if (_lastFrameTimestamp is null)
-			{
-				_armTimestamp = now;
-				_remainingAtArm = remaining.Ticks;
-			}
-
-			_endTimer ??= new Timer(_ => NativeDispatcher.Main.Enqueue(OnEndTimer));
 			ScheduleEndTimer(remaining.Ticks);
 		}
 
 		private void ScheduleEndTimer(long ticks)
-			=> _endTimer?.Change((long)Math.Min(Math.Ceiling(ticks / (double)TimeSpan.TicksPerMillisecond), int.MaxValue), Timeout.Infinite);
-
-		private void DisarmEndTimer() => _endTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-
-		// Runs the normal end, as a frame would, unless a frame got there first or may still do so.
-		private void OnEndTimer()
 		{
-			if (StartedObjectCount == 0 || _keyframeEvaluator is not { IsPaused: false } evaluator || !Compositor.IsRunning(this))
+			DisarmEndTimer();
+			var generation = Volatile.Read(ref _endTimerGeneration);
+			var delay = (long)Math.Min(Math.Ceiling(ticks / (double)TimeSpan.TicksPerMillisecond), int.MaxValue);
+			_endTimer = new Timer(_ => NativeDispatcher.Main.Enqueue(() => OnEndTimer(generation)), null, delay, Timeout.Infinite);
+		}
+
+		private void DisarmEndTimer()
+		{
+			Interlocked.Increment(ref _endTimerGeneration);
+			Interlocked.Exchange(ref _endTimer, null)?.Dispose();
+		}
+
+		private protected override void DisposeInternal()
+		{
+			DisarmEndTimer();
+			base.DisposeInternal();
+		}
+
+		private void OnEndTimer(long generation)
+		{
+			if (generation != Volatile.Read(ref _endTimerGeneration) || StartedObjectCount == 0 ||
+				_keyframeEvaluator is not { IsPaused: false, IsRepeating: false } evaluator || !Compositor.IsRunning(this))
 			{
 				return;
 			}
 
-			var now = Compositor.TimestampInTicks;
-			long remaining, sinceLastFrame;
-			if (_lastFrameTimestamp is { } lastFrame)
+			var remaining = evaluator.RemainingAt(Compositor.TimestampInTicks);
+			if (remaining == TimeSpan.MaxValue)
 			{
-				remaining = evaluator.RemainingAt(now).Ticks;
-				sinceLastFrame = now - lastFrame;
-			}
-			else
-			{
-				sinceLastFrame = now - _armTimestamp;
-				remaining = _remainingAtArm - sinceLastFrame;
+				DisarmEndTimer();
+				return;
 			}
 
-			var wait = Math.Max(remaining, _frameGraceInTicks - sinceLastFrame);
-			if (wait > 0)
+			if (remaining > TimeSpan.Zero)
 			{
-				ScheduleEndTimer(wait);
+				ScheduleEndTimer(remaining.Ticks);
 				return;
 			}
 
